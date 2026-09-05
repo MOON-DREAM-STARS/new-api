@@ -87,6 +87,16 @@ describe('Home default and custom content branches', () => {
   it('shows sign-in and pricing without exposing a registration entry', () => {
     render(<Home />)
 
+    expect(
+      screen.getByText(
+        'Supports GPT, Claude, Grok, DeepSeek, and other leading domestic and international models, starting at 0.1× official prices.'
+      )
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByText(
+        'Model prices are converted directly to CNY at a fixed exchange rate of 1 USD = 7 CNY. No hidden multipliers are added, so actual spending is clear and reproducible.'
+      )
+    ).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Sign in' })).toHaveAttribute(
       'href',
       '/sign-in'

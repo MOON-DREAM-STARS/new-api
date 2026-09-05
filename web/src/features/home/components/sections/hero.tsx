@@ -23,6 +23,7 @@ import {
   GraduationCap,
   RefreshCcw,
   ShieldCheck,
+  Sparkles,
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
@@ -52,9 +53,10 @@ export function Hero(props: HeroProps) {
             <strong>{t('Pay only for what you use')}</strong>
           </h1>
 
-          <p className='dreamstars-hero-description'>
+          <p className='dreamstars-hero-model-coverage'>
+            <Sparkles aria-hidden='true' />
             {t(
-              'Model prices are converted directly to CNY at a fixed exchange rate of 1 USD = 7 CNY. No hidden multipliers are added, so actual spending is clear and reproducible.'
+              'Supports GPT, Claude, Grok, DeepSeek, and other leading domestic and international models, starting at 0.1× official prices.'
             )}
           </p>
 

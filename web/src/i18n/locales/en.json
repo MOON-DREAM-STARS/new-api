@@ -5566,6 +5566,7 @@
     "Model ecosystem brand: {{brand}}": "Model ecosystem brand: {{brand}}",
     "Model ecosystem orbit": "Model ecosystem orbit",
     "Model prices are converted directly to CNY at a fixed exchange rate of 1 USD = 7 CNY. No hidden multipliers are added, so actual spending is clear and reproducible.": "Model prices are converted directly to CNY at a fixed exchange rate of 1 USD = 7 CNY. No hidden multipliers are added, so actual spending is clear and reproducible.",
+    "Supports GPT, Claude, Grok, DeepSeek, and other leading domestic and international models, starting at 0.1× official prices.": "Supports GPT, Claude, Grok, DeepSeek, and other leading domestic and international models, starting at 0.1× official prices.",
     "Models and Pricing": "Models and Pricing",
     "More models are continuously being added": "More models are continuously being added",
     "Next scenario": "Next scenario",

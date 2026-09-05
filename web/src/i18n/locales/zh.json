@@ -5566,6 +5566,7 @@
     "Model ecosystem brand: {{brand}}": "模型生态品牌：{{brand}}",
     "Model ecosystem orbit": "模型生态星环",
     "Model prices are converted directly to CNY at a fixed exchange rate of 1 USD = 7 CNY. No hidden multipliers are added, so actual spending is clear and reproducible.": "模型价格直接折算成人民币，固定汇率 1 USD = 7 CNY；不叠加隐藏倍率，实际消费清楚可复算。",
+    "Supports GPT, Claude, Grok, DeepSeek, and other leading domestic and international models, starting at 0.1× official prices.": "支持 GPT、Claude、Grok、DeepSeek 等国内外大模型，低至官方价格的 0.1 倍。",
     "Models and Pricing": "模型与价格",
     "More models are continuously being added": "更多模型持续接入",
     "Next scenario": "下一个场景",

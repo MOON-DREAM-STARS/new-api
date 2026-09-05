@@ -164,12 +164,22 @@ For commercial licensing, please contact support@quantumnous.com
   font-weight: inherit;
 }
 
-.dreamstars-hero-description {
+.dreamstars-hero-model-coverage {
+  display: flex;
   max-width: 40rem;
-  margin-top: 1.6rem;
-  color: var(--ds-muted);
-  font-size: clamp(1rem, 1.12vw, 1.16rem);
-  line-height: 1.85;
+  gap: 0.55rem;
+  margin-top: 1.25rem;
+  color: color-mix(in srgb, var(--ds-text) 88%, #7188ff);
+  font-size: clamp(1.03rem, 1.2vw, 1.2rem);
+  font-weight: 560;
+  line-height: 1.65;
+}
+
+.dreamstars-hero-model-coverage svg {
+  width: 1rem;
+  flex: none;
+  margin-top: 0.18rem;
+  color: #8b72ff;
 }
 
 .dreamstars-hero-actions,
@@ -534,15 +544,19 @@ For commercial licensing, please contact support@quantumnous.com
 .dreamstars-model-orbit {
   position: relative;
   --ds-orbit-plane-shift-x: clamp(1.75rem, 2.5vw, 3rem);
-  --ds-orbit-center-x: calc(50% + var(--ds-orbit-plane-shift-x));
+  --ds-orbit-right-extension: 100px;
+  --ds-orbit-right-extension-half: 50px;
+  --ds-orbit-center-x: calc(
+    50% + var(--ds-orbit-plane-shift-x) + var(--ds-orbit-right-extension-half)
+  );
   --ds-orbit-center-y: 50.5%;
-  --ds-orbit-primary-x: 35%;
+  --ds-orbit-primary-x: calc(35% + var(--ds-orbit-right-extension-half));
   --ds-orbit-primary-y: 24%;
   --ds-orbit-secondary-x: 39%;
   --ds-orbit-secondary-y: 32%;
-  --ds-orbit-track-half-width: 35%;
+  --ds-orbit-track-half-width: calc(35% + var(--ds-orbit-right-extension-half));
   --ds-orbit-track-half-height: 36.6%;
-  --ds-orbit-track-width: 70%;
+  --ds-orbit-track-width: calc(70% + var(--ds-orbit-right-extension));
   --ds-orbit-track-height: 73.2%;
   --ds-orbit-tilt: 49deg;
   width: min(100%, 96rem);
@@ -1031,11 +1045,18 @@ For commercial licensing, please contact support@quantumnous.com
   }
 
   .dreamstars-orbit-brand {
-    padding: 0.9rem;
+    gap: 0.5rem;
+    padding: 0.6rem;
   }
 
   .dreamstars-orbit-item-secondary .dreamstars-orbit-brand {
     padding: 0.35rem;
+  }
+
+  .dreamstars-orbit-brand[data-active='true'],
+  .dreamstars-orbit-brand:focus-visible,
+  .dreamstars-orbit-item-secondary .dreamstars-orbit-brand:hover {
+    transform: translate(-50%, -50%) scale(1.18);
   }
 
   .dreamstars-model-cta {
@@ -1050,6 +1071,20 @@ For commercial licensing, please contact support@quantumnous.com
     margin-top: 0.45rem;
     font-size: 0.75rem;
   }
+
+  .dreamstars-hero-model-coverage {
+    margin-top: 0.75rem;
+    font-size: 0.98rem;
+    line-height: 1.55;
+  }
+
+  .dreamstars-hero-actions {
+    margin-top: 1.35rem;
+  }
+
+  .dreamstars-principles {
+    margin-top: 1.4rem;
+  }
 }
 
 @media (max-width: 767px) {
@@ -1060,6 +1095,10 @@ For commercial licensing, please contact support@quantumnous.com
 
   .dreamstars-hero h1 {
     font-size: clamp(2.5rem, 12vw, 3.5rem);
+  }
+
+  .dreamstars-hero-model-coverage {
+    font-size: 1rem;
   }
 
   .dreamstars-hero-actions a {
