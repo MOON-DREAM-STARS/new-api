@@ -122,6 +122,13 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Check out the validated source commit for release publication
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.sha }}
+
       - name: Validate build digest and create release manifest
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
