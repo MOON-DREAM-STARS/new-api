@@ -32,21 +32,15 @@ type OrbitStyle = CSSProperties & {
 }
 
 const PRIMARY_POSITIONS = [
-  ['17%', '31%'],
-  ['39%', '23%'],
-  ['62%', '27%'],
-  ['82%', '38%'],
-  ['79%', '68%'],
-  ['58%', '77%'],
-  ['35%', '76%'],
-  ['15%', '62%'],
-] as const
-
-const SECONDARY_POSITIONS = [
-  ['50%', '10%'],
-  ['20%', '84%'],
-  ['51%', '91%'],
-  ['82%', '84%'],
+  ['15%', '50.5%'],
+  ['25%', '35.5%'],
+  ['43%', '27.5%'],
+  ['65%', '28.5%'],
+  ['83%', '40.5%'],
+  ['82%', '60.5%'],
+  ['64%', '73.5%'],
+  ['39%', '74.5%'],
+  ['22%', '64.5%'],
 ] as const
 
 export function ModelOrbit() {
@@ -56,9 +50,6 @@ export function ModelOrbit() {
   const [pageVisible, setPageVisible] = useState(!document.hidden)
   const primaryBrands = DREAMSTARS_MODEL_BRANDS.filter(
     (brand) => brand.tier === 'primary'
-  )
-  const secondaryBrands = DREAMSTARS_MODEL_BRANDS.filter(
-    (brand) => brand.tier === 'secondary'
   )
 
   useEffect(() => {
@@ -78,9 +69,9 @@ export function ModelOrbit() {
       aria-label={t('Model ecosystem orbit')}
     >
       <div className='dreamstars-orbit-halo' aria-hidden='true'>
-        <span />
-        <span />
-        <span />
+        <span className='dreamstars-orbit-ring dreamstars-orbit-ring-rear' />
+        <span className='dreamstars-orbit-ring dreamstars-orbit-ring-core' />
+        <span className='dreamstars-orbit-ring dreamstars-orbit-ring-front' />
       </div>
 
       {primaryBrands.map((brand, index) => {
@@ -93,7 +84,7 @@ export function ModelOrbit() {
               )
         const position = PRIMARY_POSITIONS[index]
         const style: OrbitStyle = {
-          '--orbit-delay': `${(-34 * index) / primaryBrands.length}s`,
+          '--orbit-delay': `${(-34 * (index + 0.35)) / primaryBrands.length}s`,
           '--static-x': position[0],
           '--static-y': position[1],
         }
@@ -119,34 +110,6 @@ export function ModelOrbit() {
               onBlur={() => setActiveIndex(null)}
             >
               <span aria-hidden='true'>{getLobeIcon(brand.iconName, 38)}</span>
-              <strong>{t(brand.name)}</strong>
-            </div>
-          </div>
-        )
-      })}
-
-      {secondaryBrands.map((brand, index) => {
-        const position = SECONDARY_POSITIONS[index]
-        const style: OrbitStyle = {
-          '--orbit-delay': `${(-34 * (index + 0.25)) / secondaryBrands.length}s`,
-          '--static-x': position[0],
-          '--static-y': position[1],
-        }
-        return (
-          <div
-            key={brand.name}
-            className='dreamstars-orbit-item dreamstars-orbit-item-secondary'
-            style={style}
-          >
-            <div
-              className='dreamstars-orbit-brand'
-              role='img'
-              tabIndex={0}
-              aria-label={t('Expanding model ecosystem brand: {{brand}}', {
-                brand: t(brand.name),
-              })}
-            >
-              <span aria-hidden='true'>{getLobeIcon(brand.iconName, 24)}</span>
               <strong>{t(brand.name)}</strong>
             </div>
           </div>

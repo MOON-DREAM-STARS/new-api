@@ -77,6 +77,36 @@ describe('SceneCarousel', () => {
     ).toBeVisible()
   })
 
+  it('shows the selected decorative scene illustration without duplicate accessible text', async () => {
+    const user = userEvent.setup()
+    const { container } = render(<SceneCarousel />)
+
+    const researchArt = container.querySelector(
+      ".dreamstars-scene-art[data-scene='research']"
+    )
+    expect(researchArt).toHaveAttribute('data-active', 'true')
+    expect(researchArt?.querySelector('img')).toHaveAttribute('alt', '')
+    expect(
+      screen.getByText('Use GPT to read academic literature faster.')
+    ).toBeVisible()
+    expect(
+      screen.queryByText(
+        'Paper review · Literature mapping · Research directions'
+      )
+    ).not.toBeInTheDocument()
+
+    await user.click(
+      screen.getByRole('button', {
+        name: 'Show scenario 2: Data and Code',
+      })
+    )
+    const dataArt = container.querySelector(
+      ".dreamstars-scene-art[data-scene='data']"
+    )
+    expect(dataArt).toHaveAttribute('data-active', 'true')
+    expect(dataArt?.querySelector('img')).toHaveAttribute('alt', '')
+  })
+
   it('pauses automatic advance during hover and resumes after leaving', () => {
     vi.useFakeTimers()
     render(<SceneCarousel />)

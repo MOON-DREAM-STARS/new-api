@@ -26,35 +26,24 @@ export const DREAMSTARS_SCENES = [
   {
     id: 'research',
     title: 'Research and Literature',
-    description:
-      'Extract key information from extensive literature, map research threads, and surface academic insights and references.',
-    features: 'Paper review · Literature mapping · Research directions',
-    icon: 'book',
+    description: 'Use GPT to read academic literature faster.',
   },
   {
     id: 'data',
     title: 'Data and Code',
-    description:
-      'Clarify analysis paths, understand code, and turn complex data tasks into reviewable steps.',
-    features: 'Data analysis · Code assistance · Reproducible workflows',
-    icon: 'code',
+    description: 'Use DeepSeek to work through data and code more efficiently.',
   },
   {
     id: 'presentation',
     title: 'Presentation and Communication',
     description:
-      'Organize key points and narrative structure so research progress and findings are easier to communicate.',
-    features:
-      'Outline planning · Visual storytelling · Presentation refinement',
-    icon: 'presentation',
+      'Use Gemini to organize key points and communicate your findings.',
   },
   {
     id: 'learning',
     title: 'Learning and Writing',
     description:
-      'Break down difficult concepts, improve written expression, and support thoughtful independent learning.',
-    features: 'Concept explanation · Writing support · Study planning',
-    icon: 'writing',
+      'Use Claude to understand concepts and support your learning and writing.',
   },
 ] as const
 
@@ -67,10 +56,7 @@ export const DREAMSTARS_MODEL_BRANDS = [
   { name: 'Kimi', iconName: 'Kimi.Color', tier: 'primary' },
   { name: 'Zhipu GLM', iconName: 'Zhipu.Color', tier: 'primary' },
   { name: 'Tongyi Qwen', iconName: 'Qwen.Color', tier: 'primary' },
-  { name: 'Llama', iconName: 'Meta.Color', tier: 'secondary' },
-  { name: 'Mistral', iconName: 'Mistral.Color', tier: 'secondary' },
-  { name: 'MiniMax', iconName: 'Minimax.Color', tier: 'secondary' },
-  { name: '01.AI Yi', iconName: 'ZeroOne.Color', tier: 'secondary' },
+  { name: 'MiniMax', iconName: 'Minimax.Color', tier: 'primary' },
 ] as const
 
 export const DREAMSTARS_STEPS = [

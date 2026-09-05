@@ -26,6 +26,10 @@ For commercial licensing, please contact support@quantumnous.com
   --ds-muted: #53617d;
   --ds-blue: #1479ff;
   --ds-violet: #8157ff;
+  --ds-orbit-rear: rgb(71 122 255 / 0.34);
+  --ds-orbit-core: rgb(71 107 255 / 0.58);
+  --ds-orbit-front: rgb(146 84 255 / 0.86);
+  --ds-orbit-glow: rgb(55 103 238 / 0.19);
   color: var(--ds-text);
 }
 
@@ -37,6 +41,10 @@ For commercial licensing, please contact support@quantumnous.com
   --ds-line: rgb(142 169 224 / 0.18);
   --ds-text: #f5f8ff;
   --ds-muted: #a7b0c4;
+  --ds-orbit-rear: rgb(91 140 255 / 0.44);
+  --ds-orbit-core: rgb(92 121 255 / 0.72);
+  --ds-orbit-front: rgb(173 98 255 / 0.94);
+  --ds-orbit-glow: rgb(62 113 255 / 0.27);
 }
 
 .dreamstars-header nav {
@@ -269,39 +277,16 @@ For commercial licensing, please contact support@quantumnous.com
 
 .dreamstars-scene-visual {
   position: absolute;
-  inset: 1.5rem 1.5rem 11.5rem;
+  inset: 0.5rem 0.75rem 8.25rem;
+  overflow: hidden;
+  pointer-events: none;
 }
 
-.dreamstars-scene-orbit {
-  position: absolute;
-  inset: 15% 7%;
-  border: 1px solid rgb(67 121 255 / 0.28);
-  border-radius: 50%;
-  transform: rotate(-7deg);
-  box-shadow: 0 0 24px rgb(45 101 255 / 0.12);
-}
-
-.dreamstars-scene-orbit-two {
-  inset: 24% 15%;
-  transform: rotate(10deg);
-  border-color: rgb(158 76 255 / 0.28);
-}
-
-.dreamstars-scene-core {
-  position: absolute;
-  top: 48%;
-  left: 50%;
-  width: 72%;
-  height: 34%;
-  border-radius: 50%;
-  background: radial-gradient(ellipse, rgb(58 107 255 / 0.25), transparent 70%);
-  transform: translate(-50%, -50%);
-  filter: blur(18px);
-}
-
-.dreamstars-scene-symbol {
+.dreamstars-scene-art {
   position: absolute;
   inset: 0;
+  display: grid;
+  place-items: center;
   opacity: 0;
   transform: translateY(16px) scale(0.98);
   transition:
@@ -309,85 +294,47 @@ For commercial licensing, please contact support@quantumnous.com
     transform 700ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.dreamstars-scene-symbol[data-active='true'] {
+.dreamstars-scene-art[data-active='true'] {
   opacity: 1;
   transform: translateY(0) scale(1);
 }
 
-.dreamstars-scene-sheet {
-  position: absolute;
-  display: flex;
-  width: 9.5rem;
-  height: 11.5rem;
-  flex-direction: column;
-  gap: 0.75rem;
-  padding: 1.1rem;
-  border: 1px solid rgb(117 153 255 / 0.38);
-  border-radius: 0.55rem;
-  background: linear-gradient(
-    145deg,
-    rgb(54 83 170 / 0.34),
-    rgb(20 31 74 / 0.1)
-  );
-  box-shadow:
-    0 18px 36px rgb(0 12 48 / 0.35),
-    inset 0 0 28px rgb(92 119 255 / 0.08);
-  backdrop-filter: blur(7px);
-}
-
-.dreamstars-scene-sheet svg {
-  width: 1.5rem;
-  color: #80a7ff;
-}
-
-.dreamstars-scene-sheet span {
+.dreamstars-scene-art img {
   display: block;
-  height: 0.3rem;
-  border-radius: 999px;
-  background: linear-gradient(
-    90deg,
-    rgb(116 154 255 / 0.55),
-    rgb(110 77 255 / 0.08)
-  );
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center center;
+  transform: scale(1.04);
+  filter: drop-shadow(0 1.2rem 1.8rem rgb(3 17 56 / 0.2));
 }
 
-.dreamstars-scene-sheet span:nth-of-type(2) {
-  width: 72%;
+.dark .dreamstars-scene-art img {
+  filter: drop-shadow(0 1.2rem 1.8rem rgb(0 4 20 / 0.5));
 }
 
-.dreamstars-scene-sheet span:nth-of-type(3) {
-  width: 48%;
-}
-
-.dreamstars-scene-sheet-one {
-  top: 16%;
-  left: 10%;
-  transform: perspective(600px) rotateY(18deg) rotateZ(-7deg);
-}
-
-.dreamstars-scene-sheet-two {
-  top: 4%;
-  left: 39%;
-  transform: perspective(600px) rotateX(8deg) rotateZ(2deg);
-}
-
-.dreamstars-scene-sheet-three {
-  top: 20%;
-  right: 8%;
-  transform: perspective(600px) rotateY(-18deg) rotateZ(7deg);
+.dreamstars-scene-art[data-scene='learning'] img {
+  transform: scale(1.01);
 }
 
 .dreamstars-scene-copy {
   position: absolute;
-  right: 2rem;
-  bottom: 4.8rem;
-  left: 2rem;
-  height: 7rem;
+  z-index: 1;
+  box-sizing: border-box;
+  right: 1.65rem;
+  bottom: 4.35rem;
+  left: 1.65rem;
+  height: 3rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid color-mix(in srgb, var(--ds-line) 86%, transparent);
 }
 
 .dreamstars-scene-copy-item {
   position: absolute;
   inset: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
   opacity: 0;
   transform: translateY(10px);
   transition:
@@ -403,26 +350,21 @@ For commercial licensing, please contact support@quantumnous.com
 }
 
 .dreamstars-scene-copy h2 {
-  font-size: 1.25rem;
+  font-size: 1.1rem;
   font-weight: 650;
+  white-space: nowrap;
 }
 
 .dreamstars-scene-copy p {
-  margin-top: 0.45rem;
+  margin: 0;
   color: var(--ds-muted);
-  font-size: 0.88rem;
-  line-height: 1.6;
-}
-
-.dreamstars-scene-copy span {
-  display: block;
-  margin-top: 0.45rem;
-  color: #5ea6ff;
-  font-size: 0.86rem;
+  font-size: 0.78rem;
+  line-height: 1.5;
 }
 
 .dreamstars-carousel-controls {
   position: absolute;
+  z-index: 1;
   right: 1.65rem;
   bottom: 1rem;
   left: 1.65rem;
@@ -571,48 +513,112 @@ For commercial licensing, please contact support@quantumnous.com
 
 .dreamstars-model-orbit {
   position: relative;
+  --ds-orbit-plane-shift-x: clamp(0.75rem, 1.35vw, 1.375rem);
+  --ds-orbit-center-x: calc(50% + var(--ds-orbit-plane-shift-x));
+  --ds-orbit-center-y: 50.5%;
+  --ds-orbit-primary-x: 35%;
+  --ds-orbit-primary-y: 24%;
+  --ds-orbit-secondary-x: 39%;
+  --ds-orbit-secondary-y: 32%;
+  --ds-orbit-track-half-width: 35%;
+  --ds-orbit-track-half-height: 36.6%;
+  --ds-orbit-track-width: 70%;
+  --ds-orbit-track-height: 73.2%;
+  --ds-orbit-tilt: 49deg;
   width: min(100%, 96rem);
   height: clamp(28rem, 45vw, 38rem);
   margin: -1.5rem auto -1rem;
+  transform-style: preserve-3d;
 }
 
 .dreamstars-orbit-halo {
   position: absolute;
-  inset: 19% 3% 18%;
-  border: 1px solid rgb(61 111 255 / 0.2);
+  top: calc(var(--ds-orbit-center-y) - var(--ds-orbit-track-half-height));
+  left: calc(var(--ds-orbit-center-x) - var(--ds-orbit-track-half-width));
+  width: var(--ds-orbit-track-width);
+  height: var(--ds-orbit-track-height);
+  z-index: 0;
   border-radius: 50%;
-  transform: perspective(900px) rotateX(59deg);
+  pointer-events: none;
+  transform: rotateX(var(--ds-orbit-tilt));
+  transform-origin: 50% 50%;
+  transform-style: preserve-3d;
   background: radial-gradient(
-    ellipse,
-    transparent 42%,
-    rgb(51 96 238 / 0.09) 57%,
-    transparent 72%
+    ellipse at 50% 52%,
+    var(--ds-orbit-glow) 0%,
+    transparent 60%
+  );
+  filter: drop-shadow(0 20px 25px rgb(28 66 185 / 0.12));
+}
+
+.dreamstars-orbit-halo::before {
+  position: absolute;
+  inset: 18% 14%;
+  border-radius: inherit;
+  background: radial-gradient(
+    ellipse at 50% 49%,
+    transparent 34%,
+    var(--ds-orbit-glow) 59%,
+    transparent 74%
+  );
+  content: '';
+  filter: blur(5px);
+  opacity: 0.86;
+  transform: translateZ(-20px);
+}
+
+.dreamstars-orbit-ring {
+  position: absolute;
+  border-radius: inherit;
+  backface-visibility: hidden;
+}
+
+.dreamstars-orbit-ring-rear {
+  inset: -4% -7%;
+  border: 1px solid var(--ds-orbit-rear);
+  box-shadow: 0 0 28px var(--ds-orbit-glow);
+  opacity: 0.64;
+  transform: translateZ(-24px);
+}
+
+.dreamstars-orbit-ring-core {
+  inset: 10% 10%;
+  border: 1px solid var(--ds-orbit-core);
+  background: radial-gradient(
+    ellipse at 50% 46%,
+    transparent 54%,
+    var(--ds-orbit-glow) 72%,
+    transparent 82%
   );
   box-shadow:
-    0 0 35px rgb(33 105 255 / 0.25),
-    inset 0 0 28px rgb(139 65 255 / 0.18);
+    0 0 25px var(--ds-orbit-glow),
+    inset 0 0 22px rgb(142 81 255 / 0.14);
+  transform: translateZ(0);
 }
 
-.dreamstars-orbit-halo span {
-  position: absolute;
-  inset: 5%;
+.dreamstars-orbit-ring-front {
+  inset: 0;
   border: 2px solid transparent;
-  border-top-color: rgb(47 126 255 / 0.7);
-  border-right-color: rgb(134 66 255 / 0.5);
-  border-radius: inherit;
-  filter: drop-shadow(0 0 9px rgb(58 112 255 / 0.8));
-}
-
-.dreamstars-orbit-halo span:nth-child(2) {
-  inset: 12%;
-  transform: rotate(12deg);
-}
-
-.dreamstars-orbit-halo span:nth-child(3) {
-  inset: -9%;
-  border-width: 1px;
-  opacity: 0.34;
-  transform: rotate(-8deg);
+  border-bottom-color: var(--ds-orbit-front);
+  box-shadow:
+    0 10px 24px rgb(97 78 255 / 0.22),
+    0 0 20px var(--ds-orbit-front);
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    transparent 46%,
+    #000 61%,
+    #000 100%
+  );
+  opacity: 0.92;
+  transform: translateZ(22px);
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    transparent 46%,
+    #000 61%,
+    #000 100%
+  );
 }
 
 .dreamstars-orbit-item {
@@ -627,13 +633,19 @@ For commercial licensing, please contact support@quantumnous.com
 }
 
 .dreamstars-orbit-item-primary {
-  offset-path: ellipse(36% 28% at 50% 51%);
+  offset-path: ellipse(
+    var(--ds-orbit-primary-x) var(--ds-orbit-primary-y) at
+      var(--ds-orbit-center-x) var(--ds-orbit-center-y)
+  );
   animation-name: dreamstars-orbit-travel;
   animation-duration: 34s;
 }
 
 .dreamstars-orbit-item-secondary {
-  offset-path: ellipse(45.5% 44% at 50% 51%);
+  offset-path: ellipse(
+    var(--ds-orbit-secondary-x) var(--ds-orbit-secondary-y) at
+      var(--ds-orbit-center-x) var(--ds-orbit-center-y)
+  );
   animation-name: dreamstars-orbit-travel;
   animation-duration: 34s;
 }
@@ -694,8 +706,9 @@ For commercial licensing, please contact support@quantumnous.com
 
 .dreamstars-orbit-center {
   position: absolute;
-  top: 52%;
-  left: 50%;
+  top: var(--ds-orbit-center-y);
+  left: var(--ds-orbit-center-x);
+  z-index: 1;
   color: var(--ds-muted);
   font-size: 0.85rem;
   transform: translate(-50%, -50%);
@@ -943,11 +956,6 @@ For commercial licensing, please contact support@quantumnous.com
   .dreamstars-carousel {
     height: 31rem;
   }
-
-  .dreamstars-scene-sheet {
-    width: 8rem;
-    height: 9.8rem;
-  }
 }
 
 @media (max-width: 1023px) {
@@ -1043,25 +1051,37 @@ For commercial licensing, please contact support@quantumnous.com
   }
 
   .dreamstars-carousel {
-    height: 29rem;
+    height: 31rem;
     border-radius: 1.3rem;
   }
 
   .dreamstars-scene-visual {
-    inset: 1rem 0.5rem 12rem;
-    transform: scale(0.88);
+    inset: 0.65rem 0.5rem 11.55rem;
   }
 
-  .dreamstars-scene-sheet {
-    width: 7.4rem;
-    height: 8.8rem;
+  .dreamstars-scene-art img {
+    transform: none;
   }
 
   .dreamstars-scene-copy {
-    right: 1.2rem;
-    bottom: 4.7rem;
-    left: 1.2rem;
-    height: 7.8rem;
+    right: 1.15rem;
+    bottom: 4.45rem;
+    left: 1.15rem;
+    height: 5.7rem;
+    padding-top: 0.85rem;
+  }
+
+  .dreamstars-scene-copy-item {
+    display: block;
+  }
+
+  .dreamstars-scene-copy h2 {
+    font-size: 1.05rem;
+  }
+
+  .dreamstars-scene-copy p {
+    margin-top: 0.35rem;
+    line-height: 1.55;
   }
 
   .dreamstars-carousel-controls {
@@ -1168,7 +1188,7 @@ For commercial licensing, please contact support@quantumnous.com
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .dreamstars-scene-symbol,
+  .dreamstars-scene-art,
   .dreamstars-scene-copy-item,
   .dreamstars-carousel-dots button,
   .dreamstars-orbit-brand,
@@ -1184,7 +1204,7 @@ For commercial licensing, please contact support@quantumnous.com
 
   .dreamstars-orbit-item {
     top: var(--static-y);
-    left: var(--static-x);
+    left: calc(var(--static-x) + var(--ds-orbit-plane-shift-x));
     offset-path: none;
   }
 

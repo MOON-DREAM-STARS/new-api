@@ -16,16 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import {
-  BookOpen,
-  Braces,
-  ChevronLeft,
-  ChevronRight,
-  Pause,
-  PenLine,
-  Play,
-  Presentation,
-} from 'lucide-react'
+import { ChevronLeft, ChevronRight, Pause, Play } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -35,12 +26,43 @@ import { useReducedMotion } from '../hooks'
 const AUTO_ADVANCE_MS = 7000
 const SWIPE_THRESHOLD_PX = 44
 
-const SCENE_ICONS = {
-  book: BookOpen,
-  code: Braces,
-  presentation: Presentation,
-  writing: PenLine,
-}
+type SceneId = (typeof DREAMSTARS_SCENES)[number]['id']
+
+const SCENE_ART = {
+  research: {
+    src: new URL('../assets/dreamstars-scene-research-gpt.png', import.meta.url)
+      .href,
+    width: 1672,
+    height: 941,
+  },
+  data: {
+    src: new URL(
+      '../assets/dreamstars-scene-data-deepseek.png',
+      import.meta.url
+    ).href,
+    width: 1672,
+    height: 941,
+  },
+  presentation: {
+    src: new URL(
+      '../assets/dreamstars-scene-presentation-gemini.png',
+      import.meta.url
+    ).href,
+    width: 1672,
+    height: 941,
+  },
+  learning: {
+    src: new URL(
+      '../assets/dreamstars-scene-learning-claude.png',
+      import.meta.url
+    ).href,
+    width: 1536,
+    height: 1024,
+  },
+} as const satisfies Record<
+  SceneId,
+  { src: string; width: number; height: number }
+>
 
 export function SceneCarousel() {
   const { t } = useTranslation()
@@ -121,34 +143,23 @@ export function SceneCarousel() {
     >
       <div className='dreamstars-carousel-glow' aria-hidden='true' />
       <div className='dreamstars-scene-visual' aria-hidden='true'>
-        <div className='dreamstars-scene-orbit dreamstars-scene-orbit-one' />
-        <div className='dreamstars-scene-orbit dreamstars-scene-orbit-two' />
-        <div className='dreamstars-scene-core' />
         {DREAMSTARS_SCENES.map((scene, index) => {
-          const Icon = SCENE_ICONS[scene.icon]
+          const art = SCENE_ART[scene.id]
           return (
             <div
               key={scene.id}
-              className='dreamstars-scene-symbol'
+              className='dreamstars-scene-art'
               data-active={index === activeIndex}
+              data-scene={scene.id}
             >
-              <div className='dreamstars-scene-sheet dreamstars-scene-sheet-one'>
-                <Icon />
-                <span />
-                <span />
-                <span />
-              </div>
-              <div className='dreamstars-scene-sheet dreamstars-scene-sheet-two'>
-                <Icon />
-                <span />
-                <span />
-              </div>
-              <div className='dreamstars-scene-sheet dreamstars-scene-sheet-three'>
-                <Icon />
-                <span />
-                <span />
-                <span />
-              </div>
+              <img
+                src={art.src}
+                width={art.width}
+                height={art.height}
+                alt=''
+                decoding='async'
+                loading={index === 0 ? 'eager' : 'lazy'}
+              />
             </div>
           )
         })}
@@ -167,7 +178,6 @@ export function SceneCarousel() {
           >
             <h2>{t(scene.title)}</h2>
             <p>{t(scene.description)}</p>
-            <span>{t(scene.features)}</span>
           </div>
         ))}
       </div>

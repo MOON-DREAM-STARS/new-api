@@ -53,8 +53,23 @@ describe('ModelOrbit', () => {
     const brands = screen.getAllByRole('img', {
       name: /model ecosystem brand/i,
     })
-    expect(brands).toHaveLength(12)
+    expect(brands).toHaveLength(9)
     for (const brand of brands) expect(brand).toHaveAttribute('tabindex', '0')
+
+    expect(
+      screen.getByRole('img', {
+        name: 'Model ecosystem brand: MiniMax',
+      })
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole('img', { name: /Llama/i })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('img', { name: /Mistral/i })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('img', { name: /01\.AI Yi/i })
+    ).not.toBeInTheDocument()
 
     const gemini = screen.getByRole('img', {
       name: 'Model ecosystem brand: Gemini',
@@ -63,6 +78,15 @@ describe('ModelOrbit', () => {
     expect(gemini).toHaveAttribute('data-active', 'true')
     fireEvent.blur(gemini)
     expect(gemini).toHaveAttribute('data-active', 'false')
+  })
+
+  it('keeps its three-dimensional orbit layers decorative', () => {
+    setReducedMotion(false)
+    const { container } = render(<ModelOrbit />)
+
+    const halo = container.querySelector('.dreamstars-orbit-halo')
+    expect(halo).toHaveAttribute('aria-hidden', 'true')
+    expect(halo?.querySelectorAll('.dreamstars-orbit-ring')).toHaveLength(3)
   })
 
   it('marks the orbit as static when reduced motion is requested', () => {
