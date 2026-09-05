@@ -16,26 +16,51 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { PublicLayout } from '@/components/layout'
-import { Footer } from '@/components/layout/components/footer'
+import type { TopNavLink } from '@/components/layout/types'
 import { RichContent } from '@/components/rich-content'
 import { useTheme } from '@/context/theme-provider'
+import { useStatus } from '@/hooks/use-status'
 import { isLikelyHtml } from '@/lib/content-format'
 import { useAuthStore } from '@/stores/auth-store'
 
-import { CTA, Features, Hero, HowItWorks, Stats } from './components'
+import {
+  DreamstarsFooter,
+  Hero,
+  HowItWorks,
+  ModelEcosystem,
+} from './components'
 import { useHomePageContent } from './hooks'
+
+import './dreamstars-home.css'
 
 export function Home() {
   const { i18n, t } = useTranslation()
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const { resolvedTheme } = useTheme()
+  const { status } = useStatus()
   const { auth } = useAuthStore()
   const isAuthenticated = !!auth.user
   const { content, isLoaded, isUrl } = useHomePageContent()
+  const docsUrl =
+    (status?.docs_link as string | undefined) || 'https://docs.newapi.pro'
+  const homeNavLinks = useMemo<TopNavLink[]>(
+    () => [
+      { title: 'Homepage', href: '/#dreamstars-home' },
+      { title: 'Models and Pricing', href: '/pricing' },
+      { title: 'Use Guide', href: '/#getting-started' },
+      {
+        title: 'Docs',
+        href: docsUrl,
+        external: docsUrl.startsWith('http'),
+      },
+      { title: 'About', href: '/about' },
+    ],
+    [docsUrl]
+  )
 
   const syncIframePreferences = useCallback(() => {
     try {
@@ -121,13 +146,22 @@ export function Home() {
   }
 
   return (
-    <PublicLayout showMainContainer={false}>
-      <Hero isAuthenticated={isAuthenticated} />
-      <Stats />
-      <Features />
-      <HowItWorks />
-      <CTA isAuthenticated={isAuthenticated} />
-      <Footer />
+    <PublicLayout
+      showMainContainer={false}
+      navLinks={homeNavLinks}
+      siteName='Dreamstars'
+      headerProps={{
+        hideLogo: true,
+        wide: true,
+        className: 'dreamstars-header',
+      }}
+    >
+      <main className='dreamstars-homepage'>
+        <Hero isAuthenticated={isAuthenticated} />
+        <ModelEcosystem />
+        <HowItWorks docsUrl={docsUrl} />
+      </main>
+      <DreamstarsFooter docsUrl={docsUrl} />
     </PublicLayout>
   )
 }

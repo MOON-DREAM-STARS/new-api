@@ -20,7 +20,81 @@ For commercial licensing, please contact support@quantumnous.com
  * Home page constants
  * All hardcoded data for home page sections
  */
-import { type TFunction } from 'i18next'
+import type { TFunction } from 'i18next'
+
+export const DREAMSTARS_SCENES = [
+  {
+    id: 'research',
+    title: 'Research and Literature',
+    description:
+      'Extract key information from extensive literature, map research threads, and surface academic insights and references.',
+    features: 'Paper review · Literature mapping · Research directions',
+    icon: 'book',
+  },
+  {
+    id: 'data',
+    title: 'Data and Code',
+    description:
+      'Clarify analysis paths, understand code, and turn complex data tasks into reviewable steps.',
+    features: 'Data analysis · Code assistance · Reproducible workflows',
+    icon: 'code',
+  },
+  {
+    id: 'presentation',
+    title: 'Presentation and Communication',
+    description:
+      'Organize key points and narrative structure so research progress and findings are easier to communicate.',
+    features:
+      'Outline planning · Visual storytelling · Presentation refinement',
+    icon: 'presentation',
+  },
+  {
+    id: 'learning',
+    title: 'Learning and Writing',
+    description:
+      'Break down difficult concepts, improve written expression, and support thoughtful independent learning.',
+    features: 'Concept explanation · Writing support · Study planning',
+    icon: 'writing',
+  },
+] as const
+
+export const DREAMSTARS_MODEL_BRANDS = [
+  { name: 'OpenAI · GPT', iconName: 'OpenAI', tier: 'primary' },
+  { name: 'Gemini', iconName: 'Gemini.Color', tier: 'primary' },
+  { name: 'Claude', iconName: 'Claude.Color', tier: 'primary' },
+  { name: 'Grok', iconName: 'Grok', tier: 'primary' },
+  { name: 'DeepSeek', iconName: 'DeepSeek.Color', tier: 'primary' },
+  { name: 'Kimi', iconName: 'Kimi.Color', tier: 'primary' },
+  { name: 'Zhipu GLM', iconName: 'Zhipu.Color', tier: 'primary' },
+  { name: 'Tongyi Qwen', iconName: 'Qwen.Color', tier: 'primary' },
+  { name: 'Llama', iconName: 'Meta.Color', tier: 'secondary' },
+  { name: 'Mistral', iconName: 'Mistral.Color', tier: 'secondary' },
+  { name: 'MiniMax', iconName: 'Minimax.Color', tier: 'secondary' },
+  { name: '01.AI Yi', iconName: 'ZeroOne.Color', tier: 'secondary' },
+] as const
+
+export const DREAMSTARS_STEPS = [
+  {
+    number: '01',
+    title: 'Sign in to the platform',
+    description:
+      'Use the account assigned by the administrator to enter the platform.',
+    icon: 'user',
+  },
+  {
+    number: '02',
+    title: 'Choose a model',
+    description: 'Choose a suitable model by task, capability, and CNY price.',
+    icon: 'sparkles',
+  },
+  {
+    number: '03',
+    title: 'Start using AI',
+    description:
+      'Create an API Key and connect a familiar client or compatible endpoint.',
+    icon: 'arrow',
+  },
+] as const
 
 // Layout - Main base classes
 export const MAIN_BASE_CLASSES = 'bg-background text-foreground w-full'
