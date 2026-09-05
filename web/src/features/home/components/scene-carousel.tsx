@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { ChevronLeft, ChevronRight, Pause, Play } from 'lucide-react'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -70,11 +70,9 @@ export function SceneCarousel() {
   const [activeIndex, setActiveIndex] = useState(0)
   const [hovered, setHovered] = useState(false)
   const [focusWithin, setFocusWithin] = useState(false)
-  const [userPaused, setUserPaused] = useState(false)
   const [pageVisible, setPageVisible] = useState(!document.hidden)
   const pointerStartX = useRef<number | null>(null)
-  const paused =
-    reducedMotion || hovered || focusWithin || userPaused || !pageVisible
+  const paused = reducedMotion || hovered || focusWithin || !pageVisible
 
   const selectScene = useCallback((index: number) => {
     const nextIndex =
@@ -176,7 +174,6 @@ export function SceneCarousel() {
             data-active={index === activeIndex}
             aria-hidden={index !== activeIndex}
           >
-            <h2>{t(scene.title)}</h2>
             <p>{t(scene.description)}</p>
           </div>
         ))}
@@ -184,7 +181,9 @@ export function SceneCarousel() {
 
       <div className='dreamstars-carousel-controls'>
         <span className='dreamstars-carousel-progress' aria-hidden='true'>
-          <strong>{String(activeIndex + 1).padStart(2, '0')}</strong> / 04
+          <strong>{String(activeIndex + 1).padStart(2, '0')}</strong>
+          <span>/</span>
+          <em>04</em>
         </span>
         <div
           className='dreamstars-carousel-dots'
@@ -206,18 +205,6 @@ export function SceneCarousel() {
           ))}
         </div>
         <div className='dreamstars-carousel-actions'>
-          <button
-            type='button'
-            aria-label={userPaused ? t('Resume carousel') : t('Pause carousel')}
-            aria-pressed={userPaused}
-            onClick={() => setUserPaused((value) => !value)}
-          >
-            {userPaused ? (
-              <Play aria-hidden='true' />
-            ) : (
-              <Pause aria-hidden='true' />
-            )}
-          </button>
           <button
             type='button'
             aria-label={t('Previous scenario')}

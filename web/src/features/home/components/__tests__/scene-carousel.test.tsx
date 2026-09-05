@@ -50,31 +50,35 @@ describe('SceneCarousel', () => {
 
   it('supports arrow buttons, dots, and keyboard navigation', async () => {
     const user = userEvent.setup()
-    render(<SceneCarousel />)
+    const { container } = render(<SceneCarousel />)
 
-    expect(
-      screen.getByRole('heading', { name: 'Research and Literature' })
-    ).toBeVisible()
+    const activeCopy = () =>
+      container.querySelector(".dreamstars-scene-copy-item[data-active='true']")
+    expect(activeCopy()).toHaveTextContent(
+      'Use GPT to read academic literature faster.'
+    )
 
     await user.click(screen.getByRole('button', { name: 'Next scenario' }))
-    expect(screen.getByRole('heading', { name: 'Data and Code' })).toBeVisible()
+    expect(activeCopy()).toHaveTextContent(
+      'Use DeepSeek to work through data and code more efficiently.'
+    )
 
     await user.click(
       screen.getByRole('button', {
         name: 'Show scenario 4: Learning and Writing',
       })
     )
-    expect(
-      screen.getByRole('heading', { name: 'Learning and Writing' })
-    ).toBeVisible()
+    expect(activeCopy()).toHaveTextContent(
+      'Use Claude to understand concepts and support your learning and writing.'
+    )
 
     const carousel = screen.getByRole('region', {
       name: 'Campus AI application scenarios',
     })
     fireEvent.keyDown(carousel, { key: 'ArrowLeft' })
-    expect(
-      screen.getByRole('heading', { name: 'Presentation and Communication' })
-    ).toBeVisible()
+    expect(activeCopy()).toHaveTextContent(
+      'Use Gemini to organize key points and communicate your findings.'
+    )
   })
 
   it('shows the selected decorative scene illustration without duplicate accessible text', async () => {
@@ -113,16 +117,23 @@ describe('SceneCarousel', () => {
     const carousel = screen.getByRole('region', {
       name: 'Campus AI application scenarios',
     })
+    expect(
+      screen.queryByRole('button', { name: /pause carousel|resume carousel/i })
+    ).not.toBeInTheDocument()
 
     fireEvent.mouseEnter(carousel)
     act(() => vi.advanceTimersByTime(14000))
     expect(
-      screen.getByRole('heading', { name: 'Research and Literature' })
+      screen.getByText('Use GPT to read academic literature faster.')
     ).toBeVisible()
 
     fireEvent.mouseLeave(carousel)
     act(() => vi.advanceTimersByTime(7000))
-    expect(screen.getByRole('heading', { name: 'Data and Code' })).toBeVisible()
+    expect(
+      screen.getByText(
+        'Use DeepSeek to work through data and code more efficiently.'
+      )
+    ).toBeVisible()
   })
 
   it('stops automatic advance when reduced motion is requested', () => {
@@ -136,7 +147,7 @@ describe('SceneCarousel', () => {
     expect(carousel).toHaveAttribute('data-autoplay', 'paused')
     act(() => vi.advanceTimersByTime(14000))
     expect(
-      screen.getByRole('heading', { name: 'Research and Literature' })
+      screen.getByText('Use GPT to read academic literature faster.')
     ).toBeVisible()
   })
 })
