@@ -16,14 +16,27 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ModelOrbit } from '../model-orbit'
 
 vi.mock('@/lib/lobe-icon', () => ({
   getLobeIcon: (name: string) => <svg data-icon-name={name} />,
 }))
+
+const observerState = vi.hoisted(() => ({
+  callback: undefined as IntersectionObserverCallback | undefined,
+}))
+
+class IntersectionObserverMock {
+  constructor(callback: IntersectionObserverCallback) {
+    observerState.callback = callback
+  }
+
+  disconnect(): void {}
+  observe(): void {}
+}
 
 function setReducedMotion(matches: boolean) {
   vi.stubGlobal(
@@ -42,7 +55,12 @@ function setReducedMotion(matches: boolean) {
 }
 
 describe('ModelOrbit', () => {
+  beforeEach(() => {
+    vi.stubGlobal('IntersectionObserver', IntersectionObserverMock)
+  })
+
   afterEach(() => {
+    observerState.callback = undefined
     vi.unstubAllGlobals()
   })
 
@@ -97,5 +115,30 @@ describe('ModelOrbit', () => {
       'data-motion',
       'reduced'
     )
+  })
+
+  it('runs only while the orbit is inside the viewport', () => {
+    setReducedMotion(false)
+    render(<ModelOrbit />)
+
+    const orbit = screen.getByLabelText('Model ecosystem orbit')
+    expect(orbit).toHaveAttribute('data-motion', 'paused')
+    expect(observerState.callback).toBeDefined()
+
+    act(() => {
+      observerState.callback?.(
+        [{ isIntersecting: true } as IntersectionObserverEntry],
+        {} as IntersectionObserver
+      )
+    })
+    expect(orbit).toHaveAttribute('data-motion', 'animated')
+
+    act(() => {
+      observerState.callback?.(
+        [{ isIntersecting: false } as IntersectionObserverEntry],
+        {} as IntersectionObserver
+      )
+    })
+    expect(orbit).toHaveAttribute('data-motion', 'paused')
   })
 })

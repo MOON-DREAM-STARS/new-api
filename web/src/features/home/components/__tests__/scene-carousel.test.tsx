@@ -111,6 +111,54 @@ describe('SceneCarousel', () => {
     expect(dataArt?.querySelector('img')).toHaveAttribute('alt', '')
   })
 
+  it('keeps only the active illustration and its exiting transition layer mounted', () => {
+    vi.useFakeTimers()
+    const { container } = render(<SceneCarousel />)
+
+    const renderedArt = () =>
+      container.querySelectorAll('.dreamstars-scene-art')
+    expect(renderedArt()).toHaveLength(1)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next scenario' }))
+    expect(renderedArt()).toHaveLength(2)
+    expect(
+      container.querySelector(".dreamstars-scene-art[data-scene='research']")
+    ).toHaveAttribute('data-exiting', 'true')
+    expect(
+      container.querySelector(".dreamstars-scene-art[data-scene='data']")
+    ).toHaveAttribute('data-active', 'true')
+
+    act(() => vi.advanceTimersByTime(700))
+    expect(renderedArt()).toHaveLength(1)
+    expect(
+      container.querySelector(".dreamstars-scene-art[data-scene='data']")
+    ).toHaveAttribute('data-active', 'true')
+  })
+
+  it('prefetches only the next illustration during browser idle time', () => {
+    const prefetchedSources: string[] = []
+    class ImageMock {
+      decoding = ''
+
+      set src(value: string) {
+        prefetchedSources.push(value)
+      }
+    }
+
+    vi.stubGlobal('Image', ImageMock)
+    vi.stubGlobal('requestIdleCallback', (callback: () => void) => {
+      callback()
+      return 1
+    })
+    vi.stubGlobal('cancelIdleCallback', vi.fn())
+    render(<SceneCarousel />)
+
+    expect(prefetchedSources).toHaveLength(1)
+    expect(prefetchedSources[0]).toContain(
+      'dreamstars-scene-data-deepseek.webp'
+    )
+  })
+
   it('pauses automatic advance during hover and resumes after leaving', () => {
     vi.useFakeTimers()
     render(<SceneCarousel />)

@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useEffect, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { getLobeIcon } from '@/lib/lobe-icon'
@@ -48,6 +48,8 @@ export function ModelOrbit() {
   const reducedMotion = useReducedMotion()
   const [activeIndex, setActiveIndex] = useState<number | null>(null)
   const [pageVisible, setPageVisible] = useState(!document.hidden)
+  const [inViewport, setInViewport] = useState(false)
+  const orbitRef = useRef<HTMLDivElement>(null)
   const primaryBrands = DREAMSTARS_MODEL_BRANDS.filter(
     (brand) => brand.tier === 'primary'
   )
@@ -59,13 +61,35 @@ export function ModelOrbit() {
       document.removeEventListener('visibilitychange', handleVisibility)
   }, [])
 
+  useEffect(() => {
+    const orbit = orbitRef.current
+    if (!orbit || reducedMotion) return
+    if (!('IntersectionObserver' in window)) {
+      setInViewport(true)
+      return
+    }
+
+    const observer = new IntersectionObserver(
+      ([entry]) => setInViewport(entry.isIntersecting),
+      { threshold: 0.01 }
+    )
+    observer.observe(orbit)
+    return () => observer.disconnect()
+  }, [reducedMotion])
+
+  const orbitIsRunning = pageVisible && inViewport && !reducedMotion
+  let motionState = 'paused'
+  if (reducedMotion) {
+    motionState = 'reduced'
+  } else if (orbitIsRunning) {
+    motionState = 'animated'
+  }
+
   return (
     <div
-      className={cn(
-        'dreamstars-model-orbit',
-        (!pageVisible || reducedMotion) && 'is-paused'
-      )}
-      data-motion={reducedMotion ? 'reduced' : 'animated'}
+      ref={orbitRef}
+      className={cn('dreamstars-model-orbit', !orbitIsRunning && 'is-paused')}
+      data-motion={motionState}
       aria-label={t('Model ecosystem orbit')}
     >
       <div className='dreamstars-orbit-halo' aria-hidden='true'>

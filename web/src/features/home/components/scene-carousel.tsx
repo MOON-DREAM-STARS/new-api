@@ -24,40 +24,50 @@ import { DREAMSTARS_SCENES } from '../constants'
 import { useReducedMotion } from '../hooks'
 
 const AUTO_ADVANCE_MS = 7000
+const SCENE_TRANSITION_MS = 700
 const SWIPE_THRESHOLD_PX = 44
 
 type SceneId = (typeof DREAMSTARS_SCENES)[number]['id']
+type IdleWindow = Window & {
+  cancelIdleCallback?: (handle: number) => void
+  requestIdleCallback?: (
+    callback: () => void,
+    options?: { timeout: number }
+  ) => number
+}
 
 const SCENE_ART = {
   research: {
-    src: new URL('../assets/dreamstars-scene-research-gpt.png', import.meta.url)
-      .href,
-    width: 1672,
-    height: 941,
+    src: new URL(
+      '../assets/dreamstars-scene-research-gpt.webp',
+      import.meta.url
+    ).href,
+    width: 1280,
+    height: 720,
   },
   data: {
     src: new URL(
-      '../assets/dreamstars-scene-data-deepseek.png',
+      '../assets/dreamstars-scene-data-deepseek.webp',
       import.meta.url
     ).href,
-    width: 1672,
-    height: 941,
+    width: 1280,
+    height: 720,
   },
   presentation: {
     src: new URL(
-      '../assets/dreamstars-scene-presentation-gemini.png',
+      '../assets/dreamstars-scene-presentation-gemini.webp',
       import.meta.url
     ).href,
-    width: 1672,
-    height: 941,
+    width: 1280,
+    height: 720,
   },
   learning: {
     src: new URL(
-      '../assets/dreamstars-scene-learning-claude.png',
+      '../assets/dreamstars-scene-learning-claude.webp',
       import.meta.url
     ).href,
-    width: 1536,
-    height: 1024,
+    width: 1280,
+    height: 853,
   },
 } as const satisfies Record<
   SceneId,
@@ -68,15 +78,28 @@ export function SceneCarousel() {
   const { t } = useTranslation()
   const reducedMotion = useReducedMotion()
   const [activeIndex, setActiveIndex] = useState(0)
+  const [exitingIndex, setExitingIndex] = useState<number | null>(null)
   const [hovered, setHovered] = useState(false)
   const [focusWithin, setFocusWithin] = useState(false)
   const [pageVisible, setPageVisible] = useState(!document.hidden)
+  const activeIndexRef = useRef(activeIndex)
+  const prefetchedSceneIds = useRef(new Set<SceneId>())
   const pointerStartX = useRef<number | null>(null)
   const paused = reducedMotion || hovered || focusWithin || !pageVisible
+
+  useEffect(() => {
+    activeIndexRef.current = activeIndex
+  }, [activeIndex])
 
   const selectScene = useCallback((index: number) => {
     const nextIndex =
       (index + DREAMSTARS_SCENES.length) % DREAMSTARS_SCENES.length
+    const currentIndex = activeIndexRef.current
+    if (nextIndex === currentIndex) {
+      return
+    }
+
+    setExitingIndex(currentIndex)
     setActiveIndex(nextIndex)
   }, [])
 
@@ -90,10 +113,59 @@ export function SceneCarousel() {
   useEffect(() => {
     if (paused) return
     const timeoutId = window.setTimeout(() => {
-      setActiveIndex((index) => (index + 1) % DREAMSTARS_SCENES.length)
+      selectScene(activeIndex + 1)
     }, AUTO_ADVANCE_MS)
     return () => window.clearTimeout(timeoutId)
-  }, [activeIndex, paused])
+  }, [activeIndex, paused, selectScene])
+
+  useEffect(() => {
+    if (exitingIndex === null) return
+    if (reducedMotion) {
+      setExitingIndex(null)
+      return
+    }
+
+    const timeoutId = window.setTimeout(
+      () => setExitingIndex(null),
+      SCENE_TRANSITION_MS
+    )
+    return () => window.clearTimeout(timeoutId)
+  }, [exitingIndex, reducedMotion])
+
+  useEffect(() => {
+    if (reducedMotion || !pageVisible) return
+
+    const connection = navigator as Navigator & {
+      connection?: { saveData?: boolean }
+    }
+    if (connection.connection?.saveData) {
+      return
+    }
+
+    const nextScene =
+      DREAMSTARS_SCENES[(activeIndex + 1) % DREAMSTARS_SCENES.length]
+    if (prefetchedSceneIds.current.has(nextScene.id)) {
+      return
+    }
+
+    const prefetch = () => {
+      if (document.hidden || prefetchedSceneIds.current.has(nextScene.id)) {
+        return
+      }
+      const image = new Image()
+      image.decoding = 'async'
+      image.src = SCENE_ART[nextScene.id].src
+      prefetchedSceneIds.current.add(nextScene.id)
+    }
+    const idleWindow = window as IdleWindow
+    if (idleWindow.requestIdleCallback) {
+      const idleId = idleWindow.requestIdleCallback(prefetch, { timeout: 1800 })
+      return () => idleWindow.cancelIdleCallback?.(idleId)
+    }
+
+    const timeoutId = window.setTimeout(prefetch, 1200)
+    return () => window.clearTimeout(timeoutId)
+  }, [activeIndex, pageVisible, reducedMotion])
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'ArrowLeft') {
@@ -113,6 +185,9 @@ export function SceneCarousel() {
     if (Math.abs(distance) < SWIPE_THRESHOLD_PX) return
     selectScene(distance > 0 ? activeIndex - 1 : activeIndex + 1)
   }
+
+  const renderedSceneIndexes =
+    exitingIndex === null ? [activeIndex] : [exitingIndex, activeIndex]
 
   return (
     <div
@@ -141,13 +216,15 @@ export function SceneCarousel() {
     >
       <div className='dreamstars-carousel-glow' aria-hidden='true' />
       <div className='dreamstars-scene-visual' aria-hidden='true'>
-        {DREAMSTARS_SCENES.map((scene, index) => {
+        {renderedSceneIndexes.map((index) => {
+          const scene = DREAMSTARS_SCENES[index]
           const art = SCENE_ART[scene.id]
           return (
             <div
               key={scene.id}
               className='dreamstars-scene-art'
               data-active={index === activeIndex}
+              data-exiting={index === exitingIndex}
               data-scene={scene.id}
             >
               <img
@@ -156,7 +233,7 @@ export function SceneCarousel() {
                 height={art.height}
                 alt=''
                 decoding='async'
-                loading={index === 0 ? 'eager' : 'lazy'}
+                loading='eager'
               />
             </div>
           )

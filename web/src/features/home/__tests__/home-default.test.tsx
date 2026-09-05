@@ -102,6 +102,9 @@ describe('Home default and custom content branches', () => {
       '/sign-in'
     )
     expect(
+      screen.getByRole('button', { name: 'Sign in to the platform' })
+    ).toHaveAttribute('href', '/sign-in')
+    expect(
       screen.getByRole('button', { name: /View models and CNY prices/ })
     ).toHaveAttribute('href', '/pricing')
     expect(document.querySelector('a[href="/sign-up"]')).not.toBeInTheDocument()
@@ -111,9 +114,13 @@ describe('Home default and custom content branches', () => {
     testState.authenticated = true
     render(<Home />)
 
-    expect(
-      screen.getByRole('button', { name: 'Enter Dashboard' })
-    ).toHaveAttribute('href', '/dashboard')
+    const dashboardEntries = screen.getAllByRole('button', {
+      name: 'Enter Dashboard',
+    })
+    expect(dashboardEntries).toHaveLength(2)
+    for (const entry of dashboardEntries) {
+      expect(entry).toHaveAttribute('href', '/dashboard')
+    }
   })
 
   it('renders custom HomePageContent instead of the default homepage', () => {

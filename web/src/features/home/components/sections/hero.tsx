@@ -55,9 +55,11 @@ export function Hero(props: HeroProps) {
 
           <p className='dreamstars-hero-model-coverage'>
             <Sparkles aria-hidden='true' />
-            {t(
-              'Supports GPT, Claude, Grok, DeepSeek, and other leading domestic and international models, starting at 0.1× official prices.'
-            )}
+            <span>
+              {t(
+                'Supports GPT, Claude, Grok, DeepSeek, and other leading domestic and international models, starting at 0.1× official prices.'
+              )}
+            </span>
           </p>
 
           <div className='dreamstars-hero-actions'>

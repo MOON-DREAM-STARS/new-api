@@ -159,7 +159,7 @@ export function Home() {
       <main className='dreamstars-homepage'>
         <Hero isAuthenticated={isAuthenticated} />
         <ModelEcosystem />
-        <HowItWorks docsUrl={docsUrl} />
+        <HowItWorks docsUrl={docsUrl} isAuthenticated={isAuthenticated} />
       </main>
       <DreamstarsFooter docsUrl={docsUrl} />
     </PublicLayout>

@@ -34,6 +34,7 @@ const STEP_ICONS = {
 
 interface HowItWorksProps {
   docsUrl: string
+  isAuthenticated: boolean
 }
 
 export function HowItWorks(props: HowItWorksProps) {
@@ -117,8 +118,15 @@ export function HowItWorks(props: HowItWorksProps) {
       </div>
 
       <div className='dreamstars-step-actions'>
-        <Button size='lg' render={<Link to='/sign-in' />}>
-          {t('Sign in to the platform')}
+        <Button
+          size='lg'
+          render={
+            <Link to={props.isAuthenticated ? '/dashboard' : '/sign-in'} />
+          }
+        >
+          {props.isAuthenticated
+            ? t('Enter Dashboard')
+            : t('Sign in to the platform')}
           <ArrowRight aria-hidden='true' />
         </Button>
         <Button
