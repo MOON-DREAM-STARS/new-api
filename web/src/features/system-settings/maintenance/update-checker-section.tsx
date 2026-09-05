@@ -17,28 +17,60 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { ExternalLinkIcon, RefreshCcwIcon } from 'lucide-react'
-import { useState } from 'react'
+import { type ReactNode, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
-import { Dialog } from '@/components/dialog'
 import { Button } from '@/components/ui/button'
-import { Markdown } from '@/components/ui/markdown'
 import { formatTimestamp, formatTimestampToDate } from '@/lib/format'
 
+import { getDreamstarsReleaseUpdate } from '../api'
 import { SettingsSection } from '../components/settings-section'
-
-type ReleaseInfo = {
-  tag_name: string
-  name?: string
-  body?: string
-  html_url?: string
-  published_at?: string
-}
+import type { DreamstarsReleaseUpdate } from '../types'
 
 type UpdateCheckerSectionProps = {
   currentVersion?: string | null
   startTime?: number | null
+}
+
+function getReleaseStatusLabel(
+  update: DreamstarsReleaseUpdate,
+  t: (key: string) => string
+) {
+  if (update.source === 'stale') {
+    return t(
+      'Live release check is unavailable; showing previously verified release information.'
+    )
+  }
+
+  switch (update.status) {
+    case 'up_to_date':
+      return t('You are running the latest Dreamstars release.')
+    case 'update_available':
+      return t('An approved Dreamstars fork release is available.')
+    case 'current_release_unrecognized':
+      return t(
+        'Current release is not recognized as a Dreamstars fork release.'
+      )
+    default:
+      return t('No approved Dreamstars fork release is currently available.')
+  }
+}
+
+function getReleaseSourceLabel(
+  source: DreamstarsReleaseUpdate['source'],
+  t: (key: string) => string
+) {
+  switch (source) {
+    case 'live':
+      return t('Live data')
+    case 'cached':
+      return t('Cached data')
+    case 'stale':
+      return t('Stale cached data')
+    default:
+      return t('Unavailable')
+  }
 }
 
 export function UpdateCheckerSection({
@@ -47,45 +79,19 @@ export function UpdateCheckerSection({
 }: UpdateCheckerSectionProps) {
   const { t } = useTranslation()
   const [checking, setChecking] = useState(false)
-  const [dialogOpen, setDialogOpen] = useState(false)
-  const [release, setRelease] = useState<ReleaseInfo | null>(null)
+  const [update, setUpdate] = useState<DreamstarsReleaseUpdate | null>(null)
 
   const uptime = startTime ? formatTimestamp(startTime) : t('Unknown')
-  const version = currentVersion || t('Unknown')
+  const version = update?.current_version || currentVersion || t('Unknown')
 
   const handleCheckUpdates = async () => {
     setChecking(true)
     try {
-      const response = await fetch(
-        'https://api.github.com/repos/Calcium-Ion/new-api/releases/latest',
-        {
-          headers: {
-            Accept: 'application/vnd.github+json',
-            'User-Agent': 'new-api-dashboard',
-          },
-        }
-      )
-
-      if (!response.ok) {
-        throw new Error(t('Failed to contact GitHub releases API'))
+      const response = await getDreamstarsReleaseUpdate()
+      if (!response.success) {
+        throw new Error(response.message || t('Failed to check for updates'))
       }
-
-      const data = (await response.json()) as ReleaseInfo
-      if (!data?.tag_name) {
-        throw new Error(t('Unexpected release payload'))
-      }
-
-      if (currentVersion && data.tag_name === currentVersion) {
-        toast.success(
-          t('You are running the latest version ({{version}}).', {
-            version: data.tag_name,
-          })
-        )
-        return
-      }
-
-      setRelease(data)
-      setDialogOpen(true)
+      setUpdate(response.data)
     } catch (error) {
       const message =
         error instanceof Error
@@ -97,93 +103,111 @@ export function UpdateCheckerSection({
     }
   }
 
-  const goToRelease = () => {
-    if (release?.html_url) {
-      window.open(release.html_url, '_blank', 'noopener,noreferrer')
+  const openRelease = () => {
+    if (update?.latest?.release_url) {
+      window.open(update.latest.release_url, '_blank', 'noopener,noreferrer')
     }
   }
 
   return (
-    <>
-      <SettingsSection title={t('System maintenance')}>
-        <div className='space-y-6'>
-          <div className='grid gap-4 md:grid-cols-2'>
-            <div className='rounded-lg border p-4'>
-              <div className='text-muted-foreground text-sm'>
-                {t('Current version')}
-              </div>
-              <div className='text-lg font-semibold'>{version}</div>
+    <SettingsSection title={t('System maintenance')}>
+      <div className='space-y-6'>
+        <div className='grid gap-4 md:grid-cols-2'>
+          <div className='rounded-lg border p-4'>
+            <div className='text-muted-foreground text-sm'>
+              {t('Current version')}
             </div>
-            <div className='rounded-lg border p-4'>
-              <div className='text-muted-foreground text-sm'>
-                {t('Uptime since')}
-              </div>
-              <div className='text-lg font-semibold'>{uptime}</div>
-            </div>
+            <div className='text-lg font-semibold break-all'>{version}</div>
           </div>
-
-          <Button onClick={handleCheckUpdates} disabled={checking}>
-            {checking ? (
-              t('Checking updates...')
-            ) : (
-              <>
-                <RefreshCcwIcon className='me-2 h-4 w-4' />
-                {t('Check for updates')}
-              </>
-            )}
-          </Button>
+          <div className='rounded-lg border p-4'>
+            <div className='text-muted-foreground text-sm'>
+              {t('Uptime since')}
+            </div>
+            <div className='text-lg font-semibold'>{uptime}</div>
+          </div>
         </div>
-      </SettingsSection>
 
-      <Dialog
-        open={dialogOpen}
-        onOpenChange={setDialogOpen}
-        title={
-          release?.tag_name
-            ? t('New version available: {{version}}', {
-                version: release.tag_name,
-              })
-            : t('Release details')
-        }
-        description={
-          release?.published_at
-            ? `${t('Published')} ${formatTimestampToDate(
-                new Date(release.published_at).getTime(),
-                'milliseconds'
-              )}`
-            : undefined
-        }
-        contentClassName='max-h-[80vh] overflow-y-auto'
-        contentHeight='auto'
-        bodyClassName='space-y-4'
-        footer={
-          <>
-            <Button
-              type='button'
-              variant='secondary'
-              onClick={() => setDialogOpen(false)}
-            >
-              {t('Close')}
-            </Button>
-            {release?.html_url && (
-              <Button type='button' onClick={goToRelease}>
+        <div className='border-primary/30 bg-primary/5 rounded-lg border p-4 text-sm'>
+          <p className='font-medium'>{t('Dreamstars fork updates')}</p>
+          <p className='text-muted-foreground mt-1'>
+            {t(
+              'This page only checks Dreamstars fork releases. It never deploys or restarts the server.'
+            )}
+          </p>
+        </div>
+
+        <Button onClick={handleCheckUpdates} disabled={checking}>
+          <RefreshCcwIcon
+            className={`me-2 h-4 w-4 ${checking ? 'animate-spin' : ''}`}
+          />
+          {checking ? t('Checking updates...') : t('Check for updates')}
+        </Button>
+
+        {update && (
+          <div
+            className='space-y-4 rounded-lg border p-4'
+            role='status'
+            aria-live='polite'
+          >
+            <div className='space-y-1'>
+              <p className='font-medium'>{getReleaseStatusLabel(update, t)}</p>
+              {update.source === 'stale' && (
+                <p className='text-sm text-amber-700 dark:text-amber-300'>
+                  {t('Showing stale cached release information.')}
+                </p>
+              )}
+            </div>
+
+            {update.latest && (
+              <dl className='m-0 grid gap-3 text-sm md:grid-cols-2'>
+                <ReleaseField label={t('Latest approved release')}>
+                  {update.latest.version}
+                </ReleaseField>
+                <ReleaseField label={t('Published')}>
+                  {formatTimestampToDate(
+                    new Date(update.latest.published_at).getTime(),
+                    'milliseconds'
+                  )}
+                </ReleaseField>
+                <ReleaseField label={t('Commit')}>
+                  <code className='break-all'>{update.latest.commit}</code>
+                </ReleaseField>
+                <ReleaseField label={t('Image digest')}>
+                  <code className='break-all'>{update.latest.digest}</code>
+                </ReleaseField>
+                <ReleaseField label={t('Release source')}>
+                  {getReleaseSourceLabel(update.source, t)}
+                </ReleaseField>
+                <ReleaseField label={t('Container image')}>
+                  <code className='break-all'>{update.latest.image}</code>
+                </ReleaseField>
+              </dl>
+            )}
+
+            {update.latest?.release_url && (
+              <Button type='button' variant='secondary' onClick={openRelease}>
                 <ExternalLinkIcon className='me-2 h-4 w-4' />
                 {t('Open release')}
               </Button>
             )}
-          </>
-        }
-      >
-        <div className='space-y-4'>
-          {release?.body ? (
-            <Markdown>{release.body}</Markdown>
-          ) : (
-            <p className='text-muted-foreground text-sm'>
-              {t('No release notes provided.')}
-            </p>
-          )}
-        </div>
-      </Dialog>
-    </>
+          </div>
+        )}
+      </div>
+    </SettingsSection>
+  )
+}
+
+function ReleaseField({
+  label,
+  children,
+}: {
+  label: string
+  children: ReactNode
+}) {
+  return (
+    <div className='min-w-0'>
+      <dt className='text-muted-foreground'>{label}</dt>
+      <dd className='mt-1 font-medium break-words'>{children}</dd>
+    </div>
   )
 }

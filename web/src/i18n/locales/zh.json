@@ -5602,6 +5602,23 @@
     "Zero retention": "零数据保留",
     "Zhipu": "智谱",
     "Zhipu V4": "智谱 V4",
-    "Zoom": "缩放"
+    "Zoom": "缩放",
+    "Dreamstars fork updates": "Dreamstars 分支更新",
+    "This page only checks Dreamstars fork releases. It never deploys or restarts the server.": "此页面只检查 Dreamstars Fork 发布，不会部署或重启服务器。",
+    "You are running the latest Dreamstars release.": "当前正在运行最新的 Dreamstars 发布版本。",
+    "An approved Dreamstars fork release is available.": "有可用的已审核 Dreamstars Fork 发布版本。",
+    "Current release is not recognized as a Dreamstars fork release.": "当前运行版本未识别为 Dreamstars Fork 发布版本。",
+    "No approved Dreamstars fork release is currently available.": "当前没有可用的已审核 Dreamstars Fork 发布版本。",
+    "Showing stale cached release information.": "正在显示过期的缓存发布信息。",
+    "Latest approved release": "最新已审核发布版本",
+    "Image digest": "镜像摘要",
+    "Release source": "发布信息来源",
+    "Container image": "容器镜像",
+    "Live data": "实时数据",
+    "Cached data": "缓存数据",
+    "Stale cached data": "过期缓存数据",
+    "Unavailable": "不可用",
+    "Commit": "提交",
+    "Live release check is unavailable; showing previously verified release information.": "实时发布检查不可用，正在显示此前已验证的发布信息。"
   }
 }

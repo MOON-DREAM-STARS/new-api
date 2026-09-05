@@ -5602,6 +5602,23 @@
     "Zero retention": "データ保持なし",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V 4",
-    "Zoom": "ズーム"
+    "Zoom": "ズーム",
+    "Dreamstars fork updates": "Dreamstars フォークの更新",
+    "This page only checks Dreamstars fork releases. It never deploys or restarts the server.": "このページは Dreamstars フォークのリリースのみを確認します。サーバーのデプロイや再起動は行いません。",
+    "You are running the latest Dreamstars release.": "最新の Dreamstars リリースを実行しています。",
+    "An approved Dreamstars fork release is available.": "承認済みの Dreamstars フォーク・リリースを利用できます。",
+    "Current release is not recognized as a Dreamstars fork release.": "現在のリリースは Dreamstars フォーク・リリースとして認識されていません。",
+    "No approved Dreamstars fork release is currently available.": "現在、承認済みの Dreamstars フォーク・リリースはありません。",
+    "Showing stale cached release information.": "古いキャッシュ済みリリース情報を表示しています。",
+    "Latest approved release": "最新の承認済みリリース",
+    "Image digest": "イメージ・ダイジェスト",
+    "Release source": "リリース情報の取得元",
+    "Container image": "コンテナー・イメージ",
+    "Live data": "ライブデータ",
+    "Cached data": "キャッシュ済みデータ",
+    "Stale cached data": "古いキャッシュ済みデータ",
+    "Unavailable": "利用できません",
+    "Commit": "コミット",
+    "Live release check is unavailable; showing previously verified release information.": "ライブのリリース確認を利用できないため、以前に検証されたリリース情報を表示しています。"
   }
 }

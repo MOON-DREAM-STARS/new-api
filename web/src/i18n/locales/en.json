@@ -5602,6 +5602,23 @@
     "Zero retention": "Zero retention",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Dreamstars fork updates": "Dreamstars fork updates",
+    "This page only checks Dreamstars fork releases. It never deploys or restarts the server.": "This page only checks Dreamstars fork releases. It never deploys or restarts the server.",
+    "You are running the latest Dreamstars release.": "You are running the latest Dreamstars release.",
+    "An approved Dreamstars fork release is available.": "An approved Dreamstars fork release is available.",
+    "Current release is not recognized as a Dreamstars fork release.": "Current release is not recognized as a Dreamstars fork release.",
+    "No approved Dreamstars fork release is currently available.": "No approved Dreamstars fork release is currently available.",
+    "Showing stale cached release information.": "Showing stale cached release information.",
+    "Latest approved release": "Latest approved release",
+    "Image digest": "Image digest",
+    "Release source": "Release source",
+    "Container image": "Container image",
+    "Live data": "Live data",
+    "Cached data": "Cached data",
+    "Stale cached data": "Stale cached data",
+    "Unavailable": "Unavailable",
+    "Commit": "Commit",
+    "Live release check is unavailable; showing previously verified release information.": "Live release check is unavailable; showing previously verified release information."
   }
 }

@@ -5602,6 +5602,23 @@
     "Zero retention": "Без хранения данных",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Dreamstars fork updates": "Обновления форка Dreamstars",
+    "This page only checks Dreamstars fork releases. It never deploys or restarts the server.": "Эта страница только проверяет релизы форка Dreamstars. Она не развёртывает и не перезапускает сервер.",
+    "You are running the latest Dreamstars release.": "У вас запущен последний релиз Dreamstars.",
+    "An approved Dreamstars fork release is available.": "Доступен утверждённый релиз форка Dreamstars.",
+    "Current release is not recognized as a Dreamstars fork release.": "Текущий релиз не распознан как релиз форка Dreamstars.",
+    "No approved Dreamstars fork release is currently available.": "Сейчас нет доступного утверждённого релиза форка Dreamstars.",
+    "Showing stale cached release information.": "Показана устаревшая кэшированная информация о релизе.",
+    "Latest approved release": "Последний утверждённый релиз",
+    "Image digest": "Дайджест образа",
+    "Release source": "Источник сведений о релизе",
+    "Container image": "Образ контейнера",
+    "Live data": "Актуальные данные",
+    "Cached data": "Кэшированные данные",
+    "Stale cached data": "Устаревшие кэшированные данные",
+    "Unavailable": "Недоступно",
+    "Commit": "Коммит",
+    "Live release check is unavailable; showing previously verified release information.": "Проверка релиза в реальном времени недоступна; показана ранее проверенная информация о релизе."
   }
 }

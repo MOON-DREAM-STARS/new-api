@@ -452,3 +452,32 @@ export type UpstreamRatiosResponse = {
     test_results: TestResult[]
   }
 }
+
+export type DreamstarsRelease = {
+  release_tag: string
+  version: string
+  commit: string
+  published_at: string
+  release_url: string
+  image: string
+  digest: string
+  platforms: string[]
+}
+
+export type DreamstarsReleaseUpdate = {
+  current_version: string
+  latest?: DreamstarsRelease
+  status:
+    | 'up_to_date'
+    | 'update_available'
+    | 'current_release_unrecognized'
+    | 'unavailable'
+  source: 'live' | 'cached' | 'stale' | 'unavailable'
+  checked_at: string
+}
+
+export type DreamstarsReleaseUpdateResponse = {
+  success: boolean
+  message: string
+  data: DreamstarsReleaseUpdate
+}

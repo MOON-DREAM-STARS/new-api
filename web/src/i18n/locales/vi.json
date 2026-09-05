@@ -5602,6 +5602,23 @@
     "Zero retention": "Không lưu dữ liệu",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Dreamstars fork updates": "Cập nhật fork Dreamstars",
+    "This page only checks Dreamstars fork releases. It never deploys or restarts the server.": "Trang này chỉ kiểm tra các bản phát hành fork Dreamstars. Trang không triển khai hoặc khởi động lại máy chủ.",
+    "You are running the latest Dreamstars release.": "Bạn đang chạy bản phát hành Dreamstars mới nhất.",
+    "An approved Dreamstars fork release is available.": "Đã có bản phát hành fork Dreamstars được phê duyệt.",
+    "Current release is not recognized as a Dreamstars fork release.": "Bản phát hành hiện tại không được nhận diện là bản phát hành fork Dreamstars.",
+    "No approved Dreamstars fork release is currently available.": "Hiện chưa có bản phát hành fork Dreamstars được phê duyệt.",
+    "Showing stale cached release information.": "Đang hiển thị thông tin bản phát hành trong bộ nhớ đệm đã cũ.",
+    "Latest approved release": "Bản phát hành được phê duyệt mới nhất",
+    "Image digest": "Mã băm ảnh",
+    "Release source": "Nguồn thông tin bản phát hành",
+    "Container image": "Ảnh vùng chứa",
+    "Live data": "Dữ liệu trực tiếp",
+    "Cached data": "Dữ liệu trong bộ nhớ đệm",
+    "Stale cached data": "Dữ liệu bộ nhớ đệm đã cũ",
+    "Unavailable": "Không khả dụng",
+    "Commit": "Cam kết",
+    "Live release check is unavailable; showing previously verified release information.": "Không thể kiểm tra bản phát hành trực tiếp; đang hiển thị thông tin bản phát hành đã được xác minh trước đó."
   }
 }
