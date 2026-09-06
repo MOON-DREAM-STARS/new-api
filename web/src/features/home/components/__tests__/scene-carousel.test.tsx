@@ -22,6 +22,34 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { SceneCarousel } from '../scene-carousel'
 
+const observerState = vi.hoisted(() => ({
+  callback: undefined as IntersectionObserverCallback | undefined,
+}))
+
+class IntersectionObserverMock {
+  constructor(callback: IntersectionObserverCallback) {
+    observerState.callback = callback
+  }
+
+  disconnect(): void {}
+
+  observe(): void {
+    observerState.callback?.(
+      [{ isIntersecting: true } as IntersectionObserverEntry],
+      this as unknown as IntersectionObserver
+    )
+  }
+}
+
+function reportIntersection(isIntersecting: boolean) {
+  act(() => {
+    observerState.callback?.(
+      [{ isIntersecting } as IntersectionObserverEntry],
+      {} as IntersectionObserver
+    )
+  })
+}
+
 function setReducedMotion(matches: boolean) {
   vi.stubGlobal(
     'matchMedia',
@@ -41,9 +69,11 @@ function setReducedMotion(matches: boolean) {
 describe('SceneCarousel', () => {
   beforeEach(() => {
     setReducedMotion(false)
+    vi.stubGlobal('IntersectionObserver', IntersectionObserverMock)
   })
 
   afterEach(() => {
+    observerState.callback = undefined
     vi.useRealTimers()
     vi.unstubAllGlobals()
   })
@@ -90,6 +120,18 @@ describe('SceneCarousel', () => {
     )
     expect(researchArt).toHaveAttribute('data-active', 'true')
     expect(researchArt?.querySelector('img')).toHaveAttribute('alt', '')
+    expect(researchArt?.querySelector('img')).toHaveAttribute(
+      'srcset',
+      expect.stringContaining('dreamstars-scene-research-gpt-640w.webp 640w')
+    )
+    expect(researchArt?.querySelector('img')).toHaveAttribute(
+      'srcset',
+      expect.stringContaining('dreamstars-scene-research-gpt-960w.webp 960w')
+    )
+    expect(researchArt?.querySelector('img')).toHaveAttribute(
+      'sizes',
+      expect.stringContaining('46rem')
+    )
     expect(
       screen.getByText('Use GPT to read academic literature faster.')
     ).toBeVisible()
@@ -136,9 +178,53 @@ describe('SceneCarousel', () => {
   })
 
   it('prefetches only the next illustration during browser idle time', () => {
+    const prefetchedImages: Array<{
+      sizes: string
+      src: string
+      srcSet: string
+    }> = []
+    class ImageMock {
+      decoding = ''
+      sizes = ''
+      srcset = ''
+
+      set src(value: string) {
+        prefetchedImages.push({
+          sizes: this.sizes,
+          src: value,
+          srcSet: this.srcset,
+        })
+      }
+    }
+
+    vi.stubGlobal('Image', ImageMock)
+    vi.stubGlobal('requestIdleCallback', (callback: () => void) => {
+      callback()
+      return 1
+    })
+    vi.stubGlobal('cancelIdleCallback', vi.fn())
+    render(<SceneCarousel />)
+
+    expect(prefetchedImages).toHaveLength(1)
+    expect(prefetchedImages[0].src).toContain(
+      'dreamstars-scene-data-deepseek.webp'
+    )
+    expect(prefetchedImages[0].srcSet).toContain(
+      'dreamstars-scene-data-deepseek-640w.webp 640w'
+    )
+    expect(prefetchedImages[0].srcSet).toContain(
+      'dreamstars-scene-data-deepseek-960w.webp 960w'
+    )
+    expect(prefetchedImages[0].sizes).toContain('46rem')
+  })
+
+  it('pauses automatic advance and future prefetching outside the viewport', () => {
+    vi.useFakeTimers()
     const prefetchedSources: string[] = []
     class ImageMock {
       decoding = ''
+      sizes = ''
+      srcset = ''
 
       set src(value: string) {
         prefetchedSources.push(value)
@@ -153,10 +239,29 @@ describe('SceneCarousel', () => {
     vi.stubGlobal('cancelIdleCallback', vi.fn())
     render(<SceneCarousel />)
 
+    const carousel = screen.getByRole('region', {
+      name: 'Campus AI application scenarios',
+    })
+    expect(carousel).toHaveAttribute('data-autoplay', 'running')
     expect(prefetchedSources).toHaveLength(1)
-    expect(prefetchedSources[0]).toContain(
-      'dreamstars-scene-data-deepseek.webp'
-    )
+
+    reportIntersection(false)
+    expect(carousel).toHaveAttribute('data-autoplay', 'paused')
+    act(() => vi.advanceTimersByTime(14000))
+    expect(
+      screen.getByText('Use GPT to read academic literature faster.')
+    ).toBeVisible()
+    expect(prefetchedSources).toHaveLength(1)
+
+    reportIntersection(true)
+    expect(carousel).toHaveAttribute('data-autoplay', 'running')
+    act(() => vi.advanceTimersByTime(7000))
+    expect(
+      screen.getByText(
+        'Use DeepSeek to work through data and code more efficiently.'
+      )
+    ).toBeVisible()
+    expect(prefetchedSources).toHaveLength(2)
   })
 
   it('pauses automatic advance during hover and resumes after leaving', () => {

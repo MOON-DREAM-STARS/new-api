@@ -19,11 +19,11 @@ For commercial licensing, please contact support@quantumnous.com
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { getLobeIcon } from '@/lib/lobe-icon'
 import { cn } from '@/lib/utils'
 
 import { DREAMSTARS_MODEL_BRANDS } from '../constants'
 import { useReducedMotion } from '../hooks'
+import { ModelBrandIcon } from './model-brand-icon'
 
 type OrbitStyle = CSSProperties & {
   '--orbit-delay': string
@@ -133,7 +133,9 @@ export function ModelOrbit() {
               onFocus={() => setActiveIndex(index)}
               onBlur={() => setActiveIndex(null)}
             >
-              <span aria-hidden='true'>{getLobeIcon(brand.iconName, 38)}</span>
+              <span aria-hidden='true'>
+                <ModelBrandIcon iconName={brand.iconName} size={38} />
+              </span>
               <strong>{t(brand.name)}</strong>
             </div>
           </div>

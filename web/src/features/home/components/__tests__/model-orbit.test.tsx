@@ -21,8 +21,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ModelOrbit } from '../model-orbit'
 
-vi.mock('@/lib/lobe-icon', () => ({
-  getLobeIcon: (name: string) => <svg data-icon-name={name} />,
+const genericIconLoader = vi.hoisted(() => ({
+  getLobeIcon: vi.fn(),
+}))
+
+vi.mock('@/lib/lobe-icon', () => genericIconLoader)
+
+vi.mock('../model-brand-icon', () => ({
+  ModelBrandIcon: (props: { iconName: string }) => (
+    <svg data-icon-name={props.iconName} />
+  ),
 }))
 
 const observerState = vi.hoisted(() => ({
@@ -96,6 +104,13 @@ describe('ModelOrbit', () => {
     expect(gemini).toHaveAttribute('data-active', 'true')
     fireEvent.blur(gemini)
     expect(gemini).toHaveAttribute('data-active', 'false')
+  })
+
+  it('does not use the generic icon loader for homepage brands', () => {
+    setReducedMotion(false)
+    render(<ModelOrbit />)
+
+    expect(genericIconLoader.getLobeIcon).not.toHaveBeenCalled()
   })
 
   it('keeps its three-dimensional orbit layers decorative', () => {

@@ -26,6 +26,8 @@ import { useReducedMotion } from '../hooks'
 const AUTO_ADVANCE_MS = 7000
 const SCENE_TRANSITION_MS = 700
 const SWIPE_THRESHOLD_PX = 44
+const SCENE_IMAGE_SIZES =
+  '(max-width: 47.999rem) calc(100vw - 2rem), (max-width: 63.999rem) 46rem, (max-width: 80rem) 46vw, 50rem'
 
 type SceneId = (typeof DREAMSTARS_SCENES)[number]['id']
 type IdleWindow = Window & {
@@ -36,42 +38,87 @@ type IdleWindow = Window & {
   ) => number
 }
 
+const RESEARCH_ART_640 = new URL(
+  '../assets/dreamstars-scene-research-gpt-640w.webp',
+  import.meta.url
+).href
+const RESEARCH_ART_960 = new URL(
+  '../assets/dreamstars-scene-research-gpt-960w.webp',
+  import.meta.url
+).href
+const RESEARCH_ART_1280 = new URL(
+  '../assets/dreamstars-scene-research-gpt.webp',
+  import.meta.url
+).href
+const DATA_ART_640 = new URL(
+  '../assets/dreamstars-scene-data-deepseek-640w.webp',
+  import.meta.url
+).href
+const DATA_ART_960 = new URL(
+  '../assets/dreamstars-scene-data-deepseek-960w.webp',
+  import.meta.url
+).href
+const DATA_ART_1280 = new URL(
+  '../assets/dreamstars-scene-data-deepseek.webp',
+  import.meta.url
+).href
+const PRESENTATION_ART_640 = new URL(
+  '../assets/dreamstars-scene-presentation-gemini-640w.webp',
+  import.meta.url
+).href
+const PRESENTATION_ART_960 = new URL(
+  '../assets/dreamstars-scene-presentation-gemini-960w.webp',
+  import.meta.url
+).href
+const PRESENTATION_ART_1280 = new URL(
+  '../assets/dreamstars-scene-presentation-gemini.webp',
+  import.meta.url
+).href
+const LEARNING_ART_640 = new URL(
+  '../assets/dreamstars-scene-learning-claude-640w.webp',
+  import.meta.url
+).href
+const LEARNING_ART_960 = new URL(
+  '../assets/dreamstars-scene-learning-claude-960w.webp',
+  import.meta.url
+).href
+const LEARNING_ART_1280 = new URL(
+  '../assets/dreamstars-scene-learning-claude.webp',
+  import.meta.url
+).href
+
 const SCENE_ART = {
   research: {
-    src: new URL(
-      '../assets/dreamstars-scene-research-gpt.webp',
-      import.meta.url
-    ).href,
+    src: RESEARCH_ART_1280,
+    srcSet: `${RESEARCH_ART_640} 640w, ${RESEARCH_ART_960} 960w, ${RESEARCH_ART_1280} 1280w`,
+    sizes: SCENE_IMAGE_SIZES,
     width: 1280,
     height: 720,
   },
   data: {
-    src: new URL(
-      '../assets/dreamstars-scene-data-deepseek.webp',
-      import.meta.url
-    ).href,
+    src: DATA_ART_1280,
+    srcSet: `${DATA_ART_640} 640w, ${DATA_ART_960} 960w, ${DATA_ART_1280} 1280w`,
+    sizes: SCENE_IMAGE_SIZES,
     width: 1280,
     height: 720,
   },
   presentation: {
-    src: new URL(
-      '../assets/dreamstars-scene-presentation-gemini.webp',
-      import.meta.url
-    ).href,
+    src: PRESENTATION_ART_1280,
+    srcSet: `${PRESENTATION_ART_640} 640w, ${PRESENTATION_ART_960} 960w, ${PRESENTATION_ART_1280} 1280w`,
+    sizes: SCENE_IMAGE_SIZES,
     width: 1280,
     height: 720,
   },
   learning: {
-    src: new URL(
-      '../assets/dreamstars-scene-learning-claude.webp',
-      import.meta.url
-    ).href,
+    src: LEARNING_ART_1280,
+    srcSet: `${LEARNING_ART_640} 640w, ${LEARNING_ART_960} 960w, ${LEARNING_ART_1280} 1280w`,
+    sizes: SCENE_IMAGE_SIZES,
     width: 1280,
     height: 853,
   },
 } as const satisfies Record<
   SceneId,
-  { src: string; width: number; height: number }
+  { src: string; srcSet: string; sizes: string; width: number; height: number }
 >
 
 export function SceneCarousel() {
@@ -82,10 +129,13 @@ export function SceneCarousel() {
   const [hovered, setHovered] = useState(false)
   const [focusWithin, setFocusWithin] = useState(false)
   const [pageVisible, setPageVisible] = useState(!document.hidden)
+  const [inViewport, setInViewport] = useState(false)
   const activeIndexRef = useRef(activeIndex)
   const prefetchedSceneIds = useRef(new Set<SceneId>())
   const pointerStartX = useRef<number | null>(null)
-  const paused = reducedMotion || hovered || focusWithin || !pageVisible
+  const carouselRef = useRef<HTMLDivElement>(null)
+  const paused =
+    reducedMotion || hovered || focusWithin || !pageVisible || !inViewport
 
   useEffect(() => {
     activeIndexRef.current = activeIndex
@@ -111,6 +161,22 @@ export function SceneCarousel() {
   }, [])
 
   useEffect(() => {
+    const carousel = carouselRef.current
+    if (!carousel || reducedMotion) return
+    if (!('IntersectionObserver' in window)) {
+      setInViewport(true)
+      return
+    }
+
+    const observer = new IntersectionObserver(
+      ([entry]) => setInViewport(entry.isIntersecting),
+      { threshold: 0.01 }
+    )
+    observer.observe(carousel)
+    return () => observer.disconnect()
+  }, [reducedMotion])
+
+  useEffect(() => {
     if (paused) return
     const timeoutId = window.setTimeout(() => {
       selectScene(activeIndex + 1)
@@ -133,7 +199,7 @@ export function SceneCarousel() {
   }, [exitingIndex, reducedMotion])
 
   useEffect(() => {
-    if (reducedMotion || !pageVisible) return
+    if (reducedMotion || !pageVisible || !inViewport) return
 
     const connection = navigator as Navigator & {
       connection?: { saveData?: boolean }
@@ -154,6 +220,8 @@ export function SceneCarousel() {
       }
       const image = new Image()
       image.decoding = 'async'
+      image.sizes = SCENE_ART[nextScene.id].sizes
+      image.srcset = SCENE_ART[nextScene.id].srcSet
       image.src = SCENE_ART[nextScene.id].src
       prefetchedSceneIds.current.add(nextScene.id)
     }
@@ -165,7 +233,7 @@ export function SceneCarousel() {
 
     const timeoutId = window.setTimeout(prefetch, 1200)
     return () => window.clearTimeout(timeoutId)
-  }, [activeIndex, pageVisible, reducedMotion])
+  }, [activeIndex, inViewport, pageVisible, reducedMotion])
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'ArrowLeft') {
@@ -191,6 +259,7 @@ export function SceneCarousel() {
 
   return (
     <div
+      ref={carouselRef}
       className='dreamstars-carousel'
       role='region'
       aria-roledescription={t('carousel')}
@@ -234,6 +303,8 @@ export function SceneCarousel() {
                 alt=''
                 decoding='async'
                 loading='eager'
+                sizes={art.sizes}
+                srcSet={art.srcSet}
               />
             </div>
           )

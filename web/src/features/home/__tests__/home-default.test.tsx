@@ -56,8 +56,10 @@ vi.mock('@/hooks/use-status', () => ({
   useStatus: () => ({ status: { docs_link: 'https://docs.example.test' } }),
 }))
 
-vi.mock('@/lib/lobe-icon', () => ({
-  getLobeIcon: (name: string) => <svg data-icon-name={name} />,
+vi.mock('../components/model-brand-icon', () => ({
+  ModelBrandIcon: (props: { iconName: string }) => (
+    <svg data-icon-name={props.iconName} />
+  ),
 }))
 
 vi.mock('@/stores/auth-store', () => ({

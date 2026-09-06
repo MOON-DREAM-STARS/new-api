@@ -38,50 +38,57 @@ if (!Number.isInteger(quality) || quality < 1 || quality > 100) {
 const illustrations = [
   {
     source: 'dreamstars-scene-research-gpt.png',
-    output: 'dreamstars-scene-research-gpt.webp',
+    outputBaseName: 'dreamstars-scene-research-gpt',
     width: 1280,
     height: 720,
   },
   {
     source: 'dreamstars-scene-data-deepseek.png',
-    output: 'dreamstars-scene-data-deepseek.webp',
+    outputBaseName: 'dreamstars-scene-data-deepseek',
     width: 1280,
     height: 720,
   },
   {
     source: 'dreamstars-scene-presentation-gemini.png',
-    output: 'dreamstars-scene-presentation-gemini.webp',
+    outputBaseName: 'dreamstars-scene-presentation-gemini',
     width: 1280,
     height: 720,
   },
   {
     source: 'dreamstars-scene-learning-claude.png',
-    output: 'dreamstars-scene-learning-claude.webp',
+    outputBaseName: 'dreamstars-scene-learning-claude',
     width: 1280,
     height: 853,
   },
 ]
 
+const renditionWidths = [640, 960, 1280]
+
 for (const illustration of illustrations) {
   const sourcePath = path.join(assetsDirectory, 'source', illustration.source)
-  const outputPath = path.join(assetsDirectory, illustration.output)
+  for (const width of renditionWidths) {
+    const height = Math.round(
+      (illustration.height * width) / illustration.width
+    )
+    const suffix = width === illustration.width ? '' : `-${width}w`
+    const outputName = `${illustration.outputBaseName}${suffix}.webp`
+    const outputPath = path.join(assetsDirectory, outputName)
 
-  await sharp(sourcePath)
-    .resize({
-      width: illustration.width,
-      height: illustration.height,
-      fit: 'contain',
-      background: { r: 0, g: 0, b: 0, alpha: 0 },
-    })
-    .webp({
-      quality,
-      alphaQuality: 100,
-      effort: 6,
-      smartSubsample: true,
-    })
-    .toFile(outputPath)
+    await sharp(sourcePath)
+      .resize({
+        width,
+        height,
+        fit: 'contain',
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      })
+      .webp({
+        quality,
+        alphaQuality: 100,
+        effort: 6,
+        smartSubsample: true,
+      })
+      .toFile(outputPath)
 
-  console.log(
-    `${illustration.output}: ${illustration.width}×${illustration.height}`
-  )
+    console.log(`${outputName}: ${width}×${height}`)
+  }
 }
