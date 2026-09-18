@@ -13,7 +13,6 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -118,9 +117,11 @@ type Options struct {
 	ScanInterval   time.Duration
 	Logger         *slog.Logger
 	Now            func() time.Time
-	// Chown hands a workspace directory to the runtime image identity. It is
-	// overridden only by tests; nil selects the process default (os.Chown).
-	Chown func(path string, uid int, gid int) error
+	// Chown hands a directory below an open workspace root to the runtime image
+	// identity. It is overridden only by tests; nil selects (*os.Root).Chown,
+	// which resolves the name below the already opened root and refuses a name
+	// that leaves the workspace.
+	Chown func(root *os.Root, name string, uid int, gid int) error
 	// HostDataRoot is the data root as visible to the Docker daemon. Only the
 	// bind source of a runtime container is built from it; every local file
 	// operation uses DataRoot. Empty falls back to DataRoot.
@@ -208,7 +209,7 @@ type Manager struct {
 	scanInterval   time.Duration
 	logger         *slog.Logger
 	now            func() time.Time
-	chown          func(path string, uid int, gid int) error
+	chown          func(root *os.Root, name string, uid int, gid int) error
 
 	mu       sync.Mutex
 	runtimes map[int64]*runtimeState
@@ -412,10 +413,11 @@ func (m *Manager) PutOwnership(workspaceID int64, update Ownership) (OwnershipCo
 		return OwnershipCounts{}, err
 	}
 
-	dir, err := ensureGuardStateDir(WorkspaceDir(m.dataRoot, workspaceID), m.chown)
+	guardRoot, err := ensureGuardStateDir(WorkspaceDir(m.dataRoot, workspaceID), m.chown)
 	if err != nil {
 		return OwnershipCounts{}, fmt.Errorf("prepare guard state directory: %w", err)
 	}
+	defer guardRoot.Close()
 	payload, err := json.Marshal(guardOwnership{
 		Generation:    update.Generation,
 		Projects:      projects,
@@ -425,7 +427,7 @@ func (m *Manager) PutOwnership(workspaceID int64, update Ownership) (OwnershipCo
 	if err != nil {
 		return OwnershipCounts{}, fmt.Errorf("encode ownership state: %w", err)
 	}
-	if err := writeStateFileAtomic(dir, ownershipFileName, payload); err != nil {
+	if err := writeStateFileAtomic(guardRoot, ownershipFileName, payload); err != nil {
 		return OwnershipCounts{}, fmt.Errorf("write ownership state: %w", err)
 	}
 	return OwnershipCounts{
@@ -464,10 +466,11 @@ func (m *Manager) IssuePermit(workspaceID int64, permitID string, kind string, t
 		return IssuedPermit{}, fmt.Errorf("%w: runtime is %s", runtime.ErrNotRunning, state)
 	}
 
-	dir, err := ensureGuardStateDir(WorkspaceDir(m.dataRoot, workspaceID), m.chown)
+	guardRoot, err := ensureGuardStateDir(WorkspaceDir(m.dataRoot, workspaceID), m.chown)
 	if err != nil {
 		return IssuedPermit{}, fmt.Errorf("prepare guard state directory: %w", err)
 	}
+	defer guardRoot.Close()
 	now := m.now()
 	permit := guardPermit{
 		PermitID:  permitID,
@@ -479,10 +482,10 @@ func (m *Manager) IssuePermit(workspaceID int64, permitID string, kind string, t
 	if err != nil {
 		return IssuedPermit{}, fmt.Errorf("encode permit state: %w", err)
 	}
-	if err := writeStateFileAtomic(dir, permitFileName, payload); err != nil {
+	if err := writeStateFileAtomic(guardRoot, permitFileName, payload); err != nil {
 		return IssuedPermit{}, fmt.Errorf("write permit state: %w", err)
 	}
-	if err := clearConsumedPermit(dir, permitID); err != nil {
+	if err := clearConsumedPermit(guardRoot, permitID); err != nil {
 		return IssuedPermit{}, fmt.Errorf("clear consumed permit: %w", err)
 	}
 	return IssuedPermit{PermitID: permitID, ExpiresAt: permit.ExpiresAt}, nil
@@ -495,7 +498,16 @@ func (m *Manager) Observations(workspaceID int64) (ObservationPage, error) {
 	if workspaceID <= 0 {
 		return ObservationPage{}, fmt.Errorf("%w: workspace id must be positive", ErrInvalidRequest)
 	}
-	observations, nextOffset, err := readObservationLines(guardStateDir(WorkspaceDir(m.dataRoot, workspaceID)))
+	guardRoot, err := openGuardStateDir(WorkspaceDir(m.dataRoot, workspaceID))
+	if errors.Is(err, os.ErrNotExist) {
+		return ObservationPage{Observations: []json.RawMessage{}}, nil
+	}
+	if err != nil {
+		return ObservationPage{}, fmt.Errorf("read observations: %w", err)
+	}
+	defer guardRoot.Close()
+
+	observations, nextOffset, err := readObservationLines(guardRoot)
 	if err != nil {
 		return ObservationPage{}, fmt.Errorf("read observations: %w", err)
 	}
@@ -509,18 +521,27 @@ func (m *Manager) AckObservations(workspaceID int64, offset int64) (int64, error
 		return 0, fmt.Errorf("%w: observation offset is invalid", ErrInvalidRequest)
 	}
 	workspaceDir := WorkspaceDir(m.dataRoot, workspaceID)
-	size, err := observationFileSize(guardStateDir(workspaceDir))
-	if err != nil {
+	size := int64(0)
+	guardRoot, err := openGuardStateDir(workspaceDir)
+	switch {
+	case err == nil:
+		size, err = observationFileSize(guardRoot)
+		_ = guardRoot.Close()
+		if err != nil {
+			return 0, fmt.Errorf("read observations: %w", err)
+		}
+	case !errors.Is(err, os.ErrNotExist):
 		return 0, fmt.Errorf("read observations: %w", err)
 	}
 	if offset > size {
 		return 0, fmt.Errorf("%w: observation offset %d exceeds file size %d", ErrInvalidRequest, offset, size)
 	}
-	dir, err := ensureGuardStateDir(workspaceDir, m.chown)
+	guardRoot, err = ensureGuardStateDir(workspaceDir, m.chown)
 	if err != nil {
 		return 0, fmt.Errorf("prepare guard state directory: %w", err)
 	}
-	if err := writeStateFileAtomic(dir, observationsOffsetName, []byte(strconv.FormatInt(offset, 10))); err != nil {
+	defer guardRoot.Close()
+	if err := writeStateFileAtomic(guardRoot, observationsOffsetName, []byte(strconv.FormatInt(offset, 10))); err != nil {
 		return 0, fmt.Errorf("write observation offset: %w", err)
 	}
 	return offset, nil
@@ -1036,9 +1057,8 @@ func normalizeExternalIDs(ids []string, pattern *regexp.Regexp, label string) ([
 // guard does not treat a fresh permit as already spent. A marker that already
 // names the new permit is kept: the guard may have consumed that permit between
 // the permit write and this cleanup, and deleting it would allow a second use.
-func clearConsumedPermit(dir string, permitID string) error {
-	path := filepath.Join(dir, permitConsumedFileName)
-	data, err := os.ReadFile(path)
+func clearConsumedPermit(root *os.Root, permitID string) error {
+	data, err := root.ReadFile(permitConsumedFileName)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -1049,7 +1069,7 @@ func clearConsumedPermit(dir string, permitID string) error {
 	if json.Unmarshal(data, &consumed) == nil && consumed.PermitID == permitID {
 		return nil
 	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := root.Remove(permitConsumedFileName); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return nil

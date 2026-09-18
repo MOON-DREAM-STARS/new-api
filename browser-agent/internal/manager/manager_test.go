@@ -79,11 +79,11 @@ func newHarnessWithRoots(t *testing.T, dataRoot string, hostDataRoot string) *ha
 // workspaceChownHandover uses the real ownership handover when the test process
 // may chown and a no-op otherwise, so lifecycle tests stay independent of the
 // process uid. The real handover is asserted in the filesystem tests.
-func workspaceChownHandover() func(path string, uid int, gid int) error {
+func workspaceChownHandover() func(root *os.Root, name string, uid int, gid int) error {
 	if os.Geteuid() == 0 {
 		return nil
 	}
-	return func(string, int, int) error { return nil }
+	return func(*os.Root, string, int, int) error { return nil }
 }
 
 func TestStartCreatesRuntimeAndWorkspaceMount(t *testing.T) {

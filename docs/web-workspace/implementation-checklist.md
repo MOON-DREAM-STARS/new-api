@@ -1475,38 +1475,38 @@ A 的 Conversation 必须可追溯到 A Project。
 
 必须覆盖：
 
-- [ ] horizontal privilege escalation。
-- [ ] IDOR。
-- [ ] forged workspace ID。
-- [ ] forged project ID。
-- [ ] forged conversation ID。
-- [ ] stale stream ticket。
-- [ ] replayed stream ticket。
-- [ ] browser-agent direct access。
-- [ ] CDP exposure。
-- [ ] VNC exposure。
-- [ ] SSRF。
-- [ ] DNS rebinding considerations。
-- [ ] private IP access。
-- [ ] host.docker.internal access。
-- [ ] cloud metadata。
-- [ ] cross-workspace filesystem access。
-- [ ] symlink/path traversal。
-- [ ] upload path traversal。
-- [ ] download exfiltration。
-- [ ] clipboard exfiltration。
-- [ ] popup bypass。
-- [ ] redirect bypass。
-- [ ] service worker behavior。
-- [ ] WebSocket/provider auxiliary hosts。
-- [ ] browser crash。
-- [ ] guard crash。
-- [ ] DB unavailable。
-- [ ] entitlement cache stale。
-- [ ] concurrent project creation。
-- [ ] delete/rename race。
-- [ ] session fixation。
-- [ ] logs do not contain secrets。
+- [x] horizontal privilege escalation。
+- [x] IDOR。
+- [x] forged workspace ID。
+- [x] forged project ID。
+- [x] forged conversation ID。
+- [x] stale stream ticket。
+- [x] replayed stream ticket。
+- [x] browser-agent direct access。
+- [x] CDP exposure。
+- [x] VNC exposure。
+- [x] SSRF。
+- [x] DNS rebinding considerations。
+- [x] private IP access。
+- [x] host.docker.internal access。
+- [x] cloud metadata。
+- [x] cross-workspace filesystem access。
+- [x] symlink/path traversal。
+- [x] upload path traversal。
+- [x] download exfiltration。
+- [x] clipboard exfiltration。
+- [x] popup bypass。
+- [x] redirect bypass。
+- [x] service worker behavior。
+- [x] WebSocket/provider auxiliary hosts。
+- [x] browser crash。
+- [x] guard crash。
+- [x] DB unavailable。
+- [x] entitlement cache stale。
+- [x] concurrent project creation。
+- [x] delete/rename race。
+- [x] session fixation。
+- [x] logs do not contain secrets。
 
 ---
 
@@ -1720,3 +1720,31 @@ remote Chrome credential holder
   - 可访问性（真实 DOM）：行内操作暴露可访问名称（`重命名 acceptance-project`、`删除 acceptance-project`），对话框标题与按钮文案完整。
 - NOT RUN / 未覆盖（如实记录）：Provider live 登录（需用户手动登录窗口）；移动端真机（<1024px 为显式"请使用桌面端"提示，单测覆盖）；云端部署（未开始，需用户单独确认）；Phase 6 安全验证。
 - 提交：本阶段独立 commit（`feat(web-workspace): phase 5 frontend`），本地未 push；SHA 见阶段报告。
+
+## Phase 6（安全验证）— PASS（含修复 1 个真实缺陷）
+
+- 状态：**PASS**（本机冻结输入 + 真实容器实测；2026-09-18/19，Asia/Singapore）
+- 本阶段代码改动（缺陷修复 + 验证）：`browser-agent/internal/manager/filesystem.go`（workspace 目录树与 `.guard` 状态全部改为经 `os.Root` 的 no-follow 句柄：workspace 条目必须是真实目录并与打开结果做 `os.SameFile` 校验；`.guard` 必须是真实目录；原子写改为 `Root.OpenFile(O_CREATE|O_EXCL)` + `Root.Rename`；读取改为 `Root.ReadFile`/`Root.Stat`；chown 改为 `(*os.Root).Chown`）；`browser-agent/internal/manager/manager.go`（PutOwnership/IssuePermit/Observations/AckObservations/clearConsumedPermit 改为持有 guard root 句柄）；`browser-agent/internal/manager/{manager_test.go,filesystem_test.go}`、`browser-agent/internal/httpapi/server_test.go`（chown seam 同步为 root 相对路径）;新增 `browser-agent/internal/manager/filesystem_symlink_test.go`（4 组 symlink 回归，unix build tag）；新增 `router/web_workspace_security_test.go`（DB 不可用 fail-closed）；新增 `service/webworkspace/ownership_race_test.go`（delete/rename 并发不变量）；`browser-agent/README.md` 补充 no-follow 语义。
+- 发现并修复的真实缺陷（P1，容器 → 宿主越权写）：runtime 容器以 uid 10001 拥有 `/workspace` bind mount，可把 `.guard`（或状态文件）替换成符号链接。**修复前**实测 `PUT /internal/v1/runtimes/701/ownership` → `status=200`，agent 跟随链接把 `ownership.json` 写入 `/tmp/victim/` 并把该宿主目录 chown 成 `10001:10001`。**修复后**（同一环境、替换为新二进制、同一命令）：start / PUT ownership / GET observations / POST ack / POST permits 全部 `status=500 {"success":false,"error":"internal_error"}`，`/tmp/victim` 保持为空且属主不变；`.guard → ../workspace-702/.guard` 相对跨 workspace 链接同样 500 且 `workspace-702/.guard` 无写入；恢复真实 `.guard` 后 start → `200 RUNNING`、PUT ownership → 200、observations → 200、ack → 200、permits → 200（正常路径不受影响，`.guard` 自动重建为 10001:10001）；状态文件 symlink 读（`observations.jsonl → /tmp/secret.jsonl`）→ 500 且不泄露内容；状态文件 symlink 写（`ownership.json → /tmp/victim-own.json`）→ 200 且被指向文件内容不变（rename 替换链接而非跟随）。
+- 逐项证据（§31 32 项）：
+  - horizontal privilege escalation / IDOR / forged workspace·project·conversation ID：Phase 1–4 既有测试 + 本阶段聚焦复跑（`CrossUserAccessDenied`、`IgnoresForgedIdentifiers`、三方言 ownership 隔离）；guard 侧 `TestGuardDeniesUnregisteredProjectNavigation`、`TestGuardDeniesConversationsWithoutRegisteredProject`、`TestGuardDeniesUnknownResourceShapes` + Phase 4 真实 CDP 探针（外来 project / 无 project 会话 / 未知形态一律 `survived=false`）。
+  - stale / replayed stream ticket、session fixation：`TestWebWorkspaceStreamTicketRejectsMismatchAndExpiry`（过期 / session 不匹配 / 空 ticket）、`TestWebWorkspaceStreamTicketIsSingleUse`（消费即失效）；`controller.WebWorkspaceStream` 在消费后仍用 `GetSession(ticket.UserId, sessionId)` + `WorkspaceId` 比对才会连 agent。
+  - browser-agent direct access / CDP exposure / VNC exposure：`docker port ws-agent` 与 `docker port newapi-ws-runtime-701` 均为空；宿主 `127.0.0.1:8730/8731/9222/5900` 全部 refused；runtime 内 CDP 仅 `127.0.0.1:9222`（同网络 helper 连接被拒）；x11vnc 只在容器私有网络内监听，地址/端口从不返回客户端（`Snapshot` 只有 runtime_id/state/时间戳）。
+  - SSRF / private IP / host.docker.internal / cloud metadata：真实 CDP 探针（guard 是唯一 CDP consumer）：`https://chatgpt.com/` `survived=true`（对照）；`https://example.com/`、`http://169.254.169.254/latest/meta-data/`、`http://10.0.0.5/`、`http://127.0.0.1:9222/json/version`、`http://host.docker.internal:8730/` 全部 `survived=false`；runtime 日志 `target_deny`（`ip literal` / `port not allowed` / `host not in LOCKED allowlist`），agent 侧 egress proxy 对同批目标记录 `policy_deny`（双层强制）。
+  - redirect bypass / service worker / WebSocket·aux hosts：guard 以 `Fetch.enable pattern=*` 拦截并逐请求判定（redirect 每一跳都是新的 Document 请求 → 重新判定），非 Document 依赖 egress proxy；实测经代理 `https://example.com/`（CONNECT）与 `http://example.com/`（明文）分别被拒（Forbidden / 403），`https://chatgpt.com/robots.txt` 200（对照）；`accounts.google.com` Script 实测被 guard `policy_deny`。SW 请求同样只能经 `--proxy-server`（无 bypass、`--disable-quic`、`--webrtc-ip-handling-policy=disable_non_proxied_udp`）。
+  - DNS rebinding：egress proxy 每次连接解析并校验**全部**地址（任一私网/loopback/link-local 即整批拒绝），host 归一化（大小写/尾点），IP 字面量恒拒（`TestConnectProxyDeniesPrivateResolution`、`TestPlainHTTPProxyAllowsAllowlistedHostAndDialsValidatedIP`）。
+  - cross-workspace filesystem access：runtime 容器只挂载自身 `/workspace`（实测无 `/data`、无其它 workspace、无宿主路径）；agent 侧每 workspace 目录 0700 + 独立 bind mount；symlink 逃逸修复见上。
+  - upload path traversal / download exfiltration / clipboard exfiltration：控制面 API 无任何客户端路径参数（workspace 由认证用户推导，路径只由整数 id + 固定名派生，且全部经 `os.Root` no-follow）；实测 runtime 内写 `/workspace/uploads/upload-probe.txt` 只出现在该 workspace 宿主目录；download 由 guard `Browser.setDownloadBehavior` 拒绝并审计（`TestRunDeniesDownloads`）；clipboard 由 `Browser.setPermission` 逐 origin 拒绝 + `--deny-permission-prompts` + x11vnc 无 `-clip`（`TestRunDeniesClipboardPermissions`）。
+  - popup bypass：`TestRunGuardsPopupTargets`、`TestGuardClosesForeignProjectPopup` + Phase 3/4 真实探针（未知 popup target 被关闭）。
+  - browser crash / guard crash：实测 kill Chromium（runtime-701）→ 入口 watchdog 退出 → agent `GET /runtimes/701` 立即 `state=FAILED`（随后 `POST /restart` → 200 RUNNING）；guard 退出由同一 watchdog 清理并使容器非 0 退出，浏览器不会在无 guard 时可用（Phase 3 证据 + runtime README 崩溃语义）。
+  - DB unavailable：新增 `TestWebWorkspaceRouterFailsClosedWhenDatabaseUnavailable`（关闭 DB 后 config/status/projects/POST/PATCH/DELETE/conversations/session 共 10 条路由全部 500，不返回资源、不返回 success）。
+  - entitlement cache stale：entitlement 无缓存，每请求按当前 settings + 用户组实时判定（`entitlement.go`）；`TestWebWorkspaceRouterFollowsRegisteredOptionSetting` + `TestWebWorkspaceEntitlementMatrix`（本阶段复跑 PASS）。
+  - concurrent project creation：guard 单次 permit（原子写 `permit.consumed`）`TestGuardConsumesOnePermitForOneProject`（有效 permit 只放行一个 project / 已消费拒绝 / 过期拒绝）+ Phase 4 真实创建闭环；控制面 `TestWebWorkspaceIssueProjectPermitRequiresLiveSession`/`EnforcesProjectLimit`/`TestWebWorkspaceRouterProjectPermitFlow`。
+  - delete/rename race：新增 `TestWebWorkspaceRenameDeleteRaceKeepsOwnershipConsistent`（并发 rename+delete 后：conversation 不会失去 project、project 与 conversation 同生共死、外来 workspace 行不被改写、`BuildOwnership` 不引用已删除的 project）；实现层每条语句重复 ownership join、delete 在单事务内。
+  - logs do not contain secrets：实测 agent token 不出现在 agent 日志与 runtime 日志（布尔核对，未打印明文）；runtime 容器 env 仅 `WW_*`、无 agent token；仓库 2600 个文件扫描 0 命中（本地验收 token / DB 口令）；deny 审计不记录 path/query（`TestDenyAuditDoesNotLogPathOrQuery`）。
+- 实际命令与结果（原始）：
+  - `gofmt -l .` → 空；`GOWORK=off go vet ./...` → 空；`GOWORK=off go test ./... -count=1`（browser-agent 全模块）→ 全部 ok。
+  - `GOWORK=off go test -p 1 ./service/webworkspace ./router -run "StreamTicket|Permit|CrossUser|Forged|Entitlement|FailsClosed|RequiresAuthentication|FollowsRegisteredOptionSetting" -count=1` → 21 个用例全绿。
+  - 真实容器：`docker exec ws-agent … /tmp/p4-api …`（修复前后对照 PUT/GET/POST）、`docker run --network container:newapi-ws-runtime-701 … /out/p3-probe <url>`（5 个拒绝 + 1 个对照）、`docker run --network container:… -e HTTPS_PROXY=http://ws-agent:8731 … /out/p4-api GET <url>`（代理 CONNECT/明文拒绝与放行对照）。
+- NOT RUN（如实记录）：云端部署与云端验收（需用户确认连接方式/授权范围）；Provider live 登录（需用户手动窗口）；`-race` 与全量 CI 未运行；service worker 未做独立 live 用例（结论来自 Chromium 代理配置 + 代理实测）。
+- 提交：本阶段独立 commit（`feat(web-workspace): phase 6 security verification`），本地未 push；SHA 见阶段报告。

@@ -50,6 +50,10 @@ services:
 - runtime 容器只挂载 `<host-data-root>/workspace-<id>` → `/workspace`（`WW_WORKSPACE_DIR=/workspace`），
   不挂载数据根目录，也不挂载其他 workspace。
 - 两者取值相同（agent 直接跑在宿主上，或挂载点路径与宿主路径一致）时行为不变。
+- workspace 目录树与 `.guard` 状态（`ownership.json`、`permit.json`、`permit.consumed`、
+  `observations.jsonl`、`observations.offset`）全部经 `os.Root` 的 no-follow 句柄读写：runtime 容器
+  把 `.guard`、状态文件或子目录换成符号链接（含相对链接指向其他 workspace）时 agent 一律 fail closed
+  （HTTP 500），既不会跟随链接写到 workspace 之外，也不会对被指向的目录执行 chown（Phase 6 验收）。
 
 ## 部署前提
 

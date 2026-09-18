@@ -87,11 +87,11 @@ func newHarness(t *testing.T) *harness {
 
 // workspaceChownHandover keeps the HTTP tests independent of the process uid;
 // the real ownership handover is asserted in the manager filesystem tests.
-func workspaceChownHandover() func(path string, uid int, gid int) error {
+func workspaceChownHandover() func(root *os.Root, name string, uid int, gid int) error {
 	if os.Geteuid() == 0 {
 		return nil
 	}
-	return func(string, int, int) error { return nil }
+	return func(*os.Root, string, int, int) error { return nil }
 }
 
 func (h *harness) request(t *testing.T, method string, path string, authorization string, body string) (*http.Response, []byte) {
