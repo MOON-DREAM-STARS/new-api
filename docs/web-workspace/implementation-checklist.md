@@ -1427,17 +1427,17 @@ Guard 故障不会导致 unrestricted browser。
 
 # 29. 实施 Phase 4：ChatGPT Provider Adapter
 
-- [ ] ChatGPT project URL parser。
-- [ ] ChatGPT conversation URL parser。
-- [ ] Project discovery。
-- [ ] Conversation discovery。
-- [ ] Project create observation。
-- [ ] Project rename observation。
-- [ ] Project delete observation。
-- [ ] Conversation create observation。
-- [ ] unknown resource handling。
-- [ ] provider API/UI change compatibility tests。
-- [ ] adapter failure → deny。
+- [x] ChatGPT project URL parser。
+- [x] ChatGPT conversation URL parser。
+- [x] Project discovery。
+- [x] Conversation discovery。
+- [x] Project create observation。
+- [x] Project rename observation。
+- [x] Project delete observation。
+- [x] Conversation create observation。
+- [x] unknown resource handling。
+- [x] provider API/UI change compatibility tests。
+- [x] adapter failure → deny。
 
 Acceptance：
 
@@ -1670,3 +1670,28 @@ remote Chrome credential holder
 - NOT RUN / 未覆盖（如实记录）：真实 OAuth 登录流程与 LOGIN 模式端到端（需用户手动登录窗口，属 Phase 4）；真实剪贴板读写（单测 + 权限拒绝设计覆盖）；VNC 画面渲染与交互（Phase 5）；镜像 CVE 扫描；云端部署（未开始，需用户单独确认连接方式与授权范围）。
 - 已知降级（记录，不隐藏）：本机对预先存在的 about:blank target 稳定出现 `Page.enable` 超时，已按非致命降级（`page_domain_unavailable` WARN；per-origin clipboard 拒绝退化为 `--deny-permission-prompts` + x11vnc 无 `-clip`，均为默认关闭）；`Runtime.runIfWaitingForDebugger` 仅在 `waitingForDebugger=true` 时发送，5s 有界且非致命（失败记 `resume_not_acknowledged`，目标保持暂停属 fail closed，不产生无守卫浏览）。
 - 提交：本阶段独立 commit（`feat(web-workspace): phase 3 network and browser guard`），本地未 push；SHA 见阶段报告。
+
+## Phase 4（ChatGPT Provider Adapter）— PASS（本机冻结验收；Provider live 登录为 NOT RUN）
+
+- 状态：**PASS**（本机/离线冻结输入；2026-09-18，Asia/Singapore）。Provider live 登录与 LOGIN 模式端到端属外部依赖，`NOT RUN`。
+- 冻结接口：`docs/web-workspace/phase4-contract.md`（URL 语法、`.guard` 状态文件、Agent API、控制面流程、观察语义、审计、测试要求）。
+- 实现范围：
+  - A（guard/provider）：`browser-agent/internal/provider/chatgpt`（唯一 URL 解析权威；shell/project/conversation/conversation_no_project/unknown/other 六类；unknown 一律 fail closed；55 例 fixture 驱动测试）；`internal/guard` 增加 `.guard` 状态读取（2s 轮询、缺失/损坏全 deny）、provider document 导航 ownership 判定、permit 单次消费（原子写 `permit.consumed`）、观察写入 `observations.jsonl`、`Network.responseReceived` → `project_not_found`。
+  - B（agent）：`.guard` 目录纳入 workspace 准备（0700，10001:10001）；新增 `PUT /internal/v1/runtimes/{id}/ownership`、`POST .../permits`、`GET .../observations`、`POST .../observations/ack`（原子写、offset 与不完整尾行语义、状态码 400/404/409）。
+  - C（控制面）：`service/webworkspace/sync.go`（观察幂等应用 + 事务、ownership 组装、permit 记录与审计）；`StartSession` 推送 ownership；`GET /projects` 先同步（pull→apply→ack→变更则 push）；新增 `POST /projects`（签发 permit，不建本地行；无 session → 409 `WEB_WORKSPACE_SESSION_REQUIRED`，超限 → 409 `WEB_WORKSPACE_PROJECT_LIMIT`）；PATCH/DELETE 后推送 ownership（失败 503）；`web_workspace.max_projects` 设置（默认 0=不限）。
+- 实际命令与结果（冻结源码，容器内执行）：
+  - browser-agent：`gofmt -l .`（无输出）、`GOWORK=off go vet ./...` → VET_OK、`GOWORK=off go test ./... -count=1` → 全部 ok（新增 provider 55 例、guard ownership/观察 19 例、manager 14 例、httpapi 8 例）、`go build ./cmd/browser-agent` / `./cmd/workspace-guard` → OK。
+  - root：`gofmt -l service/webworkspace controller router setting/system_setting dto model`（仅仓库既有 `controller/channel_pin_retry_test.go`）、`go vet` → VET_OK、`go test -p 1 ./service/webworkspace ./router -run WebWorkspace -count=1`（真实 MySQL 5.7.44 / PostgreSQL 9.6.24）→ ok、`go build ./...` → BUILD_OK。
+  - 真实 Docker 验收（镜像 `:local` sha256:e00734f85788…；601/602 两个 runtime 同时运行、各自不同 ownership）：
+    - Agent API：`PUT ownership`（200，返回计数）、`POST permits`（200 + expires_at）、`GET observations`、`POST observations/ack`（ack 后重复 GET 为空且 `next_offset` 保持）。
+    - 浏览器级（真实 Chromium 经 loopback CDP 新建 target）：自己登记的 project → `survived=true`（真实跳转 provider 登录页，逐跳重新判定）；602 的 project（手输 URL/新 target）→ `survived=false` + `target_deny reason=project_not_registered`；无 project 的 `/c/<uuid>` → `survived=false` + `conversation_without_project`；`/g/` 未知形态 → `survived=false` + `unknown_resource_shape`；自己 project 下的 conversation → `survived=true` 且产生 `conversation_created` 观察。
+    - permit 单次消费：签发 permit → 新 project C `survived=true` 且 `project_created{permit_id,external_project_id,slug}` 观察；同一 permit 再开 project D → `survived=false`。
+    - 运行时刷新：重新 PUT ownership 加入 project C → 3s 内经 2s 轮询再次打开 C `survived=true`（无需新 permit）。
+  - E2E 回归（真实 agent + 新镜像）：`TestWebWorkspaceAgentEndToEnd` PASS（1.82s，日志 `ownership_pushed workspace_id=1 generation=0 projects=0`）；`TestWebWorkspaceRouterAgentEndToEnd` PASS（1.86s）。
+  - 集成修复：runtime 镜像多阶段构建补 `COPY internal/provider`（guard 新依赖），修复后镜像重建成功。
+- NOT RUN / 未覆盖（如实记录）：
+  - **Provider live 登录与 LOGIN 模式端到端**（需用户手动登录窗口，Agent 不接触凭据）。
+  - `project_not_found` 的真实 provider 404 触发（单测覆盖；真实触发需删除 provider 侧项目）。
+  - 云端部署（未开始，需用户单独确认连接方式与授权范围）；Phase 5 前端；Phase 6 安全验证。
+- 已知取舍（记录）：DELETE/PATCH 先本地提交再推送 ownership（推送失败 503，guard 保持旧文档直到下次推送，fail-closed 方向不放开未登记资源）；`project_not_found` 采用删除本地映射（fail closed，可经新 permit 重新登记，不做 schema 变更）；模式 B（共享 upstream account）仍为 NOT strong isolation。
+- 提交：本阶段独立 commit（`feat(web-workspace): phase 4 chatgpt provider adapter`），本地未 push；SHA 见阶段报告。

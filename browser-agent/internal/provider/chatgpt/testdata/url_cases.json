@@ -1,0 +1,555 @@
+{
+  "comment": "Fixture for the frozen ChatGPT URL syntax: kind is the expected classification, deny is the expected guard outcome (unknown and conversation_no_project must be denied).",
+  "cases": [
+    {
+      "name": "root shell",
+      "url": "https://chatgpt.com/",
+      "kind": "shell",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": false,
+      "error": false
+    },
+    {
+      "name": "root without path",
+      "url": "https://chatgpt.com",
+      "kind": "shell",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": false,
+      "error": false
+    },
+    {
+      "name": "root with query",
+      "url": "https://chatgpt.com/?model=gpt-5",
+      "kind": "shell",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": false,
+      "error": false
+    },
+    {
+      "name": "root with fragment",
+      "url": "https://chatgpt.com/#main",
+      "kind": "shell",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": false,
+      "error": false
+    },
+    {
+      "name": "project bare",
+      "url": "https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef",
+      "kind": "project",
+      "project_id": "g-p-0123456789abcdef0123456789abcdef",
+      "conversation_id": "",
+      "slug": "",
+      "deny": false,
+      "error": false
+    },
+    {
+      "name": "project with slug",
+      "url": "https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef-my-project",
+      "kind": "project",
+      "project_id": "g-p-0123456789abcdef0123456789abcdef",
+      "conversation_id": "",
+      "slug": "my-project",
+      "deny": false,
+      "error": false
+    },
+    {
+      "name": "project page",
+      "url": "https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef/project",
+      "kind": "project",
+      "project_id": "g-p-0123456789abcdef0123456789abcdef",
+      "conversation_id": "",
+      "slug": "",
+      "deny": false,
+      "error": false
+    },
+    {
+      "name": "project page with slug",
+      "url": "https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef-my-project/project",
+      "kind": "project",
+      "project_id": "g-p-0123456789abcdef0123456789abcdef",
+      "conversation_id": "",
+      "slug": "my-project",
+      "deny": false,
+      "error": false
+    },
+    {
+      "name": "project page trailing slash",
+      "url": "https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef-my-project/project/",
+      "kind": "project",
+      "project_id": "g-p-0123456789abcdef0123456789abcdef",
+      "conversation_id": "",
+      "slug": "my-project",
+      "deny": false,
+      "error": false
+    },
+    {
+      "name": "project bare trailing slash",
+      "url": "https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef/",
+      "kind": "project",
+      "project_id": "g-p-0123456789abcdef0123456789abcdef",
+      "conversation_id": "",
+      "slug": "",
+      "deny": false,
+      "error": false
+    },
+    {
+      "name": "project with query",
+      "url": "https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef/project?tab=members",
+      "kind": "project",
+      "project_id": "g-p-0123456789abcdef0123456789abcdef",
+      "conversation_id": "",
+      "slug": "",
+      "deny": false,
+      "error": false
+    },
+    {
+      "name": "project with fragment",
+      "url": "https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef-my-project/project#settings",
+      "kind": "project",
+      "project_id": "g-p-0123456789abcdef0123456789abcdef",
+      "conversation_id": "",
+      "slug": "my-project",
+      "deny": false,
+      "error": false
+    },
+    {
+      "name": "project slug with dashes",
+      "url": "https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef-my-project-2026/project",
+      "kind": "project",
+      "project_id": "g-p-0123456789abcdef0123456789abcdef",
+      "conversation_id": "",
+      "slug": "my-project-2026",
+      "deny": false,
+      "error": false
+    },
+    {
+      "name": "project slug empty after dash",
+      "url": "https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef-/project",
+      "kind": "project",
+      "project_id": "g-p-0123456789abcdef0123456789abcdef",
+      "conversation_id": "",
+      "slug": "",
+      "deny": false,
+      "error": false
+    },
+    {
+      "name": "project on provider subdomain",
+      "url": "https://www.chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef/project",
+      "kind": "project",
+      "project_id": "g-p-0123456789abcdef0123456789abcdef",
+      "conversation_id": "",
+      "slug": "",
+      "deny": false,
+      "error": false
+    },
+    {
+      "name": "project id too short",
+      "url": "https://chatgpt.com/g/g-p-0123/project",
+      "kind": "unknown",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": true,
+      "error": false
+    },
+    {
+      "name": "project id upper case",
+      "url": "https://chatgpt.com/g/g-p-0123456789ABCDEF0123456789ABCDEF/project",
+      "kind": "unknown",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": true,
+      "error": false
+    },
+    {
+      "name": "project id not hex",
+      "url": "https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdegz/project",
+      "kind": "unknown",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": true,
+      "error": false
+    },
+    {
+      "name": "project id missing",
+      "url": "https://chatgpt.com/g/g-p-/project",
+      "kind": "unknown",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": true,
+      "error": false
+    },
+    {
+      "name": "group path without project prefix",
+      "url": "https://chatgpt.com/g/g-abc/project",
+      "kind": "unknown",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": true,
+      "error": false
+    },
+    {
+      "name": "group project unknown subpath",
+      "url": "https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef/settings",
+      "kind": "unknown",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": true,
+      "error": false
+    },
+    {
+      "name": "group empty segment",
+      "url": "https://chatgpt.com/g//g-p-0123456789abcdef0123456789abcdef/project",
+      "kind": "unknown",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": true,
+      "error": false
+    },
+    {
+      "name": "project page double trailing slash",
+      "url": "https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef/project//",
+      "kind": "unknown",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": true,
+      "error": false
+    },
+    {
+      "name": "group path with extra segment",
+      "url": "https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef-slug/project/extra",
+      "kind": "unknown",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": true,
+      "error": false
+    },
+    {
+      "name": "bare group path",
+      "url": "https://chatgpt.com/g",
+      "kind": "other",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": false,
+      "error": false
+    },
+    {
+      "name": "group path upper case",
+      "url": "https://chatgpt.com/G/g-p-0123456789abcdef0123456789abcdef/project",
+      "kind": "other",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": false,
+      "error": false
+    },
+    {
+      "name": "project token upper case prefix",
+      "url": "https://chatgpt.com/g/G-P-0123456789abcdef0123456789abcdef/project",
+      "kind": "unknown",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": true,
+      "error": false
+    },
+    {
+      "name": "conversation",
+      "url": "https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef/c/0f8fad5b-d9cb-469f-a165-70867728950e",
+      "kind": "conversation",
+      "project_id": "g-p-0123456789abcdef0123456789abcdef",
+      "conversation_id": "0f8fad5b-d9cb-469f-a165-70867728950e",
+      "slug": "",
+      "deny": false,
+      "error": false
+    },
+    {
+      "name": "conversation with slug and trailing slash",
+      "url": "https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef-my-project/c/0f8fad5b-d9cb-469f-a165-70867728950e/",
+      "kind": "conversation",
+      "project_id": "g-p-0123456789abcdef0123456789abcdef",
+      "conversation_id": "0f8fad5b-d9cb-469f-a165-70867728950e",
+      "slug": "my-project",
+      "deny": false,
+      "error": false
+    },
+    {
+      "name": "conversation with query",
+      "url": "https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef/c/0f8fad5b-d9cb-469f-a165-70867728950e?messageId=abc",
+      "kind": "conversation",
+      "project_id": "g-p-0123456789abcdef0123456789abcdef",
+      "conversation_id": "0f8fad5b-d9cb-469f-a165-70867728950e",
+      "slug": "",
+      "deny": false,
+      "error": false
+    },
+    {
+      "name": "conversation with fragment",
+      "url": "https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef/c/0f8fad5b-d9cb-469f-a165-70867728950e#bottom",
+      "kind": "conversation",
+      "project_id": "g-p-0123456789abcdef0123456789abcdef",
+      "conversation_id": "0f8fad5b-d9cb-469f-a165-70867728950e",
+      "slug": "",
+      "deny": false,
+      "error": false
+    },
+    {
+      "name": "conversation id not a uuid",
+      "url": "https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef/c/123",
+      "kind": "unknown",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": true,
+      "error": false
+    },
+    {
+      "name": "conversation id upper case",
+      "url": "https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef/c/0F8FAD5B-D9CB-469F-A165-70867728950E",
+      "kind": "unknown",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": true,
+      "error": false
+    },
+    {
+      "name": "conversation id missing",
+      "url": "https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef/c",
+      "kind": "unknown",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": true,
+      "error": false
+    },
+    {
+      "name": "conversation of another project is still a conversation",
+      "url": "https://chatgpt.com/g/g-p-fedcba9876543210fedcba9876543210/c/0f8fad5b-d9cb-469f-a165-70867728950e",
+      "kind": "conversation",
+      "project_id": "g-p-fedcba9876543210fedcba9876543210",
+      "conversation_id": "0f8fad5b-d9cb-469f-a165-70867728950e",
+      "slug": "",
+      "deny": false,
+      "error": false
+    },
+    {
+      "name": "conversation without project",
+      "url": "https://chatgpt.com/c/0f8fad5b-d9cb-469f-a165-70867728950e",
+      "kind": "conversation_no_project",
+      "project_id": "",
+      "conversation_id": "0f8fad5b-d9cb-469f-a165-70867728950e",
+      "slug": "",
+      "deny": true,
+      "error": false
+    },
+    {
+      "name": "conversation without project trailing slash and query",
+      "url": "https://chatgpt.com/c/0f8fad5b-d9cb-469f-a165-70867728950e/?foo=1",
+      "kind": "conversation_no_project",
+      "project_id": "",
+      "conversation_id": "0f8fad5b-d9cb-469f-a165-70867728950e",
+      "slug": "",
+      "deny": true,
+      "error": false
+    },
+    {
+      "name": "conversation without project short id",
+      "url": "https://chatgpt.com/c/123",
+      "kind": "unknown",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": true,
+      "error": false
+    },
+    {
+      "name": "conversation without project upper case id",
+      "url": "https://chatgpt.com/c/0F8FAD5B-D9CB-469F-A165-70867728950E",
+      "kind": "unknown",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": true,
+      "error": false
+    },
+    {
+      "name": "bare conversation path",
+      "url": "https://chatgpt.com/c",
+      "kind": "other",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": false,
+      "error": false
+    },
+    {
+      "name": "backend api path",
+      "url": "https://chatgpt.com/backend-api/me",
+      "kind": "other",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": false,
+      "error": false
+    },
+    {
+      "name": "auth path",
+      "url": "https://chatgpt.com/auth/login?next=%2F",
+      "kind": "other",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": false,
+      "error": false
+    },
+    {
+      "name": "static asset path",
+      "url": "https://chatgpt.com/assets/index-abc123.js",
+      "kind": "other",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": false,
+      "error": false
+    },
+    {
+      "name": "identity provider host",
+      "url": "https://accounts.google.com/o/oauth2/v2/auth?client_id=abc",
+      "kind": "other",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": false,
+      "error": false
+    },
+    {
+      "name": "other provider host with resource path",
+      "url": "https://oaistatic.com/g/g-p-0123456789abcdef0123456789abcdef/project",
+      "kind": "other",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": false,
+      "error": false
+    },
+    {
+      "name": "encoded path separator",
+      "url": "https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef%2Fproject",
+      "kind": "unknown",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": true,
+      "error": false
+    },
+    {
+      "name": "encoded group segment",
+      "url": "https://chatgpt.com/%67/g-p-0123456789abcdef0123456789abcdef/project",
+      "kind": "unknown",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": true,
+      "error": false
+    },
+    {
+      "name": "encoded project keyword",
+      "url": "https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef/%70roject",
+      "kind": "unknown",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": true,
+      "error": false
+    },
+    {
+      "name": "encoded dash in project token",
+      "url": "https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef%2Dmy-project/project",
+      "kind": "unknown",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": true,
+      "error": false
+    },
+    {
+      "name": "encoded slug is allowed",
+      "url": "https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef-%E6%B5%8B%E8%AF%95/project",
+      "kind": "project",
+      "project_id": "g-p-0123456789abcdef0123456789abcdef",
+      "conversation_id": "",
+      "slug": "测试",
+      "deny": false,
+      "error": false
+    },
+    {
+      "name": "encoded conversation id",
+      "url": "https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef/c/0f8fad5b%2Dd9cb-469f-a165-70867728950e",
+      "kind": "unknown",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": true,
+      "error": false
+    },
+    {
+      "name": "backslash path",
+      "url": "https://chatgpt.com/g\\g-p-0123456789abcdef0123456789abcdef\\project",
+      "kind": "unknown",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": true,
+      "error": false
+    },
+    {
+      "name": "unparsable path escape",
+      "url": "https://chatgpt.com/g/g-p-%zz/project",
+      "kind": "unknown",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": true,
+      "error": true
+    },
+    {
+      "name": "unparsable port",
+      "url": "https://chatgpt.com:notaport/x",
+      "kind": "unknown",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": true,
+      "error": true
+    },
+    {
+      "name": "non web scheme",
+      "url": "ftp://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef/project",
+      "kind": "other",
+      "project_id": "",
+      "conversation_id": "",
+      "slug": "",
+      "deny": false,
+      "error": false
+    }
+  ]
+}

@@ -53,6 +53,14 @@ type WebProjectRenameRequest struct {
 	Name string `json:"name"`
 }
 
+// WebWorkspaceProjectPermitDto carries the short-lived permit the client may
+// redeem for exactly one provider-side project creation. It never includes the
+// runtime address or workspace identity.
+type WebWorkspaceProjectPermitDto struct {
+	PermitId  string `json:"permit_id"`
+	ExpiresAt int64  `json:"expires_at"`
+}
+
 // WebWorkspaceSessionDto is the control-plane view of one browser session.
 // Runtime ids, container addresses and ports never leave the control plane.
 type WebWorkspaceSessionDto struct {

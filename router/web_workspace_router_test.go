@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/service/webworkspace"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -22,6 +23,7 @@ import (
 type webWorkspaceRouterFixture struct {
 	engine        *gin.Engine
 	settings      *system_setting.WebWorkspaceSettings
+	agent         *routerFakeAgent
 	userA         *model.User
 	userB         *model.User
 	workspaceA    *model.WebWorkspace
@@ -71,6 +73,9 @@ func setupWebWorkspaceRouterTest(t *testing.T) *webWorkspaceRouterFixture {
 	settings.Enabled = true
 	settings.MinimumRole = common.RoleCommonUser
 	settings.AllowedGroups = []string{}
+	agent := newRouterFakeAgent(t)
+	settings.AgentBaseURL = agent.server.URL
+	t.Setenv("WEB_WORKSPACE_AGENT_TOKEN", routerTestAgentToken)
 
 	userA := createWebWorkspaceRouterUser(t, db, "ws-router-a")
 	userB := createWebWorkspaceRouterUser(t, db, "ws-router-b")
@@ -79,6 +84,8 @@ func setupWebWorkspaceRouterTest(t *testing.T) *webWorkspaceRouterFixture {
 	workspaceB := &model.WebWorkspace{UserId: userB.Id, Provider: "chatgpt", Status: model.WebWorkspaceStatusActive}
 	require.NoError(t, db.Create(workspaceA).Error)
 	require.NoError(t, db.Create(workspaceB).Error)
+	agent.addRuntime(workspaceA.Id)
+	agent.addRuntime(workspaceB.Id)
 
 	projectA := &model.WebProject{WorkspaceId: workspaceA.Id, Provider: "chatgpt", ExternalProjectId: "ext-router-a", Name: "Project A"}
 	projectB := &model.WebProject{WorkspaceId: workspaceB.Id, Provider: "chatgpt", ExternalProjectId: "ext-router-b", Name: "Project B"}
@@ -95,6 +102,7 @@ func setupWebWorkspaceRouterTest(t *testing.T) *webWorkspaceRouterFixture {
 	return &webWorkspaceRouterFixture{
 		engine:        engine,
 		settings:      settings,
+		agent:         agent,
 		userA:         userA,
 		userB:         userB,
 		workspaceA:    workspaceA,
@@ -297,4 +305,91 @@ func TestWebWorkspaceRouterFollowsRegisteredOptionSetting(t *testing.T) {
 	payload := decodeWebWorkspaceError(t, recorder)
 	assert.Equal(t, "WEB_WORKSPACE_ENTITLEMENT_DENIED", payload.Code)
 	assert.Equal(t, "global_disabled", payload.Reason)
+}
+
+func TestWebWorkspaceRouterProjectsSyncObservations(t *testing.T) {
+	fixture := setupWebWorkspaceRouterTest(t)
+	tokenA := webWorkspaceBearer(t, fixture.userA)
+	const syncedProjectId = "g-p-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	fixture.agent.setObservations(fixture.workspaceA.Id, webworkspace.Observation{
+		Event:             webworkspace.ObservationProjectCreated,
+		PermitId:          "permit-router-unmatched",
+		ExternalProjectId: syncedProjectId,
+		Slug:              "Synced Project",
+		ObservedAt:        100,
+	})
+
+	list := doWebWorkspaceRequest(fixture.engine, http.MethodGet, "/api/web-workspace/projects", tokenA, "")
+	require.Equal(t, http.StatusOK, list.Code, list.Body.String())
+	assert.Contains(t, list.Body.String(), `"Synced Project"`)
+
+	// The applied batch is acknowledged and ownership is republished with both
+	// the pre-existing and the newly observed project.
+	assert.Equal(t, 1, fixture.agent.ackedOffset(fixture.workspaceA.Id))
+	snapshot, ok := fixture.agent.ownershipOf(fixture.workspaceA.Id)
+	require.True(t, ok)
+	assert.Contains(t, snapshot.Projects, "ext-router-a")
+	assert.Contains(t, snapshot.Projects, syncedProjectId)
+
+	var stored model.WebProject
+	require.NoError(t, model.DB.Where("external_project_id = ?", syncedProjectId).First(&stored).Error)
+	assert.Equal(t, fixture.workspaceA.Id, stored.WorkspaceId)
+	assert.Equal(t, stored.UpdatedAt, snapshot.Generation)
+
+	// Replaying the acknowledged batch must not duplicate the row.
+	again := doWebWorkspaceRequest(fixture.engine, http.MethodGet, "/api/web-workspace/projects", tokenA, "")
+	require.Equal(t, http.StatusOK, again.Code, again.Body.String())
+	var projectCount int64
+	require.NoError(t, model.DB.Model(&model.WebProject{}).Where("external_project_id = ?", syncedProjectId).Count(&projectCount).Error)
+	assert.EqualValues(t, 1, projectCount)
+}
+
+func TestWebWorkspaceRouterProjectsFailClosedWithoutAgent(t *testing.T) {
+	fixture := setupWebWorkspaceRouterTest(t)
+	tokenA := webWorkspaceBearer(t, fixture.userA)
+	fixture.settings.AgentBaseURL = ""
+
+	list := doWebWorkspaceRequest(fixture.engine, http.MethodGet, "/api/web-workspace/projects", tokenA, "")
+	assert.Equal(t, http.StatusServiceUnavailable, list.Code)
+	assert.Equal(t, "WEB_WORKSPACE_AGENT_UNAVAILABLE", decodeWebWorkspaceError(t, list).Code)
+	assert.NotContains(t, list.Body.String(), "Project A")
+}
+
+func TestWebWorkspaceRouterProjectsRequireRuntime(t *testing.T) {
+	fixture := setupWebWorkspaceRouterTest(t)
+	tokenA := webWorkspaceBearer(t, fixture.userA)
+	fixture.agent.removeRuntime(fixture.workspaceA.Id)
+
+	list := doWebWorkspaceRequest(fixture.engine, http.MethodGet, "/api/web-workspace/projects", tokenA, "")
+	assert.Equal(t, http.StatusNotFound, list.Code)
+	assert.Equal(t, "WEB_WORKSPACE_SESSION_NOT_FOUND", decodeWebWorkspaceError(t, list).Code)
+}
+
+func TestWebWorkspaceRouterProjectMutationsPushOwnership(t *testing.T) {
+	fixture := setupWebWorkspaceRouterTest(t)
+	tokenA := webWorkspaceBearer(t, fixture.userA)
+	ownProject := fmt.Sprintf("/api/web-workspace/projects/%d", fixture.projectA.Id)
+
+	rename := doWebWorkspaceRequest(fixture.engine, http.MethodPatch, ownProject, tokenA, `{"name":"Renamed A"}`)
+	require.Equal(t, http.StatusOK, rename.Code, rename.Body.String())
+	snapshot, ok := fixture.agent.ownershipOf(fixture.workspaceA.Id)
+	require.True(t, ok)
+	assert.Equal(t, []string{"ext-router-a"}, snapshot.Projects)
+	var renamed model.WebProject
+	require.NoError(t, model.DB.First(&renamed, fixture.projectA.Id).Error)
+	assert.Equal(t, renamed.UpdatedAt, snapshot.Generation)
+
+	deleteRecorder := doWebWorkspaceRequest(fixture.engine, http.MethodDelete, ownProject, tokenA, "")
+	require.Equal(t, http.StatusOK, deleteRecorder.Code, deleteRecorder.Body.String())
+	snapshot, ok = fixture.agent.ownershipOf(fixture.workspaceA.Id)
+	require.True(t, ok)
+	assert.Empty(t, snapshot.Projects)
+	assert.Zero(t, snapshot.Generation)
+
+	// A rejected ownership push is never reported as a successful mutation.
+	fixture.settings.AgentBaseURL = ""
+	foreignOwn := fmt.Sprintf("/api/web-workspace/projects/%d", fixture.projectB.Id)
+	failing := doWebWorkspaceRequest(fixture.engine, http.MethodPatch, foreignOwn, webWorkspaceBearer(t, fixture.userB), `{"name":"Renamed B"}`)
+	assert.Equal(t, http.StatusServiceUnavailable, failing.Code)
+	assert.Equal(t, "WEB_WORKSPACE_AGENT_UNAVAILABLE", decodeWebWorkspaceError(t, failing).Code)
 }

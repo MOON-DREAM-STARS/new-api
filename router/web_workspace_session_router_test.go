@@ -32,7 +32,8 @@ func nextRouterTestUserId() int {
 }
 
 // routerFakeAgent implements the Browser Agent contract v1 well enough to test
-// the New API session broker and the WSS gateway.
+// the New API session broker, the control-plane sync and the WSS gateway. Every
+// runtime-scoped endpoint requires a runtime, like the real agent.
 type routerFakeAgent struct {
 	server   *httptest.Server
 	mutex    sync.Mutex
@@ -40,11 +41,30 @@ type routerFakeAgent struct {
 	create   int
 	stop     int
 	echo     bool
+
+	ownership    map[int]webworkspace.OwnershipSnapshot
+	observations map[int][]webworkspace.Observation
+	acked        map[int]int
+	permitCalls  []routerPermitCall
+	failPermits  bool
+}
+
+type routerPermitCall struct {
+	WorkspaceId int
+	PermitId    string
+	Kind        string
+	TtlSeconds  int
 }
 
 func newRouterFakeAgent(t *testing.T) *routerFakeAgent {
 	t.Helper()
-	agent := &routerFakeAgent{runtimes: make(map[int]webworkspace.AgentRuntime), echo: true}
+	agent := &routerFakeAgent{
+		runtimes:     make(map[int]webworkspace.AgentRuntime),
+		ownership:    make(map[int]webworkspace.OwnershipSnapshot),
+		observations: make(map[int][]webworkspace.Observation),
+		acked:        make(map[int]int),
+		echo:         true,
+	}
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	agent.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+routerTestAgentToken {
@@ -69,12 +89,12 @@ func newRouterFakeAgent(t *testing.T) *routerFakeAgent {
 				}
 			}
 		}
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		path := strings.TrimPrefix(r.URL.Path, "/internal/v1/runtimes")
 		if path == "" && r.Method == http.MethodPost {
 			var request struct {
 				WorkspaceId int `json:"workspace_id"`
 			}
-			body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 			if err := common.Unmarshal(body, &request); err != nil {
 				w.WriteHeader(http.StatusBadRequest)
 				return
@@ -99,28 +119,172 @@ func newRouterFakeAgent(t *testing.T) *routerFakeAgent {
 			return
 		}
 		parts := strings.Split(strings.Trim(path, "/"), "/")
-		if len(parts) == 0 {
+		if len(parts) == 0 || parts[0] == "" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
 		workspaceId := 0
 		_, _ = fmt.Sscanf(parts[0], "%d", &workspaceId)
+		suffix := ""
+		if len(parts) > 1 {
+			suffix = strings.Join(parts[1:], "/")
+		}
 		agent.mutex.Lock()
 		runtime, ok := agent.runtimes[workspaceId]
-		if ok && len(parts) > 1 && parts[1] == "stop" {
-			agent.stop++
-			runtime.State = webworkspace.AgentStateStopped
-			agent.runtimes[workspaceId] = runtime
-		}
 		agent.mutex.Unlock()
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"success":false,"error":"runtime_not_found"}`))
 			return
 		}
-		writeRouterAgentJSON(t, w, runtime)
+		switch {
+		case suffix == "stop" && r.Method == http.MethodPost:
+			agent.mutex.Lock()
+			agent.stop++
+			runtime.State = webworkspace.AgentStateStopped
+			agent.runtimes[workspaceId] = runtime
+			agent.mutex.Unlock()
+			writeRouterAgentJSON(t, w, runtime)
+		case suffix == "restart" && r.Method == http.MethodPost:
+			agent.mutex.Lock()
+			runtime.State = webworkspace.AgentStateRunning
+			runtime.LastActivityAt = time.Now().Unix()
+			runtime.IdleDeadlineAt = time.Now().Unix() + 600
+			agent.runtimes[workspaceId] = runtime
+			agent.mutex.Unlock()
+			writeRouterAgentJSON(t, w, runtime)
+		case suffix == "ownership" && r.Method == http.MethodPut:
+			var request webworkspace.OwnershipSnapshot
+			if err := common.Unmarshal(body, &request); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			agent.mutex.Lock()
+			agent.ownership[workspaceId] = request
+			agent.mutex.Unlock()
+			writeRouterAgentJSON(t, w, struct {
+				Generation    int64 `json:"generation"`
+				Projects      int   `json:"projects"`
+				Conversations int   `json:"conversations"`
+			}{request.Generation, len(request.Projects), len(request.Conversations)})
+		case suffix == "permits" && r.Method == http.MethodPost:
+			var request struct {
+				PermitId   string `json:"permit_id"`
+				Kind       string `json:"kind"`
+				TtlSeconds int    `json:"ttl_seconds"`
+			}
+			if err := common.Unmarshal(body, &request); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			agent.mutex.Lock()
+			agent.permitCalls = append(agent.permitCalls, routerPermitCall{
+				WorkspaceId: workspaceId,
+				PermitId:    request.PermitId,
+				Kind:        request.Kind,
+				TtlSeconds:  request.TtlSeconds,
+			})
+			fail := agent.failPermits
+			agent.mutex.Unlock()
+			if fail {
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(`{"success":false,"error":"runtime_not_running"}`))
+				return
+			}
+			writeRouterAgentJSON(t, w, struct {
+				PermitId  string `json:"permit_id"`
+				ExpiresAt int64  `json:"expires_at"`
+			}{request.PermitId, time.Now().Unix() + 300})
+		case suffix == "observations" && r.Method == http.MethodGet:
+			agent.mutex.Lock()
+			offset := agent.acked[workspaceId]
+			log := append([]webworkspace.Observation{}, agent.observations[workspaceId]...)
+			agent.mutex.Unlock()
+			if offset > len(log) {
+				offset = len(log)
+			}
+			writeRouterAgentJSON(t, w, struct {
+				Observations []webworkspace.Observation `json:"observations"`
+				NextOffset   int64                      `json:"next_offset"`
+			}{log[offset:], int64(len(log))})
+		case suffix == "observations/ack" && r.Method == http.MethodPost:
+			var request struct {
+				Offset int64 `json:"offset"`
+			}
+			if err := common.Unmarshal(body, &request); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			agent.mutex.Lock()
+			agent.acked[workspaceId] = int(request.Offset)
+			agent.mutex.Unlock()
+			writeRouterAgentJSON(t, w, struct {
+				Offset int64 `json:"offset"`
+			}{request.Offset})
+		default:
+			writeRouterAgentJSON(t, w, runtime)
+		}
 	}))
 	t.Cleanup(agent.server.Close)
 	return agent
+}
+
+func (a *routerFakeAgent) addRuntime(workspaceId int) {
+	a.mutex.Lock()
+	defer a.mutex.Unlock()
+	now := time.Now().Unix()
+	a.runtimes[workspaceId] = webworkspace.AgentRuntime{
+		RuntimeId:      fmt.Sprintf("ws-%d", workspaceId),
+		WorkspaceId:    workspaceId,
+		State:          webworkspace.AgentStateRunning,
+		CreatedAt:      now,
+		LastActivityAt: now,
+		IdleDeadlineAt: now + 600,
+	}
+}
+
+func (a *routerFakeAgent) removeRuntime(workspaceId int) {
+	a.mutex.Lock()
+	defer a.mutex.Unlock()
+	delete(a.runtimes, workspaceId)
+}
+
+func (a *routerFakeAgent) setObservations(workspaceId int, observations ...webworkspace.Observation) {
+	a.mutex.Lock()
+	defer a.mutex.Unlock()
+	a.observations[workspaceId] = append([]webworkspace.Observation{}, observations...)
+	a.acked[workspaceId] = 0
+}
+
+func (a *routerFakeAgent) ownershipOf(workspaceId int) (webworkspace.OwnershipSnapshot, bool) {
+	a.mutex.Lock()
+	defer a.mutex.Unlock()
+	snapshot, ok := a.ownership[workspaceId]
+	return snapshot, ok
+}
+
+func (a *routerFakeAgent) ackedOffset(workspaceId int) int {
+	a.mutex.Lock()
+	defer a.mutex.Unlock()
+	return a.acked[workspaceId]
+}
+
+func (a *routerFakeAgent) permitCallsFor(workspaceId int) []routerPermitCall {
+	a.mutex.Lock()
+	defer a.mutex.Unlock()
+	calls := make([]routerPermitCall, 0, len(a.permitCalls))
+	for _, call := range a.permitCalls {
+		if call.WorkspaceId == workspaceId {
+			calls = append(calls, call)
+		}
+	}
+	return calls
+}
+
+func (a *routerFakeAgent) setFailPermits(fail bool) {
+	a.mutex.Lock()
+	defer a.mutex.Unlock()
+	a.failPermits = fail
 }
 
 func writeRouterAgentJSON(t *testing.T, w http.ResponseWriter, payload any) {
@@ -325,4 +489,80 @@ func TestWebWorkspaceRouterStreamGateway(t *testing.T) {
 	require.Error(t, err)
 	require.NotNil(t, missingResponse)
 	assert.Equal(t, http.StatusForbidden, missingResponse.StatusCode)
+}
+
+func TestWebWorkspaceRouterProjectPermitFlow(t *testing.T) {
+	agent := newRouterFakeAgent(t)
+	fixture := setupWebWorkspaceSessionRouterTest(t, agent.server.URL)
+	token := webWorkspaceBearer(t, fixture.userA)
+
+	// No live session: the permit is refused before the agent is contacted.
+	noSession := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/projects", token, "")
+	require.Equal(t, http.StatusConflict, noSession.Code, noSession.Body.String())
+	assert.Equal(t, "WEB_WORKSPACE_SESSION_REQUIRED", decodeWebWorkspaceError(t, noSession).Code)
+
+	start := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/session", token, "")
+	require.Equal(t, http.StatusOK, start.Code, start.Body.String())
+	var workspace model.WebWorkspace
+	require.NoError(t, model.DB.Where("user_id = ?", fixture.userA.Id).First(&workspace).Error)
+
+	permitRecorder := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/projects", token, "")
+	require.Equal(t, http.StatusOK, permitRecorder.Code, permitRecorder.Body.String())
+	var payload struct {
+		Data struct {
+			PermitId  string `json:"permit_id"`
+			ExpiresAt int64  `json:"expires_at"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(permitRecorder.Body.Bytes(), &payload))
+	assert.NotEmpty(t, payload.Data.PermitId)
+	assert.Positive(t, payload.Data.ExpiresAt)
+
+	calls := agent.permitCallsFor(workspace.Id)
+	require.Len(t, calls, 1)
+	assert.Equal(t, payload.Data.PermitId, calls[0].PermitId)
+	assert.Equal(t, "project_create", calls[0].Kind)
+	assert.Equal(t, 300, calls[0].TtlSeconds)
+
+	// Issuing a permit must not create a local project row.
+	var projectCount int64
+	require.NoError(t, model.DB.Model(&model.WebProject{}).Where("workspace_id = ?", workspace.Id).Count(&projectCount).Error)
+	assert.EqualValues(t, 0, projectCount)
+}
+
+func TestWebWorkspaceRouterProjectPermitEnforcesLimit(t *testing.T) {
+	agent := newRouterFakeAgent(t)
+	fixture := setupWebWorkspaceSessionRouterTest(t, agent.server.URL)
+	token := webWorkspaceBearer(t, fixture.userA)
+
+	start := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/session", token, "")
+	require.Equal(t, http.StatusOK, start.Code, start.Body.String())
+	var workspace model.WebWorkspace
+	require.NoError(t, model.DB.Where("user_id = ?", fixture.userA.Id).First(&workspace).Error)
+	require.NoError(t, model.DB.Create(&model.WebProject{
+		WorkspaceId:       workspace.Id,
+		Provider:          "chatgpt",
+		ExternalProjectId: "g-p-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		Name:              "Existing",
+	}).Error)
+
+	system_setting.GetWebWorkspaceSettings().MaxProjects = 1
+	recorder := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/projects", token, "")
+	require.Equal(t, http.StatusConflict, recorder.Code, recorder.Body.String())
+	assert.Equal(t, "WEB_WORKSPACE_PROJECT_LIMIT", decodeWebWorkspaceError(t, recorder).Code)
+	assert.Empty(t, agent.permitCallsFor(workspace.Id))
+}
+
+func TestWebWorkspaceRouterProjectPermitFailsClosedWhenAgentRejects(t *testing.T) {
+	agent := newRouterFakeAgent(t)
+	fixture := setupWebWorkspaceSessionRouterTest(t, agent.server.URL)
+	token := webWorkspaceBearer(t, fixture.userA)
+
+	start := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/session", token, "")
+	require.Equal(t, http.StatusOK, start.Code, start.Body.String())
+	agent.setFailPermits(true)
+
+	recorder := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/projects", token, "")
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code, recorder.Body.String())
+	assert.Equal(t, "WEB_WORKSPACE_AGENT_UNAVAILABLE", decodeWebWorkspaceError(t, recorder).Code)
 }
