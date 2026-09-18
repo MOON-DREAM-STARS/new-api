@@ -24,7 +24,8 @@ Dockerfile 为多阶段构建：`golang:1.26.1-alpine` 阶段只复制 `go.mod`�
 | `WW_SCREEN_WIDTH` | `1280` | Xvfb 屏幕宽度。 |
 | `WW_SCREEN_HEIGHT` | `720` | Xvfb 屏幕高度。 |
 | `WW_VNC_PORT` | `5900` | x11vnc 监听端口。 |
-| `WW_PROVIDER` | `unknown` | 仅用于启动日志的信息字段。 |
+| `WW_PROVIDER` | `unknown` | 信息字段，同时用于推导默认 `WW_START_URL`（`chatgpt` → `https://chatgpt.com/`）。 |
+| `WW_START_URL` | 按 `WW_PROVIDER` 推导 | 运行时窗口的起始 URL：`chatgpt` → `https://chatgpt.com/`，其他 provider → `about:blank`；显式设置时优先使用该值。 |
 
 入口脚本将 `HOME` 设为 `WW_WORKSPACE_DIR`，并将 `XDG_CONFIG_HOME`、`XDG_CACHE_HOME`、`XDG_DATA_HOME`、`XDG_RUNTIME_DIR` 分别指向 `profile/config`、`cache`、`profile/data`、`tmp/runtime`，避免 Chromium 写入只读 rootfs。
 
@@ -40,8 +41,10 @@ Dockerfile 为多阶段构建：`golang:1.26.1-alpine` 阶段只复制 `go.mod`�
 --remote-debugging-port=9222                仅运行期内 CDP
 --remote-debugging-address=127.0.0.1        CDP 只监听 loopback，禁止 publish
 --deny-permission-prompts                   自动拒绝权限提示（clipboard 等）
---no-sandbox --user-data-dir=... --display=... --start-maximized about:blank
+--no-sandbox --test-type --user-data-dir=... --display=... --window-size=<W,H> --window-position=0,0 --app="$WW_START_URL"
 ```
+
+运行时窗口是 Provider 的应用窗口（`--app`）：只显示页面内容，没有标签页、地址栏、书签栏和 `--no-sandbox` 警告条。`--start-maximized` 在没有窗口管理器的 Xvfb 中不会生效，因此窗口尺寸由 `--window-size="$WW_SCREEN_WIDTH,$WW_SCREEN_HEIGHT"` 显式对齐屏幕。`--test-type` 只抑制上述警告条，不改变网络与导航策略：起始 URL 之外的每次 navigation 与请求仍由 workspace-guard 与 egress proxy 按同一份策略表拦截。
 
 ## Browser Guard（`workspace-guard`）
 
@@ -66,7 +69,7 @@ guard 与 CDP 断连、命令通道出错、启动 15s 预算内无法连接、�
 1. 校验 `WW_PROXY_SERVER` 与 `WW_GUARD_MODE`，非法即退出 1；
 2. 启动 Xvfb，并等待对应 X11 socket 就绪；
 3. 启动 `x11vnc`（`-rfbport "$WW_VNC_PORT" -forever -shared -nopw -nolookup -noxdamage -quiet -bg`，不带 `-clip`，VNC 剪贴板保持关闭），并等待该端口就绪；
-4. 启动 Chromium（后台，`--user-data-dir=$WW_WORKSPACE_DIR/profile`）；
+4. 启动 Chromium 应用窗口（后台，`--user-data-dir=$WW_WORKSPACE_DIR/profile`，起始 URL 为 `$WW_START_URL`）；
 5. 启动 `workspace-guard`（后台），随后 watchdog 同时监视两者：guard 退出 → 清理并以 1 退出；Chromium 退出 → 按 Chromium 的退出码清理并退出。
 
 `SIGTERM`/`SIGINT` 到达时，按 workspace-guard → Chromium → x11vnc → Xvfb 顺序终止进程后再退出。`docker stop` 不应留下该容器内的孤儿进程。

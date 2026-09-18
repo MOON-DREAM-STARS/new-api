@@ -1748,3 +1748,19 @@ remote Chrome credential holder
   - 真实容器：`docker exec ws-agent … /tmp/p4-api …`（修复前后对照 PUT/GET/POST）、`docker run --network container:newapi-ws-runtime-701 … /out/p3-probe <url>`（5 个拒绝 + 1 个对照）、`docker run --network container:… -e HTTPS_PROXY=http://ws-agent:8731 … /out/p4-api GET <url>`（代理 CONNECT/明文拒绝与放行对照）。
 - NOT RUN（如实记录）：云端部署与云端验收（需用户确认连接方式/授权范围）；Provider live 登录（需用户手动窗口）；`-race` 与全量 CI 未运行；service worker 未做独立 live 用例（结论来自 Chromium 代理配置 + 代理实测）。
 - 提交：本阶段独立 commit（`feat(web-workspace): phase 6 security verification`），本地未 push；SHA 见阶段报告。
+
+## 后续变更（2026-09-19）：运行时窗口改为 Provider 应用窗口
+
+- 状态：**PASS**（本机验收；2026-09-19，Asia/Singapore）
+- 背景：用户要求远端浏览器只暴露页面主窗口——不显示标签栏、地址栏与 `--no-sandbox` 警告条，并以 ChatGPT 首页作为起始页。
+- 实现（`browser-agent/runtime/entrypoint.sh`，同步更新 `browser-agent/runtime/README.md`）：
+  - 新增 `WW_START_URL`：未显式设置时按 `WW_PROVIDER` 推导（`chatgpt` → `https://chatgpt.com/`，其他 provider → `about:blank`）。
+  - Chromium 改为应用窗口启动：`--app="$WW_START_URL"`；`--start-maximized`（在无窗口管理器的 Xvfb 中不生效）替换为 `--window-size="$WW_SCREEN_WIDTH,$WW_SCREEN_HEIGHT"` + `--window-position=0,0`；新增 `--test-type` 抑制 `--no-sandbox` 警告条；其余安全参数（egress proxy、`--proxy-bypass-list`、`--disable-quic`、CDP loopback、`--deny-permission-prompts`）不变。
+  - 地址策略不变：起始 URL 之外的每次 navigation 与请求仍由 workspace-guard 与 egress proxy 按同一份 `internal/policy` 表拦截。
+- 实际运行的验证（本机验收环境，workspace 2 / runtime `ws-2`，`WW_GUARD_MODE=LOGIN`）：
+  - 重建镜像 `newapi-web-workspace-runtime:local` 并 `POST /internal/v1/runtimes/2/restart {"mode":"LOGIN"}`；容器日志：`guard_mode=LOGIN start_url=https://chatgpt.com/`，guard `browser guard active`。
+  - CDP：可见 page target 为 `https://chatgpt.com/`；窗口几何 `outerWidth=innerWidth=1279`、`outerHeight=innerHeight=719`（改造前为 `outer 1050x700 / inner 1050x613`，即 87px 浏览器 UI），表明无标签栏/地址栏/警告条且窗口铺满 1280x720 屏幕。
+  - X 屏幕真实帧缓冲截图（RFB 抓取）：`C:\Users\admin\.codex\visualizations\2026\09\19\web-workspace-runtime-window\ws2-runtime-app-window-chatgpt-home-1280x720.png`，只显示 ChatGPT 首页内容，顶部无任何浏览器 UI。
+  - 已知观察（如实记录）：guard 对 `openaiassets.blob.core.windows.net`（页面图像资源）报 `policy_deny`；页面主体渲染不受影响，该主机不在白名单内，本次不扩大 allowlist。
+- 影响与失效说明：Phase 5 验收中"渲染真实远端 Chromium（可见 about:blank 标签与 `--no-sandbox` infobar）"为改造前历史观察，原文保留，已被本节取代；前端三视口验收目标不变。
+- NOT RUN：云端环境尚未部署 Web Workspace，故该窗口变更未在云端重建/验证；未运行全量 CI。
