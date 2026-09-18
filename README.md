@@ -178,6 +178,15 @@ docker run --name new-api -d --restart always \
 | ❓ FAQ | [FAQ](https://docs.newapi.pro/en/docs/support/faq) |
 | 💬 Community Interaction | [Communication Channels](https://docs.newapi.pro/en/docs/support/community-interaction) |
 
+### 🧪 Web Workspace (Design / Planned, Not Implemented)
+
+> ⚠️ Status: **design / planned — not implemented**. This repository currently contains architecture documentation only; no Browser Agent, runtime, API, or UI has been shipped yet.
+
+Server-side isolated browser workspace design for controlled Web AI access: New API acts as the control plane / auth gateway, a private Browser Agent runs isolated server-side Chromium runtimes, and the local PC stays a thin client that receives only the remote display stream and sends input.
+
+- 📐 [Web Workspace Architecture](docs/web-workspace/architecture.md)
+- ✅ [Web Workspace Implementation Checklist](docs/web-workspace/implementation-checklist.md)
+
 ---
 
 ## ✨ Key Features
