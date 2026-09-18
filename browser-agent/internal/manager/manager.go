@@ -1,0 +1,784 @@
+// Package manager owns the per-workspace runtime state machine: it serialises
+// lifecycle operations per workspace, enforces the idle timeout, detects
+// crashed containers and tracks the display streams attached to a runtime.
+package manager
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/QuantumNous/new-api/browser-agent/internal/runtime"
+)
+
+// State is the runtime state machine value exposed to the control plane.
+type State string
+
+const (
+	StateStarting State = "STARTING"
+	StateRunning  State = "RUNNING"
+	StateIdle     State = "IDLE"
+	StateStopping State = "STOPPING"
+	StateStopped  State = "STOPPED"
+	StateFailed   State = "FAILED"
+)
+
+// Display dimensions accepted from the control plane.
+const (
+	DefaultWidth  = 1280
+	DefaultHeight = 720
+	MinWidth      = 640
+	MaxWidth      = 3840
+	MinHeight     = 360
+	MaxHeight     = 2160
+)
+
+const (
+	displayNumber = ":99"
+
+	envWorkspaceDir = "WW_WORKSPACE_DIR"
+	envDisplay      = "WW_DISPLAY"
+	envScreenWidth  = "WW_SCREEN_WIDTH"
+	envScreenHeight = "WW_SCREEN_HEIGHT"
+	envVNCPort      = "WW_VNC_PORT"
+	envProvider     = "WW_PROVIDER"
+
+	// A started container is not a ready display: Xvfb and x11vnc need a moment
+	// before the RFB port accepts connections, so the runtime only becomes
+	// RUNNING once a probe connection succeeded.
+	displayProbeInterval = 250 * time.Millisecond
+	displayProbeTimeout  = 20 * time.Second
+
+	cleanupTimeout = 30 * time.Second
+)
+
+var (
+	// ErrNotFound reports that the agent has no runtime state for a workspace.
+	ErrNotFound = errors.New("runtime not found")
+	// ErrInvalidRequest reports a rejected start or restart parameter set.
+	ErrInvalidRequest = errors.New("invalid request")
+	// ErrProviderRequired reports a restart that cannot be resolved because the
+	// provider of the previous runtime is unknown.
+	ErrProviderRequired = errors.New("provider is required")
+
+	providerPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+)
+
+// Snapshot is the runtime JSON shape exposed by the HTTP API. It never contains
+// container addresses, ports, Docker identifiers or file system paths.
+type Snapshot struct {
+	RuntimeID      string `json:"runtime_id"`
+	WorkspaceID    int64  `json:"workspace_id"`
+	State          State  `json:"state"`
+	CreatedAt      int64  `json:"created_at"`
+	LastActivityAt int64  `json:"last_activity_at"`
+	IdleDeadlineAt int64  `json:"idle_deadline_at"`
+}
+
+// StartOptions carries the request parameters of a runtime start.
+type StartOptions struct {
+	Provider string
+	Width    int
+	Height   int
+}
+
+// Options configures the manager.
+type Options struct {
+	DataRoot     string
+	IdleTimeout  time.Duration
+	ScanInterval time.Duration
+	Logger       *slog.Logger
+	Now          func() time.Time
+	// Chown hands a workspace directory to the runtime image identity. It is
+	// overridden only by tests; nil selects the process default (os.Chown).
+	Chown func(path string, uid int, gid int) error
+	// HostDataRoot is the data root as visible to the Docker daemon. Only the
+	// bind source of a runtime container is built from it; every local file
+	// operation uses DataRoot. Empty falls back to DataRoot.
+	HostDataRoot string
+}
+
+type runtimeState struct {
+	state        State
+	provider     string
+	width        int
+	height       int
+	containerID  string
+	ip           string
+	createdAt    time.Time
+	lastActivity time.Time
+	idleDeadline time.Time
+}
+
+func (rt *runtimeState) snapshot(workspaceID int64) Snapshot {
+	snapshot := Snapshot{
+		RuntimeID:      runtimeID(workspaceID),
+		WorkspaceID:    workspaceID,
+		State:          rt.state,
+		CreatedAt:      rt.createdAt.Unix(),
+		LastActivityAt: rt.lastActivity.Unix(),
+	}
+	if !rt.idleDeadline.IsZero() {
+		snapshot.IdleDeadlineAt = rt.idleDeadline.Unix()
+	}
+	return snapshot
+}
+
+type streamHandle struct {
+	conn io.Closer
+	done chan struct{}
+	once sync.Once
+}
+
+func (h *streamHandle) close() {
+	h.once.Do(func() {
+		close(h.done)
+		if h.conn != nil {
+			_ = h.conn.Close()
+		}
+	})
+}
+
+// Manager implements the runtime scheduling and stream attachment contract.
+type Manager struct {
+	driver       runtime.Driver
+	display      runtime.DisplayTransport
+	dataRoot     string
+	hostDataRoot string
+	idleTimeout  time.Duration
+	scanInterval time.Duration
+	logger       *slog.Logger
+	now          func() time.Time
+	chown        func(path string, uid int, gid int) error
+
+	mu       sync.Mutex
+	runtimes map[int64]*runtimeState
+	locks    map[int64]*sync.Mutex
+	streams  map[int64]map[*streamHandle]struct{}
+}
+
+// New returns a manager bound to a runtime driver and a display transport.
+func New(driver runtime.Driver, display runtime.DisplayTransport, opts Options) *Manager {
+	manager := &Manager{
+		driver:       driver,
+		display:      display,
+		dataRoot:     opts.DataRoot,
+		hostDataRoot: opts.HostDataRoot,
+		idleTimeout:  opts.IdleTimeout,
+		scanInterval: opts.ScanInterval,
+		logger:       opts.Logger,
+		now:          opts.Now,
+		chown:        opts.Chown,
+		runtimes:     map[int64]*runtimeState{},
+		locks:        map[int64]*sync.Mutex{},
+		streams:      map[int64]map[*streamHandle]struct{}{},
+	}
+	if manager.logger == nil {
+		manager.logger = slog.Default()
+	}
+	if manager.now == nil {
+		manager.now = time.Now
+	}
+	if manager.scanInterval <= 0 {
+		manager.scanInterval = 15 * time.Second
+	}
+	if manager.hostDataRoot == "" {
+		manager.hostDataRoot = manager.dataRoot
+	}
+	return manager
+}
+
+// Get returns the current runtime snapshot of a workspace.
+func (m *Manager) Get(workspaceID int64) (Snapshot, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rt := m.runtimes[workspaceID]
+	if rt == nil {
+		return Snapshot{}, false
+	}
+	return rt.snapshot(workspaceID), true
+}
+
+// Start creates and starts the runtime of a workspace. It is idempotent: a
+// workspace with a non-terminal runtime keeps that runtime.
+func (m *Manager) Start(ctx context.Context, workspaceID int64, opts StartOptions) (Snapshot, error) {
+	if err := validateOptions(workspaceID, opts); err != nil {
+		return Snapshot{}, err
+	}
+	opts = withSizeDefaults(opts)
+
+	lock := m.lockFor(workspaceID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	if snapshot, ok := m.Get(workspaceID); ok && snapshot.State != StateStopped && snapshot.State != StateFailed {
+		return snapshot, nil
+	}
+	return m.startLocked(ctx, workspaceID, opts)
+}
+
+// Stop stops and removes the runtime container of a workspace while keeping the
+// profile directory. It returns ErrNotFound when no runtime state exists.
+func (m *Manager) Stop(ctx context.Context, workspaceID int64) (Snapshot, error) {
+	if workspaceID <= 0 {
+		return Snapshot{}, fmt.Errorf("%w: workspace id must be positive", ErrInvalidRequest)
+	}
+	lock := m.lockFor(workspaceID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	snapshot, existed, err := m.stopLocked(ctx, workspaceID)
+	if err != nil {
+		return snapshot, err
+	}
+	if !existed {
+		return Snapshot{}, ErrNotFound
+	}
+	return snapshot, nil
+}
+
+// Restart stops the existing runtime and starts a fresh one, reusing the
+// previous provider and screen size unless overrides are supplied.
+func (m *Manager) Restart(ctx context.Context, workspaceID int64, opts StartOptions) (Snapshot, error) {
+	if workspaceID <= 0 {
+		return Snapshot{}, fmt.Errorf("%w: workspace id must be positive", ErrInvalidRequest)
+	}
+	lock := m.lockFor(workspaceID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	current, exists := m.currentOptions(workspaceID)
+	effective := current
+	if provider := strings.TrimSpace(opts.Provider); provider != "" {
+		effective.Provider = provider
+	}
+	if opts.Width != 0 {
+		effective.Width = opts.Width
+	}
+	if opts.Height != 0 {
+		effective.Height = opts.Height
+	}
+	if !exists && effective.Provider == "" {
+		// There is no runtime to restart and no provider to start a new one.
+		return Snapshot{}, ErrNotFound
+	}
+	if effective.Provider == "" {
+		return Snapshot{}, ErrProviderRequired
+	}
+	if err := validateOptions(workspaceID, effective); err != nil {
+		return Snapshot{}, err
+	}
+	effective = withSizeDefaults(effective)
+
+	if snapshot, _, err := m.stopLocked(ctx, workspaceID); err != nil {
+		return snapshot, err
+	}
+	return m.startLocked(ctx, workspaceID, effective)
+}
+
+// Activity refreshes the idle deadline of a live runtime.
+func (m *Manager) Activity(workspaceID int64) (Snapshot, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rt := m.runtimes[workspaceID]
+	if rt == nil {
+		return Snapshot{}, false
+	}
+	if rt.state == StateRunning || rt.state == StateIdle {
+		m.touchRuntime(rt, m.now())
+	}
+	return rt.snapshot(workspaceID), true
+}
+
+// Touch records stream activity for a workspace.
+func (m *Manager) Touch(workspaceID int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rt := m.runtimes[workspaceID]
+	if rt == nil || (rt.state != StateRunning && rt.state != StateIdle) {
+		return
+	}
+	m.touchRuntime(rt, m.now())
+}
+
+// OpenDisplayStream returns a raw display connection for a streamable runtime.
+// It returns runtime.ErrNotRunning when the workspace has no runtime that can
+// serve a display connection.
+func (m *Manager) OpenDisplayStream(ctx context.Context, workspaceID int64) (io.ReadWriteCloser, error) {
+	m.mu.Lock()
+	rt := m.runtimes[workspaceID]
+	streamable := rt != nil && (rt.state == StateRunning || rt.state == StateIdle)
+	m.mu.Unlock()
+	if !streamable {
+		return nil, runtime.ErrNotRunning
+	}
+
+	conn, err := m.display.Connect(ctx, workspaceID)
+	if err != nil {
+		m.logger.Warn("display transport connect failed", "workspace_id", workspaceID, "error", err)
+		return nil, runtime.ErrNotRunning
+	}
+	m.Touch(workspaceID)
+	return conn, nil
+}
+
+// AttachStream registers a stream connection with the runtime. The returned
+// channel is closed, and the connection closed, as soon as the runtime stops or
+// fails. The returned function must be called when the stream ends.
+func (m *Manager) AttachStream(workspaceID int64, conn io.Closer) (<-chan struct{}, func()) {
+	handle := &streamHandle{conn: conn, done: make(chan struct{})}
+
+	m.mu.Lock()
+	if m.streams[workspaceID] == nil {
+		m.streams[workspaceID] = map[*streamHandle]struct{}{}
+	}
+	m.streams[workspaceID][handle] = struct{}{}
+	if rt := m.runtimes[workspaceID]; rt != nil && (rt.state == StateRunning || rt.state == StateIdle) {
+		if rt.state == StateIdle {
+			rt.state = StateRunning
+		}
+		m.touchRuntime(rt, m.now())
+	}
+	m.mu.Unlock()
+
+	release := func() { m.releaseStream(workspaceID, handle) }
+	return handle.done, release
+}
+
+// Reconcile adopts the runtime containers that survived an agent restart and
+// removes the managed containers that are no longer running.
+func (m *Manager) Reconcile(ctx context.Context) error {
+	listed, err := m.driver.List(ctx)
+	if err != nil {
+		return fmt.Errorf("list runtime containers: %w", err)
+	}
+
+	adopted, removed := 0, 0
+	for _, item := range listed {
+		if item.WorkspaceID <= 0 {
+			m.logger.Warn("ignoring runtime container without a valid workspace label", "container_id", item.ID)
+			continue
+		}
+		info, err := m.driver.Inspect(ctx, item.WorkspaceID)
+		if errors.Is(err, runtime.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			m.logger.Warn("inspecting runtime container during reconcile failed", "workspace_id", item.WorkspaceID, "error", err)
+			continue
+		}
+		if !info.Running {
+			if err := m.driver.Remove(ctx, item.WorkspaceID); err != nil && !errors.Is(err, runtime.ErrNotFound) {
+				m.logger.Warn("removing stopped runtime container failed", "workspace_id", item.WorkspaceID, "error", err)
+				continue
+			}
+			removed++
+			continue
+		}
+
+		now := m.now()
+		createdAt := info.StartedAt
+		if createdAt.IsZero() {
+			createdAt = now
+		}
+		width := envInt(info.Env[envScreenWidth], DefaultWidth)
+		height := envInt(info.Env[envScreenHeight], DefaultHeight)
+		if !validSize(width, height) {
+			width, height = DefaultWidth, DefaultHeight
+		}
+		recovered := &runtimeState{
+			state:        StateRunning,
+			provider:     strings.TrimSpace(info.Env[envProvider]),
+			width:        width,
+			height:       height,
+			containerID:  info.ID,
+			ip:           info.IP,
+			createdAt:    createdAt,
+			lastActivity: now,
+			idleDeadline: now.Add(m.idleTimeout),
+		}
+		m.mu.Lock()
+		m.runtimes[item.WorkspaceID] = recovered
+		m.mu.Unlock()
+		adopted++
+	}
+
+	if adopted > 0 || removed > 0 {
+		m.logger.Info("reconciled runtime containers", "adopted", adopted, "removed", removed)
+	}
+	return nil
+}
+
+// Supervise runs the crash detection and idle timeout loop until ctx is done.
+func (m *Manager) Supervise(ctx context.Context) {
+	ticker := time.NewTicker(m.scanInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.ScanOnce(ctx)
+		}
+	}
+}
+
+// ScanOnce performs one supervision pass: it fails runtimes whose container is
+// gone and stops runtimes that passed their idle deadline.
+func (m *Manager) ScanOnce(ctx context.Context) {
+	for _, workspaceID := range m.workspaceIDs() {
+		m.scanWorkspace(ctx, workspaceID)
+	}
+}
+
+func (m *Manager) scanWorkspace(ctx context.Context, workspaceID int64) {
+	lock := m.lockFor(workspaceID)
+	if !lock.TryLock() {
+		return
+	}
+	defer lock.Unlock()
+
+	m.mu.Lock()
+	rt := m.runtimes[workspaceID]
+	if rt == nil {
+		m.mu.Unlock()
+		return
+	}
+	state := rt.state
+	deadline := rt.idleDeadline
+	hasStreams := len(m.streams[workspaceID]) > 0
+	m.mu.Unlock()
+
+	if state != StateRunning && state != StateIdle {
+		return
+	}
+
+	info, err := m.driver.Inspect(ctx, workspaceID)
+	switch {
+	case errors.Is(err, runtime.ErrNotFound):
+		m.markFailed(workspaceID, errors.New("runtime container disappeared"), true)
+		return
+	case err != nil:
+		m.logger.Warn("inspecting runtime container failed", "workspace_id", workspaceID, "error", err)
+		return
+	case !info.Running:
+		m.markFailed(workspaceID, fmt.Errorf("runtime container is %s", info.State), true)
+		return
+	}
+
+	if hasStreams || m.now().Before(deadline) {
+		return
+	}
+	m.logger.Info("stopping idle workspace runtime", "workspace_id", workspaceID)
+	if _, _, err := m.stopLocked(ctx, workspaceID); err != nil {
+		m.logger.Warn("stopping idle runtime failed", "workspace_id", workspaceID, "error", err)
+	}
+}
+
+func (m *Manager) startLocked(ctx context.Context, workspaceID int64, opts StartOptions) (Snapshot, error) {
+	workspaceDir := WorkspaceDir(m.dataRoot, workspaceID)
+	if err := EnsureWorkspaceDirs(workspaceDir, m.chown); err != nil {
+		return Snapshot{}, fmt.Errorf("prepare workspace directory: %w", err)
+	}
+
+	now := m.now()
+	rt := &runtimeState{
+		state:        StateStarting,
+		provider:     opts.Provider,
+		width:        opts.Width,
+		height:       opts.Height,
+		createdAt:    now,
+		lastActivity: now,
+		idleDeadline: now.Add(m.idleTimeout),
+	}
+	m.mu.Lock()
+	m.runtimes[workspaceID] = rt
+	m.mu.Unlock()
+
+	// When the agent itself runs in a container, the local workspace path only
+	// exists inside that container. The runtime container is created by the
+	// Docker daemon on the host, so its bind source must be the host visible
+	// path derived from the same workspace id.
+	bindSource := WorkspaceDir(m.hostDataRoot, workspaceID)
+	spec := runtime.CreateSpec{
+		WorkspaceID: workspaceID,
+		Binds:       []string{bindSource + ":" + runtime.WorkspaceMountTarget},
+		Env: []string{
+			envWorkspaceDir + "=" + runtime.WorkspaceMountTarget,
+			envDisplay + "=" + displayNumber,
+			envScreenWidth + "=" + strconv.Itoa(opts.Width),
+			envScreenHeight + "=" + strconv.Itoa(opts.Height),
+			envVNCPort + "=" + strconv.Itoa(runtime.VNCPort),
+			envProvider + "=" + opts.Provider,
+		},
+	}
+
+	info, err := m.driver.Create(ctx, spec)
+	if err != nil {
+		m.markFailed(workspaceID, err, false)
+		return Snapshot{}, err
+	}
+	m.mu.Lock()
+	rt.containerID = info.ID
+	m.mu.Unlock()
+
+	if !info.Reused {
+		if err := m.driver.Start(ctx, workspaceID); err != nil {
+			m.removeContainer(ctx, workspaceID)
+			m.markFailed(workspaceID, err, false)
+			return Snapshot{}, err
+		}
+	}
+
+	running, err := m.driver.Inspect(ctx, workspaceID)
+	if err != nil {
+		m.removeContainer(ctx, workspaceID)
+		m.markFailed(workspaceID, err, false)
+		return Snapshot{}, err
+	}
+	if !running.Running || running.State != runtime.ContainerRunning {
+		exitErr := fmt.Errorf("runtime container is not running after start (state %s)", running.State)
+		m.removeContainer(ctx, workspaceID)
+		m.markFailed(workspaceID, exitErr, false)
+		return Snapshot{}, exitErr
+	}
+	if err := m.waitForDisplayReady(ctx, workspaceID); err != nil {
+		m.removeContainer(ctx, workspaceID)
+		m.markFailed(workspaceID, err, false)
+		return Snapshot{}, err
+	}
+
+	m.mu.Lock()
+	rt.containerID = running.ID
+	rt.ip = running.IP
+	rt.state = StateRunning
+	m.touchRuntime(rt, m.now())
+	snapshot := rt.snapshot(workspaceID)
+	m.mu.Unlock()
+	return snapshot, nil
+}
+
+// waitForDisplayReady polls the display transport until Xvfb and x11vnc accept
+// a connection. A started container is not a ready display: without this gate
+// the control plane could attach a stream during the seconds between container
+// start and display readiness and observe a failing runtime.
+func (m *Manager) waitForDisplayReady(ctx context.Context, workspaceID int64) error {
+	deadline := time.Now().Add(displayProbeTimeout)
+	for {
+		conn, err := m.display.Connect(ctx, workspaceID)
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("runtime display probe aborted: %w", ctxErr)
+		}
+		info, inspectErr := m.driver.Inspect(ctx, workspaceID)
+		switch {
+		case errors.Is(inspectErr, runtime.ErrNotFound):
+			return errors.New("runtime container disappeared while waiting for the display")
+		case inspectErr != nil:
+			m.logger.Warn("inspecting runtime container during display probe failed", "workspace_id", workspaceID, "error", inspectErr)
+		case !info.Running:
+			return fmt.Errorf("runtime container is %s while waiting for the display", info.State)
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("runtime display was not ready within %s: %w", displayProbeTimeout, err)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("runtime display probe aborted: %w", ctx.Err())
+		case <-time.After(displayProbeInterval):
+		}
+	}
+}
+
+// stopLocked stops and removes the container of a workspace. The caller must
+// hold the per-workspace lock.
+func (m *Manager) stopLocked(ctx context.Context, workspaceID int64) (Snapshot, bool, error) {
+	m.mu.Lock()
+	rt := m.runtimes[workspaceID]
+	if rt == nil {
+		m.mu.Unlock()
+		return Snapshot{}, false, nil
+	}
+	rt.state = StateStopping
+	handles := m.detachStreamsLocked(workspaceID)
+	snapshot := rt.snapshot(workspaceID)
+	m.mu.Unlock()
+
+	closeStreams(handles)
+
+	operationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+	defer cancel()
+
+	if err := m.driver.Stop(operationCtx, workspaceID); err != nil && !errors.Is(err, runtime.ErrNotFound) {
+		m.markFailed(workspaceID, err, false)
+		failed, _ := m.Get(workspaceID)
+		return failed, true, err
+	}
+	if err := m.driver.Remove(operationCtx, workspaceID); err != nil && !errors.Is(err, runtime.ErrNotFound) {
+		m.markFailed(workspaceID, err, false)
+		failed, _ := m.Get(workspaceID)
+		return failed, true, err
+	}
+
+	m.mu.Lock()
+	if current := m.runtimes[workspaceID]; current != nil {
+		current.state = StateStopped
+		current.containerID = ""
+		current.ip = ""
+		current.lastActivity = m.now()
+		current.idleDeadline = time.Time{}
+		snapshot = current.snapshot(workspaceID)
+	}
+	m.mu.Unlock()
+	return snapshot, true, nil
+}
+
+// markFailed records a failed runtime, drops its streams and optionally removes
+// the container corpse.
+func (m *Manager) markFailed(workspaceID int64, cause error, removeContainer bool) {
+	m.mu.Lock()
+	if rt := m.runtimes[workspaceID]; rt != nil {
+		rt.state = StateFailed
+		rt.containerID = ""
+		rt.ip = ""
+		rt.idleDeadline = time.Time{}
+	}
+	handles := m.detachStreamsLocked(workspaceID)
+	m.mu.Unlock()
+
+	closeStreams(handles)
+	if removeContainer {
+		m.removeContainer(context.Background(), workspaceID)
+	}
+	m.logger.Error("workspace runtime failed", "workspace_id", workspaceID, "error", cause)
+}
+
+func (m *Manager) removeContainer(ctx context.Context, workspaceID int64) {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+	defer cancel()
+	if err := m.driver.Remove(cleanupCtx, workspaceID); err != nil && !errors.Is(err, runtime.ErrNotFound) {
+		m.logger.Warn("removing runtime container failed", "workspace_id", workspaceID, "error", err)
+	}
+}
+
+func (m *Manager) releaseStream(workspaceID int64, handle *streamHandle) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if set, ok := m.streams[workspaceID]; ok {
+		delete(set, handle)
+		if len(set) == 0 {
+			delete(m.streams, workspaceID)
+		}
+	}
+	if rt := m.runtimes[workspaceID]; rt != nil && rt.state == StateRunning && len(m.streams[workspaceID]) == 0 {
+		rt.state = StateIdle
+		m.touchRuntime(rt, m.now())
+	}
+}
+
+func (m *Manager) detachStreamsLocked(workspaceID int64) []*streamHandle {
+	set := m.streams[workspaceID]
+	if len(set) == 0 {
+		return nil
+	}
+	handles := make([]*streamHandle, 0, len(set))
+	for handle := range set {
+		handles = append(handles, handle)
+	}
+	delete(m.streams, workspaceID)
+	return handles
+}
+
+func (m *Manager) currentOptions(workspaceID int64) (StartOptions, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rt := m.runtimes[workspaceID]
+	if rt == nil {
+		return StartOptions{}, false
+	}
+	return StartOptions{Provider: rt.provider, Width: rt.width, Height: rt.height}, true
+}
+
+func (m *Manager) touchRuntime(rt *runtimeState, now time.Time) {
+	rt.lastActivity = now
+	rt.idleDeadline = now.Add(m.idleTimeout)
+}
+
+func (m *Manager) lockFor(workspaceID int64) *sync.Mutex {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	lock := m.locks[workspaceID]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		m.locks[workspaceID] = lock
+	}
+	return lock
+}
+
+func (m *Manager) workspaceIDs() []int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ids := make([]int64, 0, len(m.runtimes))
+	for workspaceID := range m.runtimes {
+		ids = append(ids, workspaceID)
+	}
+	return ids
+}
+
+func closeStreams(handles []*streamHandle) {
+	for _, handle := range handles {
+		handle.close()
+	}
+}
+
+func validateOptions(workspaceID int64, opts StartOptions) error {
+	if workspaceID <= 0 {
+		return fmt.Errorf("%w: workspace id must be positive", ErrInvalidRequest)
+	}
+	if !providerPattern.MatchString(opts.Provider) {
+		return fmt.Errorf("%w: provider is invalid", ErrInvalidRequest)
+	}
+	if opts.Width != 0 && (opts.Width < MinWidth || opts.Width > MaxWidth) {
+		return fmt.Errorf("%w: width %d is outside %d..%d", ErrInvalidRequest, opts.Width, MinWidth, MaxWidth)
+	}
+	if opts.Height != 0 && (opts.Height < MinHeight || opts.Height > MaxHeight) {
+		return fmt.Errorf("%w: height %d is outside %d..%d", ErrInvalidRequest, opts.Height, MinHeight, MaxHeight)
+	}
+	return nil
+}
+
+func withSizeDefaults(opts StartOptions) StartOptions {
+	if opts.Width == 0 {
+		opts.Width = DefaultWidth
+	}
+	if opts.Height == 0 {
+		opts.Height = DefaultHeight
+	}
+	return opts
+}
+
+func validSize(width int, height int) bool {
+	return width >= MinWidth && width <= MaxWidth && height >= MinHeight && height <= MaxHeight
+}
+
+func envInt(raw string, fallback int) int {
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || value <= 0 {
+		return fallback
+	}
+	return value
+}
+
+func runtimeID(workspaceID int64) string {
+	return "ws-" + strconv.FormatInt(workspaceID, 10)
+}

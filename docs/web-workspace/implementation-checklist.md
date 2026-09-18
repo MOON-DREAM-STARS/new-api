@@ -1373,20 +1373,20 @@ User A 无法通过 API 读取/修改 User B 的 Project/Conversation。
 
 # 27. 实施 Phase 2：Browser Agent MVP
 
-- [ ] 独立 Browser Agent。
-- [ ] Workspace runtime manager。
-- [ ] X virtual display。
-- [ ] Chromium GUI session。
-- [ ] per-workspace profile mount。
-- [ ] remote display transport。
-- [ ] Browser Agent service auth。
-- [ ] no public Browser Agent port。
-- [ ] NewAPI stream broker。
-- [ ] one-time stream ticket。
-- [ ] session lifecycle。
-- [ ] crash recovery。
-- [ ] idle timeout。
-- [ ] runtime resource limits。
+- [x] 独立 Browser Agent。
+- [x] Workspace runtime manager。
+- [x] X virtual display。
+- [x] Chromium GUI session。
+- [x] per-workspace profile mount。
+- [x] remote display transport。
+- [x] Browser Agent service auth。
+- [x] no public Browser Agent port。
+- [x] NewAPI stream broker。
+- [x] one-time stream ticket。
+- [x] session lifecycle。
+- [x] crash recovery。
+- [x] idle timeout。
+- [x] runtime resource limits。
 
 Acceptance：
 
@@ -1625,3 +1625,25 @@ remote Chrome credential holder
   - 真实服务启动矩阵：fresh 与 “baseline 32a1e919 → 新二进制” upgrade 路径在 MySQL 5.7.44 / PostgreSQL 9.6.24 / SQLite 上各启动两次；每次日志 `database migration started` 1 次、`fatal|panic|migration failed` 0 次；升级后三张表与全部命名索引存在，升级前写入的 `options` marker 行保留。
 - NOT RUN / 未覆盖（如实记录）：Phase 2 Browser Agent、Phase 3 Network/Browser Guard、Phase 4 ChatGPT Provider Adapter、Phase 5 前端、Phase 6 安全验证（均属后续 checklist 节）；Provider live 登录（需用户手动登录窗口）；云端部署（未开始，需用户单独确认连接方式与授权范围）。
 - 提交：本阶段独立 commit（`feat(web-workspace): phase 1 core models, entitlement and ownership`），本地未 push；SHA 见阶段报告。
+
+## Phase 2（Browser Agent MVP）— PASS
+
+- 状态：**PASS**（本机冻结输入；2026-09-18，Asia/Singapore）
+- 实现范围：
+  - 独立 Go module `browser-agent/`：Docker Engine API 客户端（unix socket、仅 stdlib net/http）、runtime manager 状态机（STARTING→RUNNING→IDLE→STOPPING→STOPPED/FAILED）、per-workspace 串行化、idle timeout 扫描、容器消失检测、agent 重启 reconcile（adopt running / remove stopped）、RFB WebSocket 代理；HTTP API 全部要求 Bearer service token（常数时间比较），快照不含容器地址、端口或宿主路径。
+  - runtime 镜像 `newapi-web-workspace-runtime:local`：alpine 3.20 + Chromium + Xvfb + x11vnc（uid/gid 10001），SIGTERM 清理链，重启时只清理 Chromium singleton 锁。
+  - NewAPI 侧 session broker：`service/webworkspace/{agent_client,session,ticket}.go`、`controller/web_workspace.go`（session 控制面 + WSS gateway + 同源 Origin 校验）、`router/web-workspace-router.go`（控制面 UserAuth；stream 走一次性 ticket）、`dto/web_workspace.go`、`setting/system_setting/web_workspace.go`（AgentBaseURL；service token 仅读 env `WEB_WORKSPACE_AGENT_TOKEN`）。
+- 实际命令与结果（均在 `golang:1.26.1-alpine` 容器内、对冻结源码执行）：
+  - `gofmt -l model service/webworkspace controller router setting/system_setting dto` → 本次改动文件无输出（`controller/channel_pin_retry_test.go` 为仓库既有未格式化文件，未被本次改动）。
+  - `go vet ./model ./service/webworkspace ./controller ./router ./setting/system_setting` → VET_OK。
+  - `go test -p 1 ./model -run WebWorkspace -count=1`（TEST_MYSQL_DSN / TEST_POSTGRES_DSN 指向真实 MySQL 5.7.44 / PostgreSQL 9.6.24）→ PASS。
+  - `go test -p 1 ./service/webworkspace ./router ./controller -run WebWorkspace -count=1` → PASS。
+  - `go build ./...` → BUILD_OK。
+  - `cd browser-agent && gofmt -l .`（无输出）、`GOWORK=off go vet ./...` → VET_OK、`GOWORK=off go test ./... -count=1` → 全部 ok、`GOWORK=off go build ./cmd/browser-agent` → BUILD_OK。
+  - E2E（真实 agent 容器 + 真实 runtime 容器 + 真实 VNC）：`go test ./service/webworkspace -run WebWorkspaceAgentEndToEnd -count=1 -v` → PASS（1.82s，读得 RFB banner）；`go test ./router -run WebWorkspaceRouterAgentEndToEnd -count=1 -v` → PASS（1.86s，NewAPI WSS gateway → agent → VNC）。
+  - 隔离与边界验收（真实 Docker，runtime 101/102 同时运行）：`docker inspect` 证实 `ReadonlyRootfs=true`、`CapDrop=["ALL"]`、`no-new-privileges:true`、Memory=1GiB、NanoCpus=1、PidsLimit=256、ShmSize=512MiB、`PortBindings={}`，仅私有网络 `newapi-workspace-runtimes`，仅挂载 `<host-data-root>/workspace-<id>:/workspace`；A/B marker 互不可见；容器内 `/data`、宿主 data root、其他 workspace 路径均不存在。
+  - 无公网端口：`docker port` 对 agent 与 runtime 均为空；宿主 `127.0.0.1:8730` connection refused（目标计算机积极拒绝）。
+  - crash recovery（真实 Docker）：`docker restart ws-agent` 后日志 `reconciled runtime containers adopted=2 removed=0`，私有网络内 `GET /internal/v1/runtimes/101` 返回 `state=RUNNING`。
+  - 验收后已清理测试容器（runtime 101/102、agent）；测试网络与数据卷保留供后续阶段复用。
+- NOT RUN / 未覆盖（如实记录）：真实 VNC 客户端的画面渲染与交互（属 Phase 5 前端验收）；Browser Guard / CDP 独占 / egress 策略（Phase 3）；长期 idle timeout 与多用户并发负载；镜像 CVE 扫描；云端部署（未开始，需用户单独确认连接方式与授权范围）。
+- 提交：本阶段独立 commit（`feat(web-workspace): phase 2 browser agent and stream broker`），本地未 push；SHA 见阶段报告。

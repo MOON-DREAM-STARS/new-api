@@ -3,6 +3,7 @@ package controller
 import (
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -14,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/system_setting"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 )
 
 const (
@@ -250,5 +252,218 @@ func toWebConversationDto(conversation *model.WebConversation) dto.WebConversati
 		Title:     conversation.Title,
 		CreatedAt: conversation.CreatedAt,
 		UpdatedAt: conversation.UpdatedAt,
+	}
+}
+
+const (
+	webWorkspaceCodeAgentUnavailable = "WEB_WORKSPACE_AGENT_UNAVAILABLE"
+	webWorkspaceCodeSessionNotFound  = "WEB_WORKSPACE_SESSION_NOT_FOUND"
+	webWorkspaceCodeTicketInvalid    = "WEB_WORKSPACE_TICKET_INVALID"
+)
+
+// StartWebWorkspaceSession starts (or reuses) the caller's browser runtime. The
+// workspace is derived from the authenticated user; the runtime lives in the
+// Browser Agent and is never reachable from the client directly.
+func StartWebWorkspaceSession(c *gin.Context) {
+	user := requireWebWorkspaceEntitlement(c)
+	if user == nil {
+		return
+	}
+	session, err := webworkspace.StartSession(c.Request.Context(), user.Id)
+	if err != nil {
+		writeWebWorkspaceSessionError(c, err)
+		return
+	}
+	common.ApiSuccess(c, toWebWorkspaceSessionDto(session))
+}
+
+// GetWebWorkspaceSession returns the caller's current session, or null.
+func GetWebWorkspaceSession(c *gin.Context) {
+	user := requireWebWorkspaceEntitlement(c)
+	if user == nil {
+		return
+	}
+	session, ok := webworkspace.CurrentSession(user.Id)
+	if !ok {
+		common.ApiSuccess(c, nil)
+		return
+	}
+	common.ApiSuccess(c, toWebWorkspaceSessionDto(session))
+}
+
+// StopWebWorkspaceSession stops the runtime and drops the session. The browser
+// profile is retained.
+func StopWebWorkspaceSession(c *gin.Context) {
+	user := requireWebWorkspaceEntitlement(c)
+	if user == nil {
+		return
+	}
+	sessionId := c.Param("id")
+	if sessionId == "" {
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid session id", "")
+		return
+	}
+	if err := webworkspace.StopSession(c.Request.Context(), user.Id, sessionId); err != nil {
+		writeWebWorkspaceSessionError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"id": sessionId})
+}
+
+// RestartWebWorkspaceSession restarts the runtime behind one session.
+func RestartWebWorkspaceSession(c *gin.Context) {
+	user := requireWebWorkspaceEntitlement(c)
+	if user == nil {
+		return
+	}
+	sessionId := c.Param("id")
+	if sessionId == "" {
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid session id", "")
+		return
+	}
+	session, err := webworkspace.RestartSession(c.Request.Context(), user.Id, sessionId)
+	if err != nil {
+		writeWebWorkspaceSessionError(c, err)
+		return
+	}
+	common.ApiSuccess(c, toWebWorkspaceSessionDto(session))
+}
+
+// CreateWebWorkspaceStreamTicket issues a single-use ticket that the client
+// redeems on the WSS stream endpoint.
+func CreateWebWorkspaceStreamTicket(c *gin.Context) {
+	user := requireWebWorkspaceEntitlement(c)
+	if user == nil {
+		return
+	}
+	sessionId := c.Param("id")
+	if sessionId == "" {
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid session id", "")
+		return
+	}
+	// Refresh first so a runtime stopped by the agent idle timeout cannot get a
+	// fresh ticket from stale control-plane state.
+	session, err := webworkspace.RefreshSession(c.Request.Context(), user.Id, sessionId)
+	if err != nil {
+		writeWebWorkspaceSessionError(c, err)
+		return
+	}
+	if !webworkspace.LiveRuntimeState(session.State) {
+		writeWebWorkspaceError(c, http.StatusConflict, webWorkspaceCodeAgentUnavailable, "web workspace runtime is not running", "")
+		return
+	}
+	ticket, expiresAt, err := webworkspace.IssueStreamTicket(session)
+	if err != nil {
+		writeWebWorkspaceInternalError(c)
+		return
+	}
+	common.ApiSuccess(c, dto.WebWorkspaceStreamTicketDto{
+		Ticket:    ticket,
+		ExpiresAt: expiresAt,
+		StreamUrl: "/api/web-workspace/session/" + session.Id + "/stream",
+	})
+}
+
+var webWorkspaceStreamUpgrader = websocket.Upgrader{
+	ReadBufferSize:  8192,
+	WriteBufferSize: 8192,
+	CheckOrigin: func(r *http.Request) bool {
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		if origin == "" {
+			return true
+		}
+		parsed, err := url.Parse(origin)
+		if err != nil || parsed.Host == "" {
+			return false
+		}
+		return strings.EqualFold(parsed.Host, r.Host)
+	},
+}
+
+// WebWorkspaceStream is the WSS gateway: it authenticates the one-time ticket,
+// connects to the Browser Agent over the private network and proxies the raw
+// display stream. The client never learns the agent address or any credential.
+func WebWorkspaceStream(c *gin.Context) {
+	sessionId := c.Param("id")
+	ticket, err := webworkspace.ConsumeStreamTicket(c.Query("ticket"), sessionId)
+	if err != nil {
+		writeWebWorkspaceError(c, http.StatusForbidden, webWorkspaceCodeTicketInvalid, "invalid stream ticket", "")
+		return
+	}
+	session, err := webworkspace.GetSession(ticket.UserId, sessionId)
+	if err != nil || session.WorkspaceId != ticket.WorkspaceId {
+		writeWebWorkspaceError(c, http.StatusNotFound, webWorkspaceCodeSessionNotFound, "web workspace session not found", "")
+		return
+	}
+	if !webworkspace.LiveRuntimeState(session.State) {
+		writeWebWorkspaceError(c, http.StatusConflict, webWorkspaceCodeAgentUnavailable, "web workspace runtime is not running", "")
+		return
+	}
+
+	agentConn, agentResponse, err := webworkspace.DialAgentStream(c.Request.Context(), session.WorkspaceId)
+	if err != nil {
+		if agentResponse != nil && agentResponse.Body != nil {
+			_ = agentResponse.Body.Close()
+		}
+		writeWebWorkspaceSessionError(c, err)
+		return
+	}
+	defer func() { _ = agentConn.Close() }()
+
+	clientConn, err := webWorkspaceStreamUpgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		return
+	}
+	defer func() { _ = clientConn.Close() }()
+
+	_ = webworkspace.TouchSession(ticket.UserId, sessionId)
+	proxyWebWorkspaceStream(clientConn, agentConn)
+	_ = webworkspace.MarkSessionIdle(ticket.UserId, sessionId)
+}
+
+// proxyWebWorkspaceStream pumps messages in both directions until either side
+// closes, then closes the peer so the other pump can finish.
+func proxyWebWorkspaceStream(client *websocket.Conn, agent *websocket.Conn) {
+	done := make(chan struct{}, 2)
+	pump := func(source *websocket.Conn, target *websocket.Conn) {
+		defer func() { done <- struct{}{} }()
+		for {
+			messageType, payload, err := source.ReadMessage()
+			if err != nil {
+				return
+			}
+			if err := target.WriteMessage(messageType, payload); err != nil {
+				return
+			}
+		}
+	}
+	go pump(client, agent)
+	go pump(agent, client)
+	<-done
+	_ = client.Close()
+	_ = agent.Close()
+	<-done
+}
+
+func writeWebWorkspaceSessionError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, webworkspace.ErrSessionNotFound), errors.Is(err, webworkspace.ErrAgentRuntimeNotFound):
+		writeWebWorkspaceError(c, http.StatusNotFound, webWorkspaceCodeSessionNotFound, "web workspace session not found", "")
+	case errors.Is(err, webworkspace.ErrAgentUnavailable), errors.Is(err, webworkspace.ErrAgentRejected):
+		writeWebWorkspaceError(c, http.StatusServiceUnavailable, webWorkspaceCodeAgentUnavailable, "web workspace agent unavailable", "")
+	case errors.Is(err, webworkspace.ErrResourceNotFound):
+		writeWebWorkspaceError(c, http.StatusNotFound, webWorkspaceCodeResourceNotFound, "web workspace resource not found", "")
+	default:
+		writeWebWorkspaceInternalError(c)
+	}
+}
+
+func toWebWorkspaceSessionDto(session *webworkspace.Session) dto.WebWorkspaceSessionDto {
+	return dto.WebWorkspaceSessionDto{
+		SessionId:      session.Id,
+		State:          session.State,
+		CreatedAt:      session.CreatedAt,
+		LastSeenAt:     session.LastSeenAt,
+		IdleDeadlineAt: session.IdleDeadlineAt,
 	}
 }
