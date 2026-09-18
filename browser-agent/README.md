@@ -17,7 +17,9 @@ session 生命周期（idle timeout / crash recovery / reconcile）与资源限�
 | `WEB_WORKSPACE_HOST_DATA_ROOT` | 否 | 等于 `WEB_WORKSPACE_DATA_ROOT` | **Docker daemon 可见**的宿主机路径前缀，必须是绝对路径。仅用于计算 runtime 容器的 bind 源：`<host-data-root>/workspace-<id>`。 |
 | `DOCKER_HOST` | 否 | `unix:///var/run/docker.sock` | 仅支持 `unix://` 前缀的 unix socket，其他形式启动失败。 |
 | `WEB_WORKSPACE_RUNTIME_IMAGE` | 否 | `newapi-web-workspace-runtime:local` | runtime 镜像（见 `runtime/README.md`）。 |
-| `WEB_WORKSPACE_RUNTIME_NETWORK` | 否 | `newapi-workspace-runtimes` | runtime 容器加入的私有 network；该 network 必须已存在。 |
+| `WEB_WORKSPACE_RUNTIME_NETWORK` | 否 | `newapi-workspace-runtimes` | runtime 容器加入的私有 network。启动时检查 `Internal=true`；不存在则创建 internal bridge，已存在但非 internal 时启动失败。 |
+| `WEB_WORKSPACE_EGRESS_PROXY_LISTEN` | 否 | `0.0.0.0:8731` | Agent 内 forward proxy 的监听地址，必须是 `host:port`，只接入 runtime internal network。 |
+| `WEB_WORKSPACE_EGRESS_PROXY_URL` | 是 | — | runtime 容器使用的 proxy URL，注入为 `WW_PROXY_SERVER`；必须是 `http(s)://host[:port]`，缺失或非法时启动失败（fail closed）。 |
 | `WEB_WORKSPACE_RUNTIME_MEMORY_BYTES` | 否 | `1073741824` | 每 runtime 内存上限。 |
 | `WEB_WORKSPACE_RUNTIME_CPUS` | 否 | `1.0` | 每 runtime CPU 上限（转成 NanoCPUs）。 |
 | `WEB_WORKSPACE_RUNTIME_PIDS` | 否 | `256` | 每 runtime PIDs 上限。 |
@@ -57,9 +59,16 @@ services:
   token 比较为常数时间。
 - **数据目录**：宿主目录必须真实存在且可被 Docker daemon 解析；agent 需能对其创建目录并 chown
   到 `10001:10001`（以 root/CAP_CHOWN 运行，或以 10001 运行）。
-- **私有 network**：`WEB_WORKSPACE_RUNTIME_NETWORK` 指定的 network 必须预先创建。
+- **私有 network**：Agent 启动时先检查 `WEB_WORKSPACE_RUNTIME_NETWORK`；不存在则创建 `Driver=bridge`、`Internal=true` 的 network，已存在但 `Internal != true` 时拒绝启动。runtime 不 publish 任何端口，也没有除 Agent proxy 外的出网通道。
 - **不暴露 runtime 端口**：runtime 容器 `PortBindings` 为空、`NetworkMode` 为上述私有 network；
   VNC（5900）只在容器网络内可达，由 agent 直连。
+
+## default-deny egress（Phase 3A）
+
+- runtime 容器只加入 `Internal=true` 的私有 bridge network，不能直接访问宿主、Docker、metadata、其他 workspace 或公网。
+- Agent 进程内的 forward proxy 是唯一出网路径。它只接受 `CONNECT host:port` 与 absolute-form `http://host[:port]/...` 的 GET/HEAD/POST/PUT/DELETE/OPTIONS/PATCH；其他方法返回 405，端口只允许 80/443。
+- proxy 使用共享 `internal/policy`：域名 allowlist、解析后地址段检查、混合解析结果整体拒绝、DNS rebinding 防护；实际拨号使用已经校验的 IP，不会再次按域名解析。未知来源 IP、解析失败/空结果、任何地址被拒绝时都返回 403 并记录 deny 审计。
+- Create 时给 runtime 注入 `WW_PROXY_SERVER=<WEB_WORKSPACE_EGRESS_PROXY_URL>` 与 `WW_GUARD_MODE=LOCKED|LOGIN`；缺省为 `LOCKED`。runtime/guard 消费这些变量，本工作包只负责注入与 agent-side proxy 边界。
 
 ## runtime 容器隔离与资源（固定，请求不可覆盖）
 
@@ -75,10 +84,10 @@ Agent 自身不挂载、也不把 Docker socket 暴露给 runtime 容器。
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/healthz` | `{"status":"ok"}`，无需认证。 |
-| POST | `/internal/v1/runtimes` | 幂等启动；`{workspace_id,provider,width,height}`，尺寸默认 1280x720（范围 640..3840 / 360..2160）。 |
+| POST | `/internal/v1/runtimes` | 幂等启动；`{workspace_id,provider,width,height,mode}`，尺寸默认 1280x720（范围 640..3840 / 360..2160），`mode` 缺省 `LOCKED`，只接受 `LOCKED`/`LOGIN`。 |
 | GET | `/internal/v1/runtimes/{id}` | 当前 runtime 状态，无则 404 `runtime_not_found`。 |
 | POST | `/internal/v1/runtimes/{id}/stop` | 停止并删除容器，保留 profile。 |
-| POST | `/internal/v1/runtimes/{id}/restart` | 停 + 启；body 可省略以复用上次 provider/尺寸。 |
+| POST | `/internal/v1/runtimes/{id}/restart` | 停 + 启；body 可省略以复用上次 provider/尺寸/mode，也可用 `mode` 覆盖为 `LOCKED`/`LOGIN`。非法 mode 返回 400 `invalid_request`。 |
 | POST | `/internal/v1/runtimes/{id}/activity` | 刷新 `last_activity_at` / idle deadline。 |
 | GET | `/internal/v1/runtimes/{id}/stream` | WebSocket，代理容器内 VNC(5900) 的原始 RFB 字节；非 RUNNING/IDLE 返回 409 `runtime_not_running`。 |
 

@@ -12,6 +12,21 @@ WW_SCREEN_HEIGHT="${WW_SCREEN_HEIGHT:-720}"
 WW_VNC_PORT="${WW_VNC_PORT:-5900}"
 WW_PROVIDER="${WW_PROVIDER:-unknown}"
 
+if [ -z "${WW_PROXY_SERVER:-}" ]; then
+    log "WW_PROXY_SERVER is required and must be the egress proxy as http(s)://host[:port]"
+    exit 1
+fi
+
+WW_GUARD_MODE="$(printf '%s' "${WW_GUARD_MODE:-LOCKED}" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')"
+case "$WW_GUARD_MODE" in
+    LOCKED|LOGIN) ;;
+    *)
+        log "invalid WW_GUARD_MODE: expected LOCKED or LOGIN"
+        exit 1
+        ;;
+esac
+export WW_GUARD_MODE
+
 export HOME="$WW_WORKSPACE_DIR"
 export DISPLAY="$WW_DISPLAY"
 export XDG_CONFIG_HOME="$WW_WORKSPACE_DIR/profile/config"
@@ -22,6 +37,7 @@ export XDG_RUNTIME_DIR="$WW_WORKSPACE_DIR/tmp/runtime"
 XVFB_PID=""
 X11VNC_PID=""
 CHROMIUM_PID=""
+GUARD_PID=""
 
 terminate_process() {
     pid="$1"
@@ -45,11 +61,21 @@ terminate_process() {
     wait "$pid" 2>/dev/null || true
 }
 
+# process_running reports whether a tracked PID is still alive. A shell child
+# that already exited stays visible as a zombie until it is reaped, so the
+# watchdog cannot rely on kill -0 alone.
+process_running() {
+    [ -n "$1" ] || return 1
+    state="$(awk '{ print $3 }' "/proc/$1/stat" 2>/dev/null)" || true
+    [ -n "$state" ] && [ "$state" != "Z" ]
+}
+
 cleanup() {
     status=$?
     trap - EXIT INT TERM
 
-    log "shutting down: chromium -> x11vnc -> Xvfb"
+    log "shutting down: workspace-guard -> chromium -> x11vnc -> Xvfb"
+    terminate_process "$GUARD_PID" workspace-guard
     terminate_process "$CHROMIUM_PID" chromium
     terminate_process "$X11VNC_PID" x11vnc
     terminate_process "$XVFB_PID" Xvfb
@@ -60,7 +86,7 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-log "starting provider=${WW_PROVIDER} workspace=${WW_WORKSPACE_DIR} display=${WW_DISPLAY} screen=${WW_SCREEN_WIDTH}x${WW_SCREEN_HEIGHT} vnc_port=${WW_VNC_PORT}"
+log "starting provider=${WW_PROVIDER} workspace=${WW_WORKSPACE_DIR} display=${WW_DISPLAY} screen=${WW_SCREEN_WIDTH}x${WW_SCREEN_HEIGHT} vnc_port=${WW_VNC_PORT} guard_mode=${WW_GUARD_MODE}"
 
 umask 077
 mkdir -p "$WW_WORKSPACE_DIR/profile" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_RUNTIME_DIR"
@@ -133,15 +159,49 @@ while ! netstat -ltn 2>/dev/null | grep -q ":${WW_VNC_PORT}[[:space:]]"; do
     i=$((i + 1))
     if [ "$i" -ge 100 ]; then
         log "timed out waiting for x11vnc port $WW_VNC_PORT"
-        [ -f /tmp/x11vnc.log ] && cat /tmp/x11vnc.log >&2
         exit 1
     fi
     sleep 0.1 2>/dev/null || sleep 1
 done
 log "x11vnc ready pid=$X11VNC_PID port=$WW_VNC_PORT"
 
-log "starting chromium with profile=$WW_WORKSPACE_DIR/profile"
-chromium --no-sandbox --user-data-dir="$WW_WORKSPACE_DIR/profile" --display="$WW_DISPLAY" --no-first-run --no-default-browser-check --disable-features=TranslateUI --start-maximized about:blank &
+log "starting chromium with profile=$WW_WORKSPACE_DIR/profile guard_mode=$WW_GUARD_MODE"
+chromium --no-sandbox \
+    --user-data-dir="$WW_WORKSPACE_DIR/profile" \
+    --display="$WW_DISPLAY" \
+    --no-first-run \
+    --no-default-browser-check \
+    --disable-features=TranslateUI \
+    --start-maximized \
+    --proxy-server="$WW_PROXY_SERVER" \
+    --proxy-bypass-list="<-loopback>" \
+    --disable-quic \
+    --webrtc-ip-handling-policy=disable_non_proxied_udp \
+    --remote-debugging-port=9222 \
+    --remote-debugging-address=127.0.0.1 \
+    --deny-permission-prompts \
+    about:blank &
 CHROMIUM_PID=$!
 
-wait "$CHROMIUM_PID"
+log "starting workspace-guard mode=$WW_GUARD_MODE"
+workspace-guard &
+GUARD_PID=$!
+
+# The guard is the only CDP consumer of this runtime: without it Chromium has
+# no navigation, network, popup, download or clipboard enforcement, so a guard
+# that stops must terminate the whole runtime.
+while :; do
+    if ! process_running "$GUARD_PID"; then
+        GUARD_STATUS=0
+        wait "$GUARD_PID" 2>/dev/null || GUARD_STATUS=$?
+        log "workspace-guard exited with status ${GUARD_STATUS}: failing closed"
+        exit 1
+    fi
+    if ! process_running "$CHROMIUM_PID"; then
+        CHROMIUM_STATUS=0
+        wait "$CHROMIUM_PID" 2>/dev/null || CHROMIUM_STATUS=$?
+        log "chromium exited with status ${CHROMIUM_STATUS}"
+        exit "$CHROMIUM_STATUS"
+    fi
+    sleep 0.5 2>/dev/null || sleep 1
+done

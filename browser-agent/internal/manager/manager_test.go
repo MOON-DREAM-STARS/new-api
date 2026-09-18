@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/QuantumNous/new-api/browser-agent/internal/policy"
 	"github.com/QuantumNous/new-api/browser-agent/internal/runtime"
 	"github.com/QuantumNous/new-api/browser-agent/internal/runtime/runtimetest"
 )
@@ -59,13 +60,14 @@ func newHarnessWithRoots(t *testing.T, dataRoot string, hostDataRoot string) *ha
 	display := &runtimetest.FakeDisplay{}
 	clock := newTestClock()
 	mgr := New(driver, display, Options{
-		DataRoot:     dataRoot,
-		HostDataRoot: hostDataRoot,
-		IdleTimeout:  10 * time.Minute,
-		ScanInterval: time.Minute,
-		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Now:          clock.Now,
-		Chown:        workspaceChownHandover(),
+		DataRoot:       dataRoot,
+		HostDataRoot:   hostDataRoot,
+		EgressProxyURL: "http://ws-agent:8731",
+		IdleTimeout:    10 * time.Minute,
+		ScanInterval:   time.Minute,
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Now:            clock.Now,
+		Chown:          workspaceChownHandover(),
 	})
 	return &harness{mgr: mgr, driver: driver, display: display, clock: clock, dataRoot: dataRoot}
 }
@@ -108,6 +110,8 @@ func TestStartCreatesRuntimeAndWorkspaceMount(t *testing.T) {
 	assert.Contains(t, spec.Env, "WW_SCREEN_HEIGHT=720")
 	assert.Contains(t, spec.Env, "WW_VNC_PORT=5900")
 	assert.Contains(t, spec.Env, "WW_PROVIDER=chatgpt")
+	assert.Contains(t, spec.Env, "WW_PROXY_SERVER=http://ws-agent:8731")
+	assert.Contains(t, spec.Env, "WW_GUARD_MODE=LOCKED")
 }
 
 func TestStartIsIdempotent(t *testing.T) {
@@ -394,6 +398,101 @@ func TestStartFailsClosedWhenDisplayNeverBecomesReady(t *testing.T) {
 	_, err = h.mgr.OpenDisplayStream(context.Background(), 62)
 	require.ErrorIs(t, err, runtime.ErrNotRunning)
 }
+func TestStartDefaultAndLoginModesAreInjectedAndIndexed(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.mgr.Start(context.Background(), 101, StartOptions{Provider: "chatgpt"})
+	require.NoError(t, err)
+	spec := h.driver.LastCreateSpec()
+	assert.Contains(t, spec.Env, "WW_GUARD_MODE=LOCKED")
+	assert.Contains(t, spec.Env, "WW_PROXY_SERVER=http://ws-agent:8731")
+	mode, workspaceID, ok := h.mgr.LookupSource("10.77.0.1")
+	require.True(t, ok)
+	assert.Equal(t, policy.ModeLocked, mode)
+	assert.Equal(t, int64(101), workspaceID)
+
+	_, err = h.mgr.Start(context.Background(), 102, StartOptions{Provider: "chatgpt", Mode: policy.ModeLogin})
+	require.NoError(t, err)
+	spec = h.driver.LastCreateSpec()
+	assert.Contains(t, spec.Env, "WW_GUARD_MODE=LOGIN")
+	mode, workspaceID, ok = h.mgr.LookupSource("10.77.0.2")
+	require.True(t, ok)
+	assert.Equal(t, policy.ModeLogin, mode)
+	assert.Equal(t, int64(102), workspaceID)
+}
+
+func TestStartRejectsInvalidMode(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.mgr.Start(context.Background(), 1, StartOptions{Provider: "chatgpt", Mode: policy.Mode("OPEN")})
+	require.ErrorIs(t, err, ErrInvalidRequest)
+	assert.Equal(t, 0, h.driver.CreateCalls)
+}
+
+func TestLookupSourceClearsOnStopAndFailure(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.mgr.Start(context.Background(), 201, StartOptions{Provider: "chatgpt"})
+	require.NoError(t, err)
+	_, _, ok := h.mgr.LookupSource("10.77.0.1")
+	require.True(t, ok)
+
+	_, err = h.mgr.Stop(context.Background(), 201)
+	require.NoError(t, err)
+	_, _, ok = h.mgr.LookupSource("10.77.0.1")
+	assert.False(t, ok)
+	_, _, ok = h.mgr.LookupSource("not-an-ip")
+	assert.False(t, ok)
+
+	_, err = h.mgr.Start(context.Background(), 202, StartOptions{Provider: "chatgpt"})
+	require.NoError(t, err)
+	_, _, ok = h.mgr.LookupSource("10.77.0.2")
+	require.True(t, ok)
+	h.driver.SetRunning(202, false)
+	h.mgr.ScanOnce(context.Background())
+	_, _, ok = h.mgr.LookupSource("10.77.0.2")
+	assert.False(t, ok)
+}
+
+func TestReconcileIndexesRuntimeModeAndNormalizesIP(t *testing.T) {
+	h := newHarness(t)
+	h.driver.Seed(301, runtimetest.Container{
+		ID:        "container-reconciled",
+		Running:   true,
+		IP:        "::ffff:10.77.1.9",
+		Env:       map[string]string{"WW_PROVIDER": "chatgpt", "WW_GUARD_MODE": "LOGIN"},
+		StartedAt: h.clock.Now(),
+	})
+	require.NoError(t, h.mgr.Reconcile(context.Background()))
+
+	mode, workspaceID, ok := h.mgr.LookupSource("10.77.1.9")
+	require.True(t, ok)
+	assert.Equal(t, policy.ModeLogin, mode)
+	assert.Equal(t, int64(301), workspaceID)
+	_, _, ok = h.mgr.LookupSource("[::ffff:10.77.1.9]:443")
+	assert.True(t, ok)
+}
+
+func TestNormalizeRuntimeIP(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want string
+		ok   bool
+	}{
+		{name: "ipv4", raw: "10.77.0.1", want: "10.77.0.1", ok: true},
+		{name: "ipv4 with port", raw: "10.77.0.1:443", want: "10.77.0.1", ok: true},
+		{name: "ipv4 in ipv6", raw: "::ffff:10.77.0.1", want: "10.77.0.1", ok: true},
+		{name: "bracketed ipv6 with port", raw: "[::1]:443", want: "::1", ok: true},
+		{name: "zone removed", raw: "fe80::1%eth0", want: "fe80::1", ok: true},
+		{name: "invalid", raw: "not-an-ip", ok: false},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			got, ok := normalizeRuntimeIP(testCase.raw)
+			assert.Equal(t, testCase.ok, ok)
+			assert.Equal(t, testCase.want, got)
+		})
+	}
+}
+
 func TestWorkspaceDirIsDerivedFromIntegerID(t *testing.T) {
 	assert.Equal(t, filepath.Join("/data/web-workspaces", "workspace-42"), WorkspaceDir("/data/web-workspaces", 42))
 }

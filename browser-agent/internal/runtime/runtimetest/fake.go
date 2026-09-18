@@ -28,14 +28,16 @@ type FakeDriver struct {
 	containers map[int64]*Container
 	nextID     int
 
-	CreateCalls  int
-	StartCalls   int
-	InspectCalls int
-	StopCalls    int
-	RemoveCalls  int
-	ListCalls    int
+	EnsureNetworkCalls int
+	CreateCalls        int
+	StartCalls         int
+	InspectCalls       int
+	StopCalls          int
+	RemoveCalls        int
+	ListCalls          int
 
-	CreateErr error
+	EnsureNetworkErr error
+	CreateErr        error
 	// ExitOnStart makes Start leave the container stopped, simulating a runtime
 	// image that starts and exits immediately.
 	ExitOnStart bool
@@ -45,6 +47,15 @@ type FakeDriver struct {
 // NewFakeDriver returns an empty fake driver.
 func NewFakeDriver() *FakeDriver {
 	return &FakeDriver{containers: map[int64]*Container{}}
+}
+
+// EnsureRuntimeNetwork records the startup network preflight. The fake has no
+// Docker network state; Docker-specific validation is covered by driver tests.
+func (f *FakeDriver) EnsureRuntimeNetwork(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.EnsureNetworkCalls++
+	return f.EnsureNetworkErr
 }
 
 // Seed installs a container without going through Create.

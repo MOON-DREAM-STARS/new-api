@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/QuantumNous/new-api/browser-agent/internal/manager"
+	"github.com/QuantumNous/new-api/browser-agent/internal/policy"
 	"github.com/QuantumNous/new-api/browser-agent/internal/runtime/runtimetest"
 )
 
@@ -72,11 +73,12 @@ func newHarness(t *testing.T) *harness {
 	display := &runtimetest.FakeDisplay{ConnectFunc: pipes.connect}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mgr := manager.New(driver, display, manager.Options{
-		DataRoot:     dataRoot,
-		IdleTimeout:  10 * time.Minute,
-		ScanInterval: time.Minute,
-		Logger:       logger,
-		Chown:        workspaceChownHandover(),
+		DataRoot:       dataRoot,
+		EgressProxyURL: "http://ws-agent:8731",
+		IdleTimeout:    10 * time.Minute,
+		ScanInterval:   time.Minute,
+		Logger:         logger,
+		Chown:          workspaceChownHandover(),
 	})
 	server := httptest.NewServer(New(mgr, testToken, logger))
 	t.Cleanup(server.Close)
@@ -247,6 +249,19 @@ func TestActivityRefreshesIdleDeadline(t *testing.T) {
 	assert.JSONEq(t, `{"success":false,"error":"runtime_not_found"}`, string(body))
 }
 
+func TestStartInjectsGuardMode(t *testing.T) {
+	h := newHarness(t)
+	response, body := h.request(t, http.MethodPost, "/internal/v1/runtimes", "Bearer "+testToken, `{"workspace_id":91,"provider":"chatgpt","mode":"login"}`)
+	require.Equal(t, http.StatusOK, response.StatusCode, string(body))
+	assert.Contains(t, h.driver.LastCreateSpec().Env, "WW_GUARD_MODE=LOGIN")
+	assert.Contains(t, h.driver.LastCreateSpec().Env, "WW_PROXY_SERVER=http://ws-agent:8731")
+
+	mode, workspaceID, ok := h.mgr.LookupSource("10.77.0.1")
+	require.True(t, ok)
+	assert.Equal(t, policy.ModeLogin, mode)
+	assert.Equal(t, int64(91), workspaceID)
+}
+
 func TestValidationRejectsBadRequests(t *testing.T) {
 	h := newHarness(t)
 	cases := []string{
@@ -255,6 +270,7 @@ func TestValidationRejectsBadRequests(t *testing.T) {
 		`{"workspace_id":1,"provider":"bad provider"}`,
 		`{"workspace_id":1,"provider":"chatgpt","width":100}`,
 		`{"workspace_id":1,"provider":"chatgpt","height":5000}`,
+		`{"workspace_id":1,"provider":"chatgpt","mode":"open"}`,
 		`not-json`,
 	}
 	for _, payload := range cases {
@@ -271,6 +287,23 @@ func TestValidationRejectsBadRequests(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, response.StatusCode)
 	assert.JSONEq(t, `{"success":false,"error":"not_found"}`, string(body))
 	assert.Equal(t, 0, h.driver.CreateCalls)
+}
+
+func TestRestartModeOverrideIsValidatedAndInjected(t *testing.T) {
+	h := newHarness(t)
+	h.startRuntime(t, 92)
+
+	response, body := h.request(t, http.MethodPost, "/internal/v1/runtimes/92/restart", "Bearer "+testToken, `{"mode":"LOGIN"}`)
+	require.Equal(t, http.StatusOK, response.StatusCode, string(body))
+	assert.Contains(t, h.driver.LastCreateSpec().Env, "WW_GUARD_MODE=LOGIN")
+
+	response, body = h.request(t, http.MethodPost, "/internal/v1/runtimes/92/restart", "Bearer "+testToken, `{"mode":"OPEN"}`)
+	assert.Equal(t, http.StatusBadRequest, response.StatusCode)
+	assert.JSONEq(t, `{"success":false,"error":"invalid_request"}`, string(body))
+
+	response, body = h.request(t, http.MethodPost, "/internal/v1/runtimes/555/restart", "Bearer "+testToken, `{"mode":"OPEN"}`)
+	assert.Equal(t, http.StatusBadRequest, response.StatusCode)
+	assert.JSONEq(t, `{"success":false,"error":"invalid_request"}`, string(body))
 }
 
 func TestRuntimeResponsesDoNotLeakInternals(t *testing.T) {

@@ -109,6 +109,31 @@ func (c *Client) do(ctx context.Context, method string, path string, query url.V
 	return &APIError{StatusCode: response.StatusCode, Message: message}
 }
 
+// NetworkInspect returns the Docker network matching name. A missing network is
+// returned as an APIError with status 404 so callers can create it.
+func (c *Client) NetworkInspect(ctx context.Context, name string) (NetworkInfo, error) {
+	if strings.TrimSpace(name) == "" {
+		return NetworkInfo{}, errors.New("network name must be non-empty")
+	}
+	var response NetworkInfo
+	path := "/networks/" + url.PathEscape(name)
+	if err := c.do(ctx, http.MethodGet, path, nil, nil, &response); err != nil {
+		return NetworkInfo{}, err
+	}
+	return response, nil
+}
+
+// NetworkCreate creates a bridge network. The internal flag is always sent by
+// the runtime driver as true; it is kept explicit so the Docker API contract is
+// visible and testable.
+func (c *Client) NetworkCreate(ctx context.Context, name string, internal bool) error {
+	if strings.TrimSpace(name) == "" {
+		return errors.New("network name must be non-empty")
+	}
+	body := networkCreateRequest{Name: name, Driver: "bridge", Internal: internal}
+	return c.do(ctx, http.MethodPost, "/networks/create", nil, body, nil)
+}
+
 func isStatus(err error, statusCode int) bool {
 	var apiError *APIError
 	if !errors.As(err, &apiError) {

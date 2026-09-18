@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/browser-agent/internal/config"
+	"github.com/QuantumNous/new-api/browser-agent/internal/egress"
 	"github.com/QuantumNous/new-api/browser-agent/internal/httpapi"
 	"github.com/QuantumNous/new-api/browser-agent/internal/manager"
 	"github.com/QuantumNous/new-api/browser-agent/internal/runtime/docker"
@@ -40,8 +41,8 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
 
 	driver := docker.NewDriver(docker.NewClient(cfg.DockerSocketPath), docker.Options{
 		Image:       cfg.RuntimeImage,
@@ -50,16 +51,45 @@ func run(logger *slog.Logger) error {
 		NanoCPUs:    cfg.NanoCPUs,
 		PidsLimit:   cfg.PidsLimit,
 	})
+
+	// The runtime network must exist and be internal before any container is
+	// adopted or started. A non-internal network is a fatal fail-open condition.
+	preflightCtx, cancelPreflight := context.WithTimeout(ctx, reconcileTimeout)
+	err = driver.EnsureRuntimeNetwork(preflightCtx)
+	cancelPreflight()
+	if err != nil {
+		return fmt.Errorf("ensure runtime network: %w", err)
+	}
+
 	mgr := manager.New(driver, driver, manager.Options{
-		DataRoot:     cfg.DataRoot,
-		HostDataRoot: cfg.HostDataRoot,
-		IdleTimeout:  cfg.IdleTimeout,
-		ScanInterval: cfg.IdleScanInterval,
-		Logger:       logger,
+		DataRoot:       cfg.DataRoot,
+		HostDataRoot:   cfg.HostDataRoot,
+		EgressProxyURL: cfg.EgressProxyURL,
+		IdleTimeout:    cfg.IdleTimeout,
+		ScanInterval:   cfg.IdleScanInterval,
+		Logger:         logger,
 	})
 
+	proxy := egress.New(egress.Options{
+		Listen: cfg.EgressProxyListen,
+		Logger: logger,
+		Lookup: mgr.LookupSource,
+	})
+	proxyErr := make(chan error, 1)
+	go func() {
+		proxyErr <- proxy.ListenAndServe()
+	}()
+	logger.Info("starting egress proxy", "listen", cfg.EgressProxyListen)
+	defer func() {
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancelShutdown()
+		_ = proxy.Shutdown(shutdownCtx)
+	}()
+
 	// Adopt running runtime containers before serving traffic, and remove the
-	// orphaned containers an agent crash may have left behind.
+	// orphaned containers an agent crash may have left behind. The egress
+	// index is populated during reconcile, so requests from adopted runtimes
+	// are denied until their source address is known.
 	reconcileCtx, cancelReconcile := context.WithTimeout(ctx, reconcileTimeout)
 	err = mgr.Reconcile(reconcileCtx)
 	cancelReconcile()
@@ -80,21 +110,44 @@ func run(logger *slog.Logger) error {
 	}()
 	logger.Info("browser agent listening", "listen", cfg.Listen)
 
-	select {
-	case <-ctx.Done():
-		// Runtime containers keep running across an agent restart; they are
-		// reconciled again on the next start.
-	case err := <-serverErr:
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			return err
+	stop := func() error {
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancelShutdown()
+		if err := proxy.Shutdown(shutdownCtx); err != nil {
+			return fmt.Errorf("shutdown egress proxy: %w", err)
+		}
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			return fmt.Errorf("shutdown browser agent http server: %w", err)
 		}
 		return nil
 	}
 
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer cancelShutdown()
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		return err
+	select {
+	case <-ctx.Done():
+		return stop()
+	case err := <-serverErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			_ = stop()
+			return err
+		}
+		if err == nil {
+			err = errors.New("browser agent http server stopped unexpectedly")
+		}
+		if stopErr := stop(); stopErr != nil {
+			return stopErr
+		}
+		return fmt.Errorf("browser agent http server: %w", err)
+	case err := <-proxyErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			_ = stop()
+			return fmt.Errorf("egress proxy: %w", err)
+		}
+		if err == nil {
+			err = errors.New("egress proxy stopped unexpectedly")
+		}
+		if stopErr := stop(); stopErr != nil {
+			return stopErr
+		}
+		return fmt.Errorf("egress proxy: %w", err)
 	}
-	return nil
 }
