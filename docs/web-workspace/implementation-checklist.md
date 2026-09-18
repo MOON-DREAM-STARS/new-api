@@ -1451,23 +1451,23 @@ A 的 Conversation 必须可追溯到 A Project。
 
 # 30. 实施 Phase 5：前端
 
-- [ ] Sidebar 一级入口。
-- [ ] route guard。
-- [ ] entitlement disabled UI。
-- [ ] project list。
-- [ ] create project。
-- [ ] rename project。
-- [ ] delete project。
-- [ ] remote browser surface。
-- [ ] session state。
-- [ ] reconnect。
-- [ ] fullscreen。
-- [ ] Browser Agent error states。
-- [ ] policy denied state。
-- [ ] no exposed upstream IDs where unnecessary。
-- [ ] i18n。
-- [ ] accessibility。
-- [ ] mobile behavior 明确（支持或显式不支持）。
+- [x] Sidebar 一级入口。
+- [x] route guard。
+- [x] entitlement disabled UI。
+- [x] project list。
+- [x] create project。
+- [x] rename project。
+- [x] delete project。
+- [x] remote browser surface。
+- [x] session state。
+- [x] reconnect。
+- [x] fullscreen。
+- [x] Browser Agent error states。
+- [x] policy denied state。
+- [x] no exposed upstream IDs where unnecessary。
+- [x] i18n。
+- [x] accessibility。
+- [x] mobile behavior 明确（支持或显式不支持）。
 
 ---
 
@@ -1695,3 +1695,28 @@ remote Chrome credential holder
   - 云端部署（未开始，需用户单独确认连接方式与授权范围）；Phase 5 前端；Phase 6 安全验证。
 - 已知取舍（记录）：DELETE/PATCH 先本地提交再推送 ownership（推送失败 503，guard 保持旧文档直到下次推送，fail-closed 方向不放开未登记资源）；`project_not_found` 采用删除本地映射（fail closed，可经新 permit 重新登记，不做 schema 变更）；模式 B（共享 upstream account）仍为 NOT strong isolation。
 - 提交：本阶段独立 commit（`feat(web-workspace): phase 4 chatgpt provider adapter`），本地未 push；SHA 见阶段报告。
+
+## Phase 5（前端）— PASS
+
+- 状态：**PASS**（本机冻结输入 + 真实浏览器三视口验收；2026-09-18，Asia/Singapore）
+- 实现范围：
+  - `web/src/features/web-workspace/**`：`api.ts`/`types.ts`/`constants.ts`；组件（project-panel、project-row、project-create/rename/delete dialog、session-panel、remote-surface、web-workspace-disabled）；hooks（config、denial-reason、session、projects、remote-surface、fullscreen、countdown、document-visibility、desktop-viewport、removal-notice）；lib（access、errors、session、stream-url、reconnect、project-form）；11 个测试文件 / 60 用例。
+  - 文件路由 `/_authenticated/web-workspace/`（`beforeLoad` 读取 config；禁用或无权限渲染解释页，probe 失败渲染重试态）；侧边栏一级入口（`use-sidebar-data.ts`，仅 `enabled && entitled` 展示，注释与文案声明"隐藏不是权限，服务端强制"）。
+  - `@novnc/novnc@^1.7.0`（MPL-2.0，生产依赖）+ 本地最小类型声明 `novnc.d.ts`；85 个 i18n key（en 源字符串、zh 全译，其余语言保留英文 fallback；动态 key 登记 `static-keys.ts`）。
+- 实际命令与结果（冻结输入，`oven/bun:1` 容器；本机无 bun）：
+  - `bun run typecheck` → 通过（0 error）。
+  - 作用域 `oxlint`（改动文件 43 个）→ 0 warnings / 0 errors；改动文件 `oxfmt --check` → 全部通过。
+  - 作用域测试 `bun run test src/features/web-workspace` → **11 files / 60 tests 全绿**。
+  - `bun run build` → 成功（Total 60291.2 kB / gzip 19098.9 kB）；`web/dist` 重新生成并由 Go `//go:embed` 打入新二进制。
+  - 存量说明（如实记录）：全仓 `bun run lint` 在 HEAD 即有 351 error/78 warning，全仓 `bun run test` 有 8 个失败文件，均位于本次未改动文件（已核对 `git diff` 未触碰），未在本次范围内修复。
+- 真实浏览器验收（Playwright 驱动本机真实 Chrome，headless；链路 = 真实 NewAPI（SQLite，已 seed）→ 真实 Browser Agent → 真实 runtime 容器 → 真实 ChatGPT 页面）：
+  - 登录后侧边栏一级入口"Web 工作区"出现；`/web-workspace` 渲染会话/项目/远程浏览器三区。
+  - 点击"启动会话" → 会话 `运行中`（空闲倒计时 9:56）→ noVNC canvas（2 个）出现并渲染真实远端 Chromium（可见 about:blank 标签与 `--no-sandbox` infobar）。
+  - 经 CDP 让远程 Chromium 导航到 `https://chatgpt.com/`（Phase 3/4 策略放行）→ 远程画面真实显示 ChatGPT 登录页（Continue with Google/Apple/phone + email，tab 标题 `Get started | ChatGPT`）。
+  - 创建流程（端到端）：UI"新建项目"→"签发创建许可" → agent 写入 `.guard/permit.json`（permit_id/expires_at）→ 远程导航新 project URL 被 permit 放行 → guard 产生 `project_created` → 列表刷新后出现项目行 `acceptance-project`（provider=chatgpt，更新时间正确）。
+  - 重命名（对话框明确"仅重命名登记名称"）→ 保存后行内显示"验收项目 Alpha"；删除（确认对话框明确"仅移除本地登记，不会删除 Provider 侧的项目"）→ 行消失且空态恢复。
+  - 全屏：点击"进入全屏"后 `document.fullscreenElement=true`。
+  - 三视口截图（真实数据 + 运行中的远程画面）：`1280x720`、`1920x1080`、`2560x1440` 均 canvas=2、无溢出；文件位于 `C:\Users\admin\.codex\visualizations\2026\09\18\01a0b3e2-7362-7193-9bae-5b14d5f03fef\phase5-*.png`。
+  - 可访问性（真实 DOM）：行内操作暴露可访问名称（`重命名 acceptance-project`、`删除 acceptance-project`），对话框标题与按钮文案完整。
+- NOT RUN / 未覆盖（如实记录）：Provider live 登录（需用户手动登录窗口）；移动端真机（<1024px 为显式"请使用桌面端"提示，单测覆盖）；云端部署（未开始，需用户单独确认）；Phase 6 安全验证。
+- 提交：本阶段独立 commit（`feat(web-workspace): phase 5 frontend`），本地未 push；SHA 见阶段报告。
