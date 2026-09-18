@@ -52,3 +52,22 @@ type WebConversationListResponse struct {
 type WebProjectRenameRequest struct {
 	Name string `json:"name"`
 }
+
+// WebWorkspaceSessionDto is the control-plane view of one browser session.
+// Runtime ids, container addresses and ports never leave the control plane.
+type WebWorkspaceSessionDto struct {
+	SessionId      string `json:"session_id"`
+	State          string `json:"state"`
+	CreatedAt      int64  `json:"created_at"`
+	LastSeenAt     int64  `json:"last_seen_at"`
+	IdleDeadlineAt int64  `json:"idle_deadline_at"`
+}
+
+// WebWorkspaceStreamTicketDto carries the one-time ticket for a stream attach.
+// StreamUrl is a same-origin API path; the client derives the ws/wss URL from
+// the page origin and never receives an internal address.
+type WebWorkspaceStreamTicketDto struct {
+	Ticket    string `json:"ticket"`
+	ExpiresAt int64  `json:"expires_at"`
+	StreamUrl string `json:"stream_url"`
+}
