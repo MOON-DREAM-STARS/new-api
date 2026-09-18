@@ -56,6 +56,40 @@ func NewDriver(client *Client, opts Options) *Driver {
 	return &Driver{client: client, opts: opts}
 }
 
+// EnsureRuntimeNetwork verifies that the configured runtime network exists and
+// is internal. A missing network is created as an internal bridge and then
+// inspected again; an existing non-internal network is a fatal configuration
+// error because it would leave a runtime with an unchecked egress path.
+func (d *Driver) EnsureRuntimeNetwork(ctx context.Context) error {
+	name := strings.TrimSpace(d.opts.Network)
+	if name == "" {
+		return errors.New("runtime network name must be non-empty")
+	}
+
+	network, err := d.client.NetworkInspect(ctx, name)
+	if err == nil {
+		if !network.Internal {
+			return fmt.Errorf("runtime network %q exists but is not internal", name)
+		}
+		return nil
+	}
+	if !isStatus(err, http.StatusNotFound) {
+		return fmt.Errorf("inspect runtime network %q: %w", name, err)
+	}
+
+	if err := d.client.NetworkCreate(ctx, name, true); err != nil {
+		return fmt.Errorf("create runtime network %q: %w", name, err)
+	}
+	network, err = d.client.NetworkInspect(ctx, name)
+	if err != nil {
+		return fmt.Errorf("re-inspect runtime network %q: %w", name, err)
+	}
+	if !network.Internal {
+		return fmt.Errorf("runtime network %q was created but is not internal", name)
+	}
+	return nil
+}
+
 // ContainerName returns the deterministic container name for a workspace.
 func ContainerName(workspaceID int64) string {
 	return containerNamePrefix + strconv.FormatInt(workspaceID, 10)

@@ -155,6 +155,72 @@ func TestInspectMapsNotFound(t *testing.T) {
 	require.ErrorIs(t, err, runtime.ErrNotFound)
 }
 
+func TestEnsureRuntimeNetworkAcceptsExistingInternalNetwork(t *testing.T) {
+	getCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/networks/newapi-workspace-runtimes":
+			getCalls++
+			_, _ = w.Write([]byte(`{"Id":"network-id","Name":"newapi-workspace-runtimes","Driver":"bridge","Internal":true}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	driver := newTestDriver(server)
+	require.NoError(t, driver.EnsureRuntimeNetwork(context.Background()))
+	assert.Equal(t, 1, getCalls)
+}
+
+func TestEnsureRuntimeNetworkCreatesInternalNetworkAndRechecks(t *testing.T) {
+	getCalls := 0
+	postCalls := 0
+	var createBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/networks/newapi-workspace-runtimes":
+			getCalls++
+			if getCalls == 1 {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"message":"network not found"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"Id":"network-id","Name":"newapi-workspace-runtimes","Driver":"bridge","Internal":true}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/networks/create":
+			postCalls++
+			createBody, _ = io.ReadAll(r.Body)
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"Id":"network-id"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	driver := newTestDriver(server)
+	require.NoError(t, driver.EnsureRuntimeNetwork(context.Background()))
+	assert.Equal(t, 2, getCalls)
+	assert.Equal(t, 1, postCalls)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(createBody, &payload))
+	assert.Equal(t, "newapi-workspace-runtimes", payload["Name"])
+	assert.Equal(t, "bridge", payload["Driver"])
+	assert.Equal(t, true, payload["Internal"])
+}
+
+func TestEnsureRuntimeNetworkRejectsNonInternalNetwork(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"Id":"network-id","Name":"newapi-workspace-runtimes","Driver":"bridge","Internal":false}`))
+	}))
+	defer server.Close()
+
+	driver := newTestDriver(server)
+	err := driver.EnsureRuntimeNetwork(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not internal")
+}
+
 func TestListParsesWorkspaceLabel(t *testing.T) {
 	var filters string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

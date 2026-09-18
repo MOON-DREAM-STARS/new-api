@@ -49,3 +49,19 @@ type inspectResponse struct {
 		} `json:"Networks"`
 	} `json:"NetworkSettings"`
 }
+
+// NetworkInfo is the subset of GET /networks/{name} the agent reads.
+type NetworkInfo struct {
+	ID       string `json:"Id"`
+	Name     string `json:"Name"`
+	Driver   string `json:"Driver"`
+	Internal bool   `json:"Internal"`
+}
+
+// networkCreateRequest is the fixed payload used to create the private runtime
+// network. Runtime containers must never be attached to a non-internal bridge.
+type networkCreateRequest struct {
+	Name     string `json:"Name"`
+	Driver   string `json:"Driver"`
+	Internal bool   `json:"Internal"`
+}

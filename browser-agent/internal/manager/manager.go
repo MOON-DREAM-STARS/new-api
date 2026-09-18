@@ -9,12 +9,15 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"net/netip"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/QuantumNous/new-api/browser-agent/internal/policy"
 	"github.com/QuantumNous/new-api/browser-agent/internal/runtime"
 )
 
@@ -49,6 +52,8 @@ const (
 	envScreenHeight = "WW_SCREEN_HEIGHT"
 	envVNCPort      = "WW_VNC_PORT"
 	envProvider     = "WW_PROVIDER"
+	envProxyServer  = "WW_PROXY_SERVER"
+	envGuardMode    = "WW_GUARD_MODE"
 
 	// A started container is not a ready display: Xvfb and x11vnc need a moment
 	// before the RFB port accepts connections, so the runtime only becomes
@@ -87,15 +92,17 @@ type StartOptions struct {
 	Provider string
 	Width    int
 	Height   int
+	Mode     policy.Mode
 }
 
 // Options configures the manager.
 type Options struct {
-	DataRoot     string
-	IdleTimeout  time.Duration
-	ScanInterval time.Duration
-	Logger       *slog.Logger
-	Now          func() time.Time
+	DataRoot       string
+	EgressProxyURL string
+	IdleTimeout    time.Duration
+	ScanInterval   time.Duration
+	Logger         *slog.Logger
+	Now            func() time.Time
 	// Chown hands a workspace directory to the runtime image identity. It is
 	// overridden only by tests; nil selects the process default (os.Chown).
 	Chown func(path string, uid int, gid int) error
@@ -110,6 +117,7 @@ type runtimeState struct {
 	provider     string
 	width        int
 	height       int
+	mode         policy.Mode
 	containerID  string
 	ip           string
 	createdAt    time.Time
@@ -148,37 +156,41 @@ func (h *streamHandle) close() {
 
 // Manager implements the runtime scheduling and stream attachment contract.
 type Manager struct {
-	driver       runtime.Driver
-	display      runtime.DisplayTransport
-	dataRoot     string
-	hostDataRoot string
-	idleTimeout  time.Duration
-	scanInterval time.Duration
-	logger       *slog.Logger
-	now          func() time.Time
-	chown        func(path string, uid int, gid int) error
+	driver         runtime.Driver
+	display        runtime.DisplayTransport
+	dataRoot       string
+	hostDataRoot   string
+	egressProxyURL string
+	idleTimeout    time.Duration
+	scanInterval   time.Duration
+	logger         *slog.Logger
+	now            func() time.Time
+	chown          func(path string, uid int, gid int) error
 
 	mu       sync.Mutex
 	runtimes map[int64]*runtimeState
 	locks    map[int64]*sync.Mutex
 	streams  map[int64]map[*streamHandle]struct{}
+	ipIndex  map[string]int64
 }
 
 // New returns a manager bound to a runtime driver and a display transport.
 func New(driver runtime.Driver, display runtime.DisplayTransport, opts Options) *Manager {
 	manager := &Manager{
-		driver:       driver,
-		display:      display,
-		dataRoot:     opts.DataRoot,
-		hostDataRoot: opts.HostDataRoot,
-		idleTimeout:  opts.IdleTimeout,
-		scanInterval: opts.ScanInterval,
-		logger:       opts.Logger,
-		now:          opts.Now,
-		chown:        opts.Chown,
-		runtimes:     map[int64]*runtimeState{},
-		locks:        map[int64]*sync.Mutex{},
-		streams:      map[int64]map[*streamHandle]struct{}{},
+		driver:         driver,
+		display:        display,
+		dataRoot:       opts.DataRoot,
+		hostDataRoot:   opts.HostDataRoot,
+		egressProxyURL: opts.EgressProxyURL,
+		idleTimeout:    opts.IdleTimeout,
+		scanInterval:   opts.ScanInterval,
+		logger:         opts.Logger,
+		now:            opts.Now,
+		chown:          opts.Chown,
+		runtimes:       map[int64]*runtimeState{},
+		locks:          map[int64]*sync.Mutex{},
+		streams:        map[int64]map[*streamHandle]struct{}{},
+		ipIndex:        map[string]int64{},
 	}
 	if manager.logger == nil {
 		manager.logger = slog.Default()
@@ -193,6 +205,28 @@ func New(driver runtime.Driver, display runtime.DisplayTransport, opts Options) 
 		manager.hostDataRoot = manager.dataRoot
 	}
 	return manager
+}
+
+// LookupSource resolves a source IP observed by the egress proxy to the
+// workspace and mode of its live runtime. Unknown, stopped or failed runtimes
+// return false so the proxy denies the request.
+func (m *Manager) LookupSource(remoteIP string) (policy.Mode, int64, bool) {
+	normalized, ok := normalizeRuntimeIP(remoteIP)
+	if !ok {
+		return "", 0, false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	workspaceID, ok := m.ipIndex[normalized]
+	if !ok {
+		return "", 0, false
+	}
+	rt := m.runtimes[workspaceID]
+	if rt == nil || (rt.state != StateRunning && rt.state != StateIdle) {
+		delete(m.ipIndex, normalized)
+		return "", 0, false
+	}
+	return rt.mode, workspaceID, true
 }
 
 // Get returns the current runtime snapshot of a workspace.
@@ -212,7 +246,7 @@ func (m *Manager) Start(ctx context.Context, workspaceID int64, opts StartOption
 	if err := validateOptions(workspaceID, opts); err != nil {
 		return Snapshot{}, err
 	}
-	opts = withSizeDefaults(opts)
+	opts = withDefaults(opts)
 
 	lock := m.lockFor(workspaceID)
 	lock.Lock()
@@ -250,12 +284,20 @@ func (m *Manager) Restart(ctx context.Context, workspaceID int64, opts StartOpti
 	if workspaceID <= 0 {
 		return Snapshot{}, fmt.Errorf("%w: workspace id must be positive", ErrInvalidRequest)
 	}
+	if opts.Mode != "" {
+		if _, ok := policy.ParseMode(string(opts.Mode)); !ok {
+			return Snapshot{}, fmt.Errorf("%w: mode is invalid", ErrInvalidRequest)
+		}
+	}
 	lock := m.lockFor(workspaceID)
 	lock.Lock()
 	defer lock.Unlock()
 
 	current, exists := m.currentOptions(workspaceID)
 	effective := current
+	if opts.Mode != "" {
+		effective.Mode = opts.Mode
+	}
 	if provider := strings.TrimSpace(opts.Provider); provider != "" {
 		effective.Provider = provider
 	}
@@ -275,7 +317,7 @@ func (m *Manager) Restart(ctx context.Context, workspaceID int64, opts StartOpti
 	if err := validateOptions(workspaceID, effective); err != nil {
 		return Snapshot{}, err
 	}
-	effective = withSizeDefaults(effective)
+	effective = withDefaults(effective)
 
 	if snapshot, _, err := m.stopLocked(ctx, workspaceID); err != nil {
 		return snapshot, err
@@ -368,6 +410,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 		}
 		info, err := m.driver.Inspect(ctx, item.WorkspaceID)
 		if errors.Is(err, runtime.ErrNotFound) {
+			m.clearRuntimeIP(item.WorkspaceID)
 			continue
 		}
 		if err != nil {
@@ -379,6 +422,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 				m.logger.Warn("removing stopped runtime container failed", "workspace_id", item.WorkspaceID, "error", err)
 				continue
 			}
+			m.clearRuntimeIP(item.WorkspaceID)
 			removed++
 			continue
 		}
@@ -393,11 +437,16 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 		if !validSize(width, height) {
 			width, height = DefaultWidth, DefaultHeight
 		}
+		mode, validMode := policy.ParseMode(info.Env[envGuardMode])
+		if !validMode {
+			mode = policy.ModeLocked
+		}
 		recovered := &runtimeState{
 			state:        StateRunning,
 			provider:     strings.TrimSpace(info.Env[envProvider]),
 			width:        width,
 			height:       height,
+			mode:         mode,
 			containerID:  info.ID,
 			ip:           info.IP,
 			createdAt:    createdAt,
@@ -405,7 +454,9 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 			idleDeadline: now.Add(m.idleTimeout),
 		}
 		m.mu.Lock()
+		m.clearRuntimeIPLocked(item.WorkspaceID)
 		m.runtimes[item.WorkspaceID] = recovered
+		m.setRuntimeIPLocked(item.WorkspaceID, info.IP)
 		m.mu.Unlock()
 		adopted++
 	}
@@ -494,6 +545,7 @@ func (m *Manager) startLocked(ctx context.Context, workspaceID int64, opts Start
 		provider:     opts.Provider,
 		width:        opts.Width,
 		height:       opts.Height,
+		mode:         opts.Mode,
 		createdAt:    now,
 		lastActivity: now,
 		idleDeadline: now.Add(m.idleTimeout),
@@ -517,6 +569,8 @@ func (m *Manager) startLocked(ctx context.Context, workspaceID int64, opts Start
 			envScreenHeight + "=" + strconv.Itoa(opts.Height),
 			envVNCPort + "=" + strconv.Itoa(runtime.VNCPort),
 			envProvider + "=" + opts.Provider,
+			envProxyServer + "=" + m.egressProxyURL,
+			envGuardMode + "=" + string(opts.Mode),
 		},
 	}
 
@@ -557,8 +611,8 @@ func (m *Manager) startLocked(ctx context.Context, workspaceID int64, opts Start
 
 	m.mu.Lock()
 	rt.containerID = running.ID
-	rt.ip = running.IP
 	rt.state = StateRunning
+	m.setRuntimeIPLocked(workspaceID, running.IP)
 	m.touchRuntime(rt, m.now())
 	snapshot := rt.snapshot(workspaceID)
 	m.mu.Unlock()
@@ -634,7 +688,7 @@ func (m *Manager) stopLocked(ctx context.Context, workspaceID int64) (Snapshot, 
 	if current := m.runtimes[workspaceID]; current != nil {
 		current.state = StateStopped
 		current.containerID = ""
-		current.ip = ""
+		m.clearRuntimeIPLocked(workspaceID)
 		current.lastActivity = m.now()
 		current.idleDeadline = time.Time{}
 		snapshot = current.snapshot(workspaceID)
@@ -650,7 +704,7 @@ func (m *Manager) markFailed(workspaceID int64, cause error, removeContainer boo
 	if rt := m.runtimes[workspaceID]; rt != nil {
 		rt.state = StateFailed
 		rt.containerID = ""
-		rt.ip = ""
+		m.clearRuntimeIPLocked(workspaceID)
 		rt.idleDeadline = time.Time{}
 	}
 	handles := m.detachStreamsLocked(workspaceID)
@@ -664,6 +718,7 @@ func (m *Manager) markFailed(workspaceID int64, cause error, removeContainer boo
 }
 
 func (m *Manager) removeContainer(ctx context.Context, workspaceID int64) {
+	m.clearRuntimeIP(workspaceID)
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 	defer cancel()
 	if err := m.driver.Remove(cleanupCtx, workspaceID); err != nil && !errors.Is(err, runtime.ErrNotFound) {
@@ -706,7 +761,49 @@ func (m *Manager) currentOptions(workspaceID int64) (StartOptions, bool) {
 	if rt == nil {
 		return StartOptions{}, false
 	}
-	return StartOptions{Provider: rt.provider, Width: rt.width, Height: rt.height}, true
+	return StartOptions{Provider: rt.provider, Width: rt.width, Height: rt.height, Mode: rt.mode}, true
+}
+
+func (m *Manager) setRuntimeIPLocked(workspaceID int64, rawIP string) {
+	rt := m.runtimes[workspaceID]
+	normalized, ok := normalizeRuntimeIP(rawIP)
+	if !ok {
+		m.clearRuntimeIPLocked(workspaceID)
+		return
+	}
+	if rt != nil && rt.ip != "" {
+		if previous, previousOK := normalizeRuntimeIP(rt.ip); previousOK && previous != normalized && m.ipIndex[previous] == workspaceID {
+			delete(m.ipIndex, previous)
+		}
+	}
+	if previousWorkspaceID, exists := m.ipIndex[normalized]; exists && previousWorkspaceID != workspaceID {
+		if previous := m.runtimes[previousWorkspaceID]; previous != nil {
+			if previousIP, previousOK := normalizeRuntimeIP(previous.ip); previousOK && previousIP == normalized {
+				previous.ip = ""
+			}
+		}
+	}
+	m.ipIndex[normalized] = workspaceID
+	if rt != nil {
+		rt.ip = rawIP
+	}
+}
+
+func (m *Manager) clearRuntimeIPLocked(workspaceID int64) {
+	for indexedIP, indexedWorkspaceID := range m.ipIndex {
+		if indexedWorkspaceID == workspaceID {
+			delete(m.ipIndex, indexedIP)
+		}
+	}
+	if rt := m.runtimes[workspaceID]; rt != nil {
+		rt.ip = ""
+	}
+}
+
+func (m *Manager) clearRuntimeIP(workspaceID int64) {
+	m.mu.Lock()
+	m.clearRuntimeIPLocked(workspaceID)
+	m.mu.Unlock()
 }
 
 func (m *Manager) touchRuntime(rt *runtimeState, now time.Time) {
@@ -754,10 +851,16 @@ func validateOptions(workspaceID int64, opts StartOptions) error {
 	if opts.Height != 0 && (opts.Height < MinHeight || opts.Height > MaxHeight) {
 		return fmt.Errorf("%w: height %d is outside %d..%d", ErrInvalidRequest, opts.Height, MinHeight, MaxHeight)
 	}
+	if _, ok := policy.ParseMode(string(opts.Mode)); !ok {
+		return fmt.Errorf("%w: mode is invalid", ErrInvalidRequest)
+	}
 	return nil
 }
 
-func withSizeDefaults(opts StartOptions) StartOptions {
+func withDefaults(opts StartOptions) StartOptions {
+	if mode, ok := policy.ParseMode(string(opts.Mode)); ok {
+		opts.Mode = mode
+	}
 	if opts.Width == 0 {
 		opts.Width = DefaultWidth
 	}
@@ -781,4 +884,30 @@ func envInt(raw string, fallback int) int {
 
 func runtimeID(workspaceID int64) string {
 	return "ws-" + strconv.FormatInt(workspaceID, 10)
+}
+
+func normalizeRuntimeIP(rawIP string) (string, bool) {
+	value := strings.TrimSpace(rawIP)
+	if value == "" {
+		return "", false
+	}
+	if host, portText, err := net.SplitHostPort(value); err == nil {
+		port, portErr := strconv.Atoi(portText)
+		if portErr != nil || port < 1 || port > 65535 {
+			return "", false
+		}
+		value = host
+	}
+	value = strings.TrimPrefix(strings.TrimSuffix(value, "]"), "[")
+	addr, err := netip.ParseAddr(value)
+	if err != nil {
+		return "", false
+	}
+	if addr.Zone() != "" {
+		addr = addr.WithZone("")
+	}
+	if addr.Is4In6() {
+		addr = addr.Unmap()
+	}
+	return addr.String(), true
 }

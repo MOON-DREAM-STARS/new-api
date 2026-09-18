@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/browser-agent/internal/manager"
+	"github.com/QuantumNous/new-api/browser-agent/internal/policy"
 	"github.com/QuantumNous/new-api/browser-agent/internal/runtime"
 	"github.com/QuantumNous/new-api/browser-agent/internal/stream"
 )
@@ -72,6 +73,7 @@ type startRequest struct {
 	Provider    string `json:"provider"`
 	Width       *int   `json:"width"`
 	Height      *int   `json:"height"`
+	Mode        string `json:"mode"`
 }
 
 func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
@@ -92,6 +94,7 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 		Provider: provider,
 		Width:    width,
 		Height:   height,
+		Mode:     policy.Mode(strings.TrimSpace(request.Mode)),
 	})
 	if err != nil {
 		s.writeManagerError(w, request.WorkspaceID, err)
@@ -132,6 +135,7 @@ type restartRequest struct {
 	Provider string `json:"provider"`
 	Width    *int   `json:"width"`
 	Height   *int   `json:"height"`
+	Mode     string `json:"mode"`
 }
 
 func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
@@ -157,6 +161,7 @@ func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
 		Provider: strings.TrimSpace(request.Provider),
 		Width:    width,
 		Height:   height,
+		Mode:     policy.Mode(strings.TrimSpace(request.Mode)),
 	})
 	if err != nil {
 		s.writeManagerError(w, workspaceID, err)

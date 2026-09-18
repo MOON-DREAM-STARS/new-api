@@ -1400,19 +1400,19 @@ Workspace A runtime 无法看到 Workspace B filesystem。
 
 # 28. 实施 Phase 3：Network / Browser Guard
 
-- [ ] default-deny egress。
-- [ ] private IP ranges deny。
-- [ ] metadata endpoint deny。
-- [ ] Provider host allowlist。
-- [ ] Login Mode。
-- [ ] Locked Mode。
-- [ ] CDP loopback only。
-- [ ] navigation interception。
-- [ ] popup/target guard。
-- [ ] download guard。
-- [ ] clipboard controls。
-- [ ] fail-closed behavior。
-- [ ] deny audit logs。
+- [x] default-deny egress。
+- [x] private IP ranges deny。
+- [x] metadata endpoint deny。
+- [x] Provider host allowlist。
+- [x] Login Mode。
+- [x] Locked Mode。
+- [x] CDP loopback only。
+- [x] navigation interception。
+- [x] popup/target guard。
+- [x] download guard。
+- [x] clipboard controls。
+- [x] fail-closed behavior。
+- [x] deny audit logs。
 
 Acceptance：
 
@@ -1647,3 +1647,26 @@ remote Chrome credential holder
   - 验收后已清理测试容器（runtime 101/102、agent）；测试网络与数据卷保留供后续阶段复用。
 - NOT RUN / 未覆盖（如实记录）：真实 VNC 客户端的画面渲染与交互（属 Phase 5 前端验收）；Browser Guard / CDP 独占 / egress 策略（Phase 3）；长期 idle timeout 与多用户并发负载；镜像 CVE 扫描；云端部署（未开始，需用户单独确认连接方式与授权范围）。
 - 提交：本阶段独立 commit（`feat(web-workspace): phase 2 browser agent and stream broker`），本地未 push；SHA 见阶段报告。
+
+## Phase 3（Network / Browser Guard）— PASS
+
+- 状态：**PASS**（本机冻结输入；2026-09-18，Asia/Singapore）
+- 实现范围：
+  - `browser-agent/internal/policy`（Main 冻结的共享策略表：LOCKED/LOGIN 域名 allowlist；仅 http/https 与 80/443；环回、RFC1918、链路本地（含 169.254.0.0/16 cloud metadata）、unique-local、multicast、CGNAT、文档/保留段、IPv4-mapped 全部拒绝；混合 A/AAAA 解析结果整体 deny）。
+  - Agent 侧 egress：`internal/egress` forward proxy（CONNECT + absolute-form HTTP；来源 IP→workspace/mode 映射，未知来源 deny；解析一次并只拨已校验 IP；deny 审计只含 host/port/reason/workspace_id/mode，不含 path/query）。`internal/runtime/docker` 新增网络 ensure/verify（缺失则创建 `Internal=true`，已存在但不是 internal → 启动失败）；`cmd/browser-agent` 启动 egress listener 并随 ctx 优雅关闭；create/restart 接受可选 `mode`（缺省 LOCKED，非法 400）。
+  - Runtime 侧 guard：`internal/guard` + `cmd/workspace-guard` 独占消费 loopback CDP（`WW_CDP_URL` 默认 `http://127.0.0.1:9222`，非 loopback 拒绝）：page target 先 `Fetch.enable`（fatal，先于任何脚本执行）→ 仅当 `waitingForDebugger=true` 时发送 5s 有界 resume（非致命）→ 异步 `Page.enable`（非致命）；`Fetch.requestPaused` 按共享策略 continue / `failRequest(AccessDenied)` + `policy_deny` 审计；未知初始 URL target `closeTarget` + `target_deny`；`Browser.setDownloadBehavior{deny,eventsEnabled}`；逐 origin 拒绝 clipboard 权限；传输断开、`Fetch.enable` 失败、popup close 失败仍 fatal。
+  - Runtime 镜像/entrypoint：多阶段构建（`golang:1.26.1-alpine` 编译 guard → alpine 运行，build context 改为 `browser-agent/`）；Chromium 增加 `--proxy-server`（缺 `WW_PROXY_SERVER` 即 exit 1）、`--proxy-bypass-list=<-loopback>`、`--disable-quic`、`--webrtc-ip-handling-policy=disable_non_proxied_udp`、CDP `127.0.0.1:9222`、`--deny-permission-prompts`；watchdog 监视 guard，guard 退出 → 清理 chromium→x11vnc→Xvfb 并 exit 1。
+- 实际命令与结果（均在 `golang:1.26.1-alpine` 容器内、对冻结源码执行）：
+  - `gofmt -l .`（无输出）、`GOWORK=off go vet ./...` → VET_OK、`GOWORK=off go test ./... -count=1` → 全部 ok（policy/egress/guard/manager/httpapi/docker 聚焦用例）、`go build ./cmd/browser-agent` / `./cmd/workspace-guard` → OK。
+  - 根模块未改动；E2E 回归：`go test ./service/webworkspace -run WebWorkspaceAgentEndToEnd -count=1 -v` → PASS（1.88s）；`go test ./router -run WebWorkspaceRouterAgentEndToEnd -count=1 -v` → PASS（1.90s）。
+  - 真实 Docker 验收（冻结镜像 `newapi-web-workspace-runtime:local`，`sha256:35b1697275b2`）：
+    - Agent fail-closed：缺 token／缺 `WEB_WORKSPACE_EGRESS_PROXY_URL`／runtime network 已存在但 `Internal=false` → 均 exit 1，错误信息明确；runtime 网络重建为 `Internal=true`。
+    - runtime 501/502 持续 `Up` ≥2 分钟且 `state=RUNNING`、仅挂私有内网、`docker port` 为空。
+    - 直接出网（无 proxy）：DNS 不可解析／网关 Connection refused；经 proxy：`example.com`、`169.254.169.254`、`10.0.0.1` 全部 `HTTP/1.1 403`，agent 审计完整（host/port/reason/workspace_id/mode）。
+    - allow 路径：经 proxy 访问 `http://chatgpt.com/` 得到真实 Cloudflare `HTTP/1.1 301 Moved Permanently`（`Cf-Ray …-SIN`）→ allowlist 放行 + 已校验 IP 拨号生效。
+    - Browser Guard（真实 Chromium 131，经 loopback CDP 探针）：未知域名 target `survived=false` + `target_deny(host not in LOCKED allowlist)`；内网服务 `ws-agent:8730` `survived=false` + `target_deny(port not allowed)`；`https://chatgpt.com/` `survived=true`（放行）。
+    - CDP 暴露面：容器内 `127.0.0.1:9222/json/version` 可用（Chrome/131.0.6778.108）；同网另一 runtime 访问 `<container>:9222` → Connection refused。
+    - fail-closed：`pkill -KILL workspace-guard` → 容器 `exited exit=1`，日志 `workspace-guard exited with status 137: failing closed` + 清理链完成；agent 随后将 runtime 置为 `FAILED`。
+- NOT RUN / 未覆盖（如实记录）：真实 OAuth 登录流程与 LOGIN 模式端到端（需用户手动登录窗口，属 Phase 4）；真实剪贴板读写（单测 + 权限拒绝设计覆盖）；VNC 画面渲染与交互（Phase 5）；镜像 CVE 扫描；云端部署（未开始，需用户单独确认连接方式与授权范围）。
+- 已知降级（记录，不隐藏）：本机对预先存在的 about:blank target 稳定出现 `Page.enable` 超时，已按非致命降级（`page_domain_unavailable` WARN；per-origin clipboard 拒绝退化为 `--deny-permission-prompts` + x11vnc 无 `-clip`，均为默认关闭）；`Runtime.runIfWaitingForDebugger` 仅在 `waitingForDebugger=true` 时发送，5s 有界且非致命（失败记 `resume_not_acknowledged`，目标保持暂停属 fail closed，不产生无守卫浏览）。
+- 提交：本阶段独立 commit（`feat(web-workspace): phase 3 network and browser guard`），本地未 push；SHA 见阶段报告。

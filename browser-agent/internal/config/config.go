@@ -6,6 +6,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"path"
 	"path/filepath"
 	"strconv"
@@ -18,6 +19,11 @@ const (
 	// does not override it. Keeping this port off the public internet is a
 	// deployment responsibility, not something the process can enforce.
 	DefaultListen = "0.0.0.0:8730"
+
+	// DefaultEgressProxyListen is the private-network address of the
+	// agent-side forward proxy. Runtime containers reach it through the
+	// internal runtime network.
+	DefaultEgressProxyListen = "0.0.0.0:8731"
 
 	DefaultDataRoot       = "/data/web-workspaces"
 	DefaultDockerHost     = "unix:///var/run/docker.sock"
@@ -46,6 +52,13 @@ type Config struct {
 	DockerSocketPath string
 	RuntimeImage     string
 	RuntimeNetwork   string
+	// EgressProxyListen is the address the agent-side forward proxy binds to.
+	EgressProxyListen string
+	// EgressProxyURL is injected into runtime containers as WW_PROXY_SERVER.
+	// It must be an http(s) host URL the runtime can reach on the internal
+	// network; the agent never derives it from the listen address because
+	// the process may see a different host name than the runtime.
+	EgressProxyURL   string
 	MemoryBytes      int64
 	NanoCPUs         int64
 	PidsLimit        int64
@@ -91,6 +104,19 @@ func Load(getenv func(string) string) (Config, error) {
 	cfg.RuntimeNetwork = stringEnv(getenv, "WEB_WORKSPACE_RUNTIME_NETWORK", DefaultRuntimeNetwork)
 	if strings.TrimSpace(cfg.RuntimeNetwork) == "" {
 		return Config{}, fmt.Errorf("WEB_WORKSPACE_RUNTIME_NETWORK must be non-empty")
+	}
+
+	cfg.EgressProxyListen = strings.TrimSpace(stringEnv(getenv, "WEB_WORKSPACE_EGRESS_PROXY_LISTEN", DefaultEgressProxyListen))
+	if err := validateHostPort(cfg.EgressProxyListen); err != nil {
+		return Config{}, fmt.Errorf("WEB_WORKSPACE_EGRESS_PROXY_LISTEN %q is not a host:port address: %w", cfg.EgressProxyListen, err)
+	}
+
+	cfg.EgressProxyURL = strings.TrimSpace(getenv("WEB_WORKSPACE_EGRESS_PROXY_URL"))
+	if cfg.EgressProxyURL == "" {
+		return Config{}, fmt.Errorf("WEB_WORKSPACE_EGRESS_PROXY_URL must be set and non-empty")
+	}
+	if err := validateProxyURL(cfg.EgressProxyURL); err != nil {
+		return Config{}, fmt.Errorf("WEB_WORKSPACE_EGRESS_PROXY_URL %q is invalid: %w", cfg.EgressProxyURL, err)
 	}
 
 	memory, err := intEnv(getenv, "WEB_WORKSPACE_RUNTIME_MEMORY_BYTES", DefaultMemoryBytes)
@@ -193,4 +219,67 @@ func unixSocketPath(host string) (string, error) {
 // container defaults stay valid when the binary is built or tested on Windows.
 func isAbsolutePath(value string) bool {
 	return path.IsAbs(value) || filepath.IsAbs(value)
+}
+
+// validateHostPort accepts the host:port forms net.Listen and the HTTP
+// configuration accept. The port must be an explicit TCP port in the valid
+// range; port zero is rejected so a misconfigured deployment cannot bind a
+// random port while advertising a different proxy address.
+func validateHostPort(value string) error {
+	host, port, err := net.SplitHostPort(value)
+	if err != nil {
+		return err
+	}
+	if strings.ContainsAny(host, " \t\r\n") {
+		return fmt.Errorf("host contains whitespace")
+	}
+	number, err := strconv.Atoi(port)
+	if err != nil {
+		return fmt.Errorf("port %q is not numeric: %w", port, err)
+	}
+	if number < 1 || number > 65535 {
+		return fmt.Errorf("port %d is outside 1..65535", number)
+	}
+	return nil
+}
+
+// validateProxyURL accepts only an absolute http(s) URL with a host and
+// optional port. Paths, queries, fragments and userinfo are rejected because
+// WW_PROXY_SERVER is a proxy address, not a browsable URL.
+func validateProxyURL(value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https") {
+		return fmt.Errorf("scheme must be http or https")
+	}
+	if parsed.Host == "" || parsed.Hostname() == "" {
+		return fmt.Errorf("host must be non-empty")
+	}
+	if strings.HasSuffix(parsed.Host, ":") {
+		return fmt.Errorf("port must be non-empty")
+	}
+	if parsed.User != nil {
+		return fmt.Errorf("userinfo is not allowed")
+	}
+	if parsed.Opaque != "" {
+		return fmt.Errorf("opaque URLs are not allowed")
+	}
+	if parsed.Path != "" {
+		return fmt.Errorf("path is not allowed")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("query and fragment are not allowed")
+	}
+	if port := parsed.Port(); port != "" {
+		number, err := strconv.Atoi(port)
+		if err != nil {
+			return fmt.Errorf("port %q is not numeric: %w", port, err)
+		}
+		if number < 1 || number > 65535 {
+			return fmt.Errorf("port %d is outside 1..65535", number)
+		}
+	}
+	return nil
 }
