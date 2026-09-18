@@ -376,6 +376,10 @@ func migrateDB() error {
 		&CasbinRule{},
 		&AuthzRole{},
 		&UserAccessToken{},
+		&WebWorkspace{},
+		&WebProject{},
+		&WebConversation{},
+
 	)
 	if err != nil {
 		return err

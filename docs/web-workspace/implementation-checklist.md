@@ -1346,21 +1346,21 @@ docs/web-workspace/architecture.md
 
 文档初始化之后再进入代码阶段。
 
-- [ ] 定义 Web Workspace global setting。
-- [ ] 定义 group/role entitlement。
-- [ ] 明确 user override 是否首版实现。
-- [ ] 建立 `web_workspaces`。
-- [ ] 建立 `web_projects`。
-- [ ] 建立 `web_conversations`。
-- [ ] 保证三数据库兼容。
-- [ ] fresh migration 验证。
-- [ ] upgrade migration 验证。
-- [ ] migration idempotency 验证。
-- [ ] ownership service。
-- [ ] entitlement service。
-- [ ] API authorization tests。
-- [ ] cross-user access tests。
-- [ ] unknown resource deny tests。
+- [x] 定义 Web Workspace global setting。
+- [x] 定义 group/role entitlement。
+- [x] 明确 user override 是否首版实现。
+- [x] 建立 `web_workspaces`。
+- [x] 建立 `web_projects`。
+- [x] 建立 `web_conversations`。
+- [x] 保证三数据库兼容。
+- [x] fresh migration 验证。
+- [x] upgrade migration 验证。
+- [x] migration idempotency 验证。
+- [x] ownership service。
+- [x] entitlement service。
+- [x] API authorization tests。
+- [x] cross-user access tests。
+- [x] unknown resource deny tests。
 
 Acceptance：
 
@@ -1604,3 +1604,24 @@ display stream + input
 ```text
 remote Chrome credential holder
 ```
+
+
+---
+
+# Status & Evidence（Main 维护）
+
+## Phase 1（核心模型与权限）— PASS
+
+- 状态：**PASS**（本机冻结输入；2026-09-18，Asia/Singapore）
+- 基线只读复核：`git status --porcelain=v1 -b`、`git remote -v`、`git rev-parse HEAD` 与 handoff 基线一致：`feature/dreamstars-homepage` @ `32a1e9190e5cdd5a2167f741ca2764e5be9e8a80`；origin=`MOON-DREAM-STARS/new-api`、upstream=`QuantumNous/new-api`。既有 dirty work（README 横幅、outputs/image2ui/*.png）原样保留且未 stage。
+- 实现范围：`web_workspaces` / `web_projects` / `web_conversations` 模型与 AutoMigrate 注册；`web_workspace` 全局设置（enabled / minimum_role / allowed_groups）；entitlement service；ownership service；`/api/web-workspace` 最小认证 API（config、status、projects 读取、rename、delete、conversations 列表）；三方言迁移测试与 API 授权测试。
+- 首版决策：user override 不实现；`allowed_groups` 为空数组表示不额外限制分组；Admin 不自动开通；Phase 1 的 PATCH/DELETE 仅更新本地映射，Provider 同步与 fail-safe 重同步属 Phase 4。
+- 实际命令与结果（均在 `golang:1.26.1-alpine` Linux 容器内执行，挂载源码目录）：
+  - `gofmt -l model service/webworkspace controller router setting/system_setting dto` → 本次改动文件无输出（`controller/channel_pin_retry_test.go` 为仓库既有未格式化文件，未被本次改动）。
+  - `go vet ./model ./service/webworkspace ./controller ./router ./setting/system_setting` → VET_OK。
+  - `go build ./...` → BUILD_OK。
+  - `go test -p 1 ./model -run WebWorkspace -count=1`（TEST_MYSQL_DSN / TEST_POSTGRES_DSN 指向真实实例）→ PASS：SQLite、MySQL 5.7.44、PostgreSQL 9.6.24。
+  - `go test -p 1 ./service/webworkspace ./router -run WebWorkspace -count=1` → PASS：ownership 隔离在 SQLite/MySQL/PostgreSQL 三方言各执行一次；router 层 6 个真实 HTTP + 真实 `middleware.UserAuth()` + 真实数据库测试（含 A 读/改/删 B 的项目、伪造 workspace_id 越权、entitlement 关闭拒绝、option 设置联动）。
+  - 真实服务启动矩阵：fresh 与 “baseline 32a1e919 → 新二进制” upgrade 路径在 MySQL 5.7.44 / PostgreSQL 9.6.24 / SQLite 上各启动两次；每次日志 `database migration started` 1 次、`fatal|panic|migration failed` 0 次；升级后三张表与全部命名索引存在，升级前写入的 `options` marker 行保留。
+- NOT RUN / 未覆盖（如实记录）：Phase 2 Browser Agent、Phase 3 Network/Browser Guard、Phase 4 ChatGPT Provider Adapter、Phase 5 前端、Phase 6 安全验证（均属后续 checklist 节）；Provider live 登录（需用户手动登录窗口）；云端部署（未开始，需用户单独确认连接方式与授权范围）。
+- 提交：本阶段独立 commit（`feat(web-workspace): phase 1 core models, entitlement and ownership`），本地未 push；SHA 见阶段报告。
