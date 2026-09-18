@@ -14,28 +14,30 @@ import (
 
 func TestEnsureWorkspaceDirsHandsTreeToRuntimeIdentity(t *testing.T) {
 	workspaceDir := WorkspaceDir(t.TempDir(), 5)
-	expected := workspaceTreePaths(workspaceDir)
+	expected := workspaceTreeNames()
 
 	type chownCall struct {
-		path string
+		root string
+		name string
 		uid  int
 		gid  int
 	}
 	var calls []chownCall
-	err := ensureWorkspaceDirs(workspaceDir, func(path string, uid int, gid int) error {
-		calls = append(calls, chownCall{path: path, uid: uid, gid: gid})
+	err := ensureWorkspaceDirs(workspaceDir, func(root *os.Root, name string, uid int, gid int) error {
+		calls = append(calls, chownCall{root: root.Name(), name: name, uid: uid, gid: gid})
 		return nil
-	}, ownerOf)
+	}, ownerOfRoot)
 	require.NoError(t, err)
 
 	require.Len(t, calls, len(expected))
 	for index, call := range calls {
-		assert.Equal(t, expected[index], call.path)
+		assert.Equal(t, expected[index], call.name)
+		assert.Equal(t, workspaceDir, filepath.Clean(call.root))
 		assert.Equal(t, runtime.RuntimeUID, call.uid)
 		assert.Equal(t, runtime.RuntimeGID, call.gid)
 	}
-	for _, path := range expected {
-		assert.DirExists(t, path)
+	for _, name := range expected {
+		assert.DirExists(t, filepath.Join(workspaceDir, name))
 	}
 	require.NoError(t, os.WriteFile(filepath.Join(workspaceDir, "profile", "probe"), []byte("ok"), 0o600))
 }
@@ -45,9 +47,9 @@ func TestEnsureWorkspaceDirsToleratesChownFailureWhenAlreadyOwned(t *testing.T) 
 
 	// A non-root agent that already runs as the runtime identity cannot always
 	// chown, but the desired ownership already holds, so the start must proceed.
-	err := ensureWorkspaceDirs(workspaceDir, func(path string, uid int, gid int) error {
-		return &os.PathError{Op: "chown", Path: path, Err: syscall.EPERM}
-	}, func(string) (int, int, bool) {
+	err := ensureWorkspaceDirs(workspaceDir, func(root *os.Root, name string, uid int, gid int) error {
+		return &os.PathError{Op: "chown", Path: name, Err: syscall.EPERM}
+	}, func(*os.Root, string) (int, int, bool) {
 		return runtime.RuntimeUID, runtime.RuntimeGID, true
 	})
 	require.NoError(t, err)
@@ -55,15 +57,15 @@ func TestEnsureWorkspaceDirsToleratesChownFailureWhenAlreadyOwned(t *testing.T) 
 }
 
 func TestEnsureWorkspaceDirsFailsClosedWhenChownFails(t *testing.T) {
-	owners := map[string]func(string) (int, int, bool){
-		"owned by another user": func(string) (int, int, bool) { return 0, 0, true },
-		"owner cannot be read":  func(string) (int, int, bool) { return 0, 0, false },
+	owners := map[string]func(*os.Root, string) (int, int, bool){
+		"owned by another user": func(*os.Root, string) (int, int, bool) { return 0, 0, true },
+		"owner cannot be read":  func(*os.Root, string) (int, int, bool) { return 0, 0, false },
 	}
 	for name, owner := range owners {
 		t.Run(name, func(t *testing.T) {
 			workspaceDir := WorkspaceDir(t.TempDir(), 7)
-			err := ensureWorkspaceDirs(workspaceDir, func(path string, uid int, gid int) error {
-				return &os.PathError{Op: "chown", Path: path, Err: syscall.EPERM}
+			err := ensureWorkspaceDirs(workspaceDir, func(root *os.Root, name string, uid int, gid int) error {
+				return &os.PathError{Op: "chown", Path: name, Err: syscall.EPERM}
 			}, owner)
 			require.Error(t, err)
 			assert.ErrorIs(t, err, syscall.EPERM)
