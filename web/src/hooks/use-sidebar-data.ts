@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import {
   Activity,
+  AppWindow,
   Box,
   CreditCard,
   FileText,
@@ -37,7 +38,8 @@ import {
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
-import { type SidebarData } from '@/components/layout/types'
+import type { SidebarData } from '@/components/layout/types'
+import { useWebWorkspaceEntryVisible } from '@/features/web-workspace/hooks/use-web-workspace-config'
 import { ROLE } from '@/lib/roles'
 
 /**
@@ -48,6 +50,10 @@ import { ROLE } from '@/lib/roles'
  */
 export function useSidebarData(): SidebarData {
   const { t } = useTranslation()
+  // The entry is only shown for enabled and entitled accounts. This is UX
+  // only: the route guard and every API call enforce entitlement on the
+  // server, so hiding or forcing the menu can never grant access.
+  const showWebWorkspace = useWebWorkspaceEntryVisible()
 
   return {
     navGroups: [
@@ -98,6 +104,15 @@ export function useSidebarData(): SidebarData {
             configUrls: ['/usage-logs/drawing', '/usage-logs/task'],
             icon: ListTodo,
           },
+          ...(showWebWorkspace
+            ? [
+                {
+                  title: t('Web Workspace'),
+                  url: '/web-workspace',
+                  icon: AppWindow,
+                },
+              ]
+            : []),
         ],
       },
       {

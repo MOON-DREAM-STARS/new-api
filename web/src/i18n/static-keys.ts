@@ -573,4 +573,26 @@ export const STATIC_I18N_KEYS = [
   'This user account is disabled.',
   'Telegram binding failed. Please try again.',
   'Verification scope is missing',
+
+  // Web Workspace (runtime state labels, denial reasons, error messages and
+  // the remote-surface security failure are passed to t at runtime).
+  'Starting',
+  'Running',
+  'Idle',
+  'Stopping',
+  'Stopped',
+  'Failed',
+  'Unknown',
+  'Web Workspace is disabled by the administrator.',
+  'Web Workspace is disabled for your account.',
+  'Your account role does not include Web Workspace access.',
+  'Your account group does not include Web Workspace access.',
+  'Sign in to use Web Workspace.',
+  'Start a browser session before creating a project.',
+  'You have reached the project limit. Remove an existing project first.',
+  'The browser agent is unavailable right now. Try again in a moment.',
+  'This resource is unavailable or has been removed.',
+  'Web Workspace access is not available for this account.',
+  'Something went wrong. Please try again.',
+  'Could not verify the remote browser session.',
 ] as const
