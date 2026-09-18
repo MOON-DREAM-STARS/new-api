@@ -359,3 +359,8 @@ If this project is helpful to you, welcome to give us a ⭐️ Star！
 <sub>Built with ❤️ by QuantumNous</sub>
 
 </div>
+
+## Web Workspace（暂停开发）
+
+此分支仅保留 Web Workspace / Browser Agent。功能架构与验收记录见 [架构文档](docs/web-workspace/architecture.md) 和 [实施清单](docs/web-workspace/implementation-checklist.md)。
+
