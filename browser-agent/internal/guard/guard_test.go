@@ -346,13 +346,20 @@ type guardRun struct {
 }
 
 // startGuard runs the guard against the fake endpoint and waits until the
-// browser level setup is complete.
+// browser level setup is complete. The guard reads its ownership state from the
+// configured default directory, which does not exist in the test environment.
 func startGuard(t *testing.T, f *fakeCDP, mode policy.Mode, logs *logBuffer) *guardRun {
+	t.Helper()
+	return startGuardWithState(t, f, mode, logs, "")
+}
+
+// startGuardWithState runs the guard with an explicit .guard state directory.
+func startGuardWithState(t *testing.T, f *fakeCDP, mode policy.Mode, logs *logBuffer, stateDir string) *guardRun {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	run := &guardRun{t: t, cancel: cancel, finished: make(chan struct{})}
 	go func() {
-		err := Run(ctx, Config{CDPURL: f.server.URL, Mode: mode, Logger: newTestLogger(logs)})
+		err := Run(ctx, Config{CDPURL: f.server.URL, Mode: mode, Logger: newTestLogger(logs), StateDir: stateDir})
 		run.mu.Lock()
 		run.err = err
 		run.mu.Unlock()
@@ -504,7 +511,7 @@ func TestRunGuardsPopupTargets(t *testing.T) {
 			"targetInfo": map[string]any{
 				"targetId": "target-2",
 				"type":     "page",
-				"url":      "https://chatgpt.com/c/123",
+				"url":      "https://chatgpt.com/",
 			},
 			"waitingForDebugger": true,
 		})

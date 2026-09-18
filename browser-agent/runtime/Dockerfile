@@ -6,6 +6,7 @@ FROM golang:1.26.1-alpine AS guard-build
 WORKDIR /build
 COPY go.mod go.sum ./
 COPY internal/policy internal/policy
+COPY internal/provider internal/provider
 COPY internal/guard internal/guard
 COPY cmd/workspace-guard cmd/workspace-guard
 RUN CGO_ENABLED=0 go build -trimpath -o /out/workspace-guard ./cmd/workspace-guard

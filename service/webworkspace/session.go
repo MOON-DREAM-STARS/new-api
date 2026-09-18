@@ -162,6 +162,9 @@ func StartSession(ctx context.Context, userId int) (*Session, error) {
 		switch {
 		case err == nil && LiveRuntimeState(runtime.State):
 			updated, _ := sessions.applyRuntime(existing.Id, runtime)
+			if err := pushOwnershipWithClient(ctx, client, existing.WorkspaceId); err != nil {
+				return nil, err
+			}
 			return &updated, nil
 		case err == nil:
 			sessions.remove(existing.Id)
@@ -199,6 +202,11 @@ func StartSession(ctx context.Context, userId int) (*Session, error) {
 		IdleDeadlineAt: runtime.IdleDeadlineAt,
 	}
 	sessions.put(session)
+	// The guard denies every unregistered provider resource, so the session is
+	// only usable once the ownership document reached the agent.
+	if err := pushOwnershipWithClient(ctx, client, workspace.Id); err != nil {
+		return nil, err
+	}
 	return &session, nil
 }
 

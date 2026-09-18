@@ -57,6 +57,10 @@ func New(mgr *manager.Manager, token string, logger *slog.Logger) http.Handler {
 	mux.Handle("POST /internal/v1/runtimes/{workspace_id}/stop", server.authenticate(http.HandlerFunc(server.handleStop)))
 	mux.Handle("POST /internal/v1/runtimes/{workspace_id}/restart", server.authenticate(http.HandlerFunc(server.handleRestart)))
 	mux.Handle("POST /internal/v1/runtimes/{workspace_id}/activity", server.authenticate(http.HandlerFunc(server.handleActivity)))
+	mux.Handle("PUT /internal/v1/runtimes/{workspace_id}/ownership", server.authenticate(http.HandlerFunc(server.handlePutOwnership)))
+	mux.Handle("POST /internal/v1/runtimes/{workspace_id}/permits", server.authenticate(http.HandlerFunc(server.handleIssuePermit)))
+	mux.Handle("GET /internal/v1/runtimes/{workspace_id}/observations", server.authenticate(http.HandlerFunc(server.handleObservations)))
+	mux.Handle("POST /internal/v1/runtimes/{workspace_id}/observations/ack", server.authenticate(http.HandlerFunc(server.handleAckObservations)))
 	mux.Handle("GET /internal/v1/runtimes/{workspace_id}/stream", server.authenticate(server.streamRoute(stream.NewHandler(mgr, server.logger))))
 	mux.Handle("/", server.authenticate(http.HandlerFunc(server.handleNotFound)))
 	return mux
@@ -182,6 +186,103 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, snapshot)
+}
+
+type ownershipRequest struct {
+	Generation    int64    `json:"generation"`
+	Projects      []string `json:"projects"`
+	Conversations []string `json:"conversations"`
+}
+
+func (s *Server) handlePutOwnership(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := parseWorkspaceID(r.PathValue("workspace_id"))
+	if !ok {
+		writeError(w, http.StatusBadRequest, errorInvalidRequest)
+		return
+	}
+	var request ownershipRequest
+	if err := decodeJSONBody(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, errorInvalidRequest)
+		return
+	}
+	counts, err := s.mgr.PutOwnership(workspaceID, manager.Ownership{
+		Generation:    request.Generation,
+		Projects:      request.Projects,
+		Conversations: request.Conversations,
+	})
+	if err != nil {
+		s.writeManagerError(w, workspaceID, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, counts)
+}
+
+type permitRequest struct {
+	PermitID   string `json:"permit_id"`
+	Kind       string `json:"kind"`
+	TTLSeconds int    `json:"ttl_seconds"`
+}
+
+func (s *Server) handleIssuePermit(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := parseWorkspaceID(r.PathValue("workspace_id"))
+	if !ok {
+		writeError(w, http.StatusBadRequest, errorInvalidRequest)
+		return
+	}
+	var request permitRequest
+	if err := decodeJSONBody(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, errorInvalidRequest)
+		return
+	}
+	permit, err := s.mgr.IssuePermit(workspaceID, request.PermitID, request.Kind, request.TTLSeconds)
+	if err != nil {
+		s.writeManagerError(w, workspaceID, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, permit)
+}
+
+func (s *Server) handleObservations(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := parseWorkspaceID(r.PathValue("workspace_id"))
+	if !ok {
+		writeError(w, http.StatusBadRequest, errorInvalidRequest)
+		return
+	}
+	page, err := s.mgr.Observations(workspaceID)
+	if err != nil {
+		s.writeManagerError(w, workspaceID, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
+type ackRequest struct {
+	Offset *int64 `json:"offset"`
+}
+
+func (s *Server) handleAckObservations(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := parseWorkspaceID(r.PathValue("workspace_id"))
+	if !ok {
+		writeError(w, http.StatusBadRequest, errorInvalidRequest)
+		return
+	}
+	var request ackRequest
+	if err := decodeJSONBody(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, errorInvalidRequest)
+		return
+	}
+	if request.Offset == nil {
+		writeError(w, http.StatusBadRequest, errorInvalidRequest)
+		return
+	}
+	offset, err := s.mgr.AckObservations(workspaceID, *request.Offset)
+	if err != nil {
+		s.writeManagerError(w, workspaceID, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Offset int64 `json:"offset"`
+	}{Offset: offset})
 }
 
 func (s *Server) handleNotFound(w http.ResponseWriter, _ *http.Request) {

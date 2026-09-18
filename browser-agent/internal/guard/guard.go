@@ -4,6 +4,13 @@
 // unknown popup targets, denies downloads and clipboard permissions, writes
 // deny audit logs and fails closed by returning an error as soon as the CDP
 // channel breaks.
+//
+// Phase 4 adds the provider ownership stage on top of the address policy: every
+// provider document navigation is classified by internal/provider/chatgpt and
+// only a registered project, or a project covered by a single use creation
+// permit, is allowed. The registry lives in the workspace .guard directory and
+// is re-read every two seconds; a missing or invalid registry denies every
+// provider resource instead of opening one.
 package guard
 
 import (
@@ -58,6 +65,10 @@ type Config struct {
 	CDPURL string
 	Mode   policy.Mode
 	Logger *slog.Logger
+	// StateDir is the workspace .guard directory holding ownership.json,
+	// permit.json, permit.consumed and observations.jsonl. Empty falls back to
+	// WW_GUARD_STATE_DIR and then to DefaultStateDir.
+	StateDir string
 }
 
 // Run connects to Chromium, installs the browser guard and blocks until the CDP
@@ -77,13 +88,19 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	defer conn.Close()
 
-	g := &guard{mode: cfg.Mode, logger: logger}
+	// The registry is read before interception is armed so no provider
+	// document can slip through with an unknown ownership state.
+	state := newProviderState(resolveStateDir(cfg.StateDir), cfg.Mode, logger)
+	state.refresh()
+
+	g := &guard{mode: cfg.Mode, logger: logger, state: state}
 	client := newCDPClient(conn, g.handleEvent)
 	g.client = client
 	client.start(ctx)
 	if err := g.install(ctx); err != nil {
 		return err
 	}
+	go g.pollOwnershipState(ctx)
 	logger.Info("browser guard active", "event", "guard_active", "component", "guard", "mode", string(cfg.Mode))
 
 	select {
@@ -226,6 +243,7 @@ type guard struct {
 	mode   policy.Mode
 	logger *slog.Logger
 	client *cdpClient
+	state  *providerState
 }
 
 // install arms the browser level guard: every target is discovered and
@@ -264,6 +282,11 @@ func (g *guard) handleEvent(ctx context.Context, sessionID, method string, param
 	case "Browser.downloadWillBegin":
 		g.auditDownload(params)
 		return nil
+	case "Network.responseReceived":
+		// The network observer only feeds observations; a malformed or
+		// unexpected event must never stop enforcement.
+		g.onNetworkResponse(params)
+		return nil
 	default:
 		return nil
 	}
@@ -295,9 +318,10 @@ func (g *guard) onAttachedToTarget(ctx context.Context, params json.RawMessage) 
 	if isPage {
 		initialURL := strings.TrimSpace(event.TargetInfo.URL)
 		if initialURL != "" && initialURL != "about:blank" {
-			decision, host := g.evaluateURL(initialURL)
-			if !decision.Allowed {
-				g.auditTargetDeny(host, decision.Reason)
+			// A new target is a document navigation: it must pass the address
+			// policy and, for provider resources, the ownership decision.
+			if host, reason, allowed := g.evaluateNavigation(initialURL); !allowed {
+				g.auditTargetDeny(host, reason)
 				if err := g.client.call(ctx, "", "Target.closeTarget", map[string]any{
 					"targetId": event.TargetInfo.TargetID,
 				}); err != nil {
@@ -368,6 +392,41 @@ func (g *guard) enablePageDomain(ctx context.Context, sessionID string) {
 			"error", err,
 		)
 	}
+	// Network.enable feeds the project_not_found observation. It is requested
+	// after the page domain and stays non-fatal for the same reason: the guard
+	// loses an observation, never an enforcement step.
+	if err := g.client.call(ctx, sessionID, "Network.enable", nil); err != nil {
+		g.logger.Warn("network domain unavailable",
+			"event", "network_domain_unavailable",
+			"component", "guard",
+			"mode", string(g.mode),
+			"reason", "project_not_found observation degraded",
+			"error", err,
+		)
+	}
+}
+
+// onNetworkResponse turns a document 404/410 of a registered project into a
+// project_not_found observation. Parsing failures are tolerated: this handler
+// observes reality, it never decides access.
+func (g *guard) onNetworkResponse(params json.RawMessage) {
+	var event struct {
+		Type     string `json:"type"`
+		Response struct {
+			URL    string `json:"url"`
+			Status int    `json:"status"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(params, &event); err != nil {
+		return
+	}
+	if event.Type != "Document" {
+		return
+	}
+	if event.Response.Status != http.StatusNotFound && event.Response.Status != http.StatusGone {
+		return
+	}
+	g.state.observeProjectNotFoundURL(event.Response.URL)
 }
 
 // onRequestPaused applies the shared policy table to every network request of
@@ -391,22 +450,50 @@ func (g *guard) onRequestPaused(ctx context.Context, sessionID string, params js
 		return errors.New("paused request without a request id")
 	}
 	decision, host := g.evaluateURL(event.Request.URL)
-	if decision.Allowed {
-		if err := g.client.call(ctx, sessionID, "Fetch.continueRequest", map[string]any{
-			"requestId": event.RequestID,
-		}); err != nil {
-			return fmt.Errorf("continue request: %w", err)
-		}
-		return nil
+	if !decision.Allowed {
+		return g.denyRequest(ctx, sessionID, event.RequestID, host, event.ResourceType, decision.Reason)
 	}
-	g.auditPolicyDeny(host, event.ResourceType, decision.Reason)
+	// Only document requests carry the provider resource decision; every other
+	// request (backend-api, static assets, ...) keeps the Phase 3 strategy.
+	if event.ResourceType == "Document" {
+		if verdict := g.state.evaluateDocument(event.Request.URL); !verdict.Allowed {
+			return g.denyRequest(ctx, sessionID, event.RequestID, host, event.ResourceType, verdict.Reason)
+		}
+	}
+	if err := g.client.call(ctx, sessionID, "Fetch.continueRequest", map[string]any{
+		"requestId": event.RequestID,
+	}); err != nil {
+		return fmt.Errorf("continue request: %w", err)
+	}
+	return nil
+}
+
+// denyRequest audits one denied request with the Phase 3 audit fields and fails
+// it in the browser. path and query are never logged.
+func (g *guard) denyRequest(ctx context.Context, sessionID, requestID, host, resourceType, reason string) error {
+	g.auditPolicyDeny(host, resourceType, reason)
 	if err := g.client.call(ctx, sessionID, "Fetch.failRequest", map[string]any{
-		"requestId":   event.RequestID,
+		"requestId":   requestID,
 		"errorReason": "AccessDenied",
 	}); err != nil {
 		return fmt.Errorf("fail request: %w", err)
 	}
 	return nil
+}
+
+// evaluateNavigation applies both enforcement stages to one document
+// navigation: the address policy and, for provider resources, the ownership
+// decision. It returns the host and the deny reason for the audit log.
+func (g *guard) evaluateNavigation(rawURL string) (string, string, bool) {
+	decision, host := g.evaluateURL(rawURL)
+	if !decision.Allowed {
+		return host, decision.Reason, false
+	}
+	verdict := g.state.evaluateDocument(rawURL)
+	if !verdict.Allowed {
+		return host, verdict.Reason, false
+	}
+	return host, "", true
 }
 
 // onFrameNavigated denies clipboard permissions for the origin of every top

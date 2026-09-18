@@ -156,6 +156,10 @@ func TestProtectedEndpointsRequireBearerToken(t *testing.T) {
 		{http.MethodPost, "/internal/v1/runtimes/1/stop"},
 		{http.MethodPost, "/internal/v1/runtimes/1/restart"},
 		{http.MethodPost, "/internal/v1/runtimes/1/activity"},
+		{http.MethodPut, "/internal/v1/runtimes/1/ownership"},
+		{http.MethodPost, "/internal/v1/runtimes/1/permits"},
+		{http.MethodGet, "/internal/v1/runtimes/1/observations"},
+		{http.MethodPost, "/internal/v1/runtimes/1/observations/ack"},
 		{http.MethodGet, "/internal/v1/runtimes/1/stream"},
 		{http.MethodGet, "/internal/v1/unknown"},
 	}
@@ -404,4 +408,179 @@ func mapKeys(values map[string]any) []string {
 		keys = append(keys, key)
 	}
 	return keys
+}
+
+func TestOwnershipEndpointWritesGuardState(t *testing.T) {
+	h := newHarness(t)
+	project := "g-p-" + strings.Repeat("a", 32)
+	conversation := "abcd-1234"
+	payload := fmt.Sprintf(
+		`{"generation":3,"projects":["%s","%s"],"conversations":["%s","%s"]}`,
+		project, project, conversation, conversation,
+	)
+
+	response, body := h.request(t, http.MethodPut, "/internal/v1/runtimes/41/ownership", "Bearer "+testToken, payload)
+	require.Equal(t, http.StatusOK, response.StatusCode, string(body))
+	assert.JSONEq(t, `{"generation":3,"projects":1,"conversations":1}`, string(body))
+	assert.NotContains(t, string(body), h.dataRoot)
+
+	data, err := os.ReadFile(filepath.Join(manager.WorkspaceDir(h.dataRoot, 41), ".guard", "ownership.json"))
+	require.NoError(t, err)
+	var stored struct {
+		Generation    int64    `json:"generation"`
+		Projects      []string `json:"projects"`
+		Conversations []string `json:"conversations"`
+	}
+	require.NoError(t, json.Unmarshal(data, &stored))
+	assert.Equal(t, int64(3), stored.Generation)
+	assert.Equal(t, []string{project}, stored.Projects)
+	assert.Equal(t, []string{conversation}, stored.Conversations)
+}
+
+func TestOwnershipEndpointRejectsInvalidRequest(t *testing.T) {
+	h := newHarness(t)
+	cases := []string{
+		`{"generation":-1,"projects":[],"conversations":[]}`,
+		`{"generation":0,"projects":["not-a-project-id"],"conversations":[]}`,
+		`{"generation":0,"projects":[],"conversations":["short"]}`,
+		`not-json`,
+	}
+	for _, payload := range cases {
+		response, body := h.request(t, http.MethodPut, "/internal/v1/runtimes/42/ownership", "Bearer "+testToken, payload)
+		assert.Equal(t, http.StatusBadRequest, response.StatusCode, payload)
+		assert.JSONEq(t, `{"success":false,"error":"invalid_request"}`, string(body))
+	}
+	assert.NoDirExists(t, filepath.Join(manager.WorkspaceDir(h.dataRoot, 42), ".guard"))
+}
+
+func TestPermitEndpointRequiresRunningRuntime(t *testing.T) {
+	h := newHarness(t)
+	payload := `{"permit_id":"permit-0001","kind":"project_create","ttl_seconds":300}`
+
+	response, body := h.request(t, http.MethodPost, "/internal/v1/runtimes/404/permits", "Bearer "+testToken, payload)
+	assert.Equal(t, http.StatusNotFound, response.StatusCode)
+	assert.JSONEq(t, `{"success":false,"error":"runtime_not_found"}`, string(body))
+
+	h.startRuntime(t, 51)
+	response, body = h.request(t, http.MethodPost, "/internal/v1/runtimes/51/stop", "Bearer "+testToken, "")
+	require.Equal(t, http.StatusOK, response.StatusCode)
+
+	response, body = h.request(t, http.MethodPost, "/internal/v1/runtimes/51/permits", "Bearer "+testToken, payload)
+	assert.Equal(t, http.StatusConflict, response.StatusCode)
+	assert.JSONEq(t, `{"success":false,"error":"runtime_not_running"}`, string(body))
+}
+
+func TestPermitEndpointIssuesPermitAndClearsConsumedMarker(t *testing.T) {
+	h := newHarness(t)
+	workspaceID := int64(52)
+	h.startRuntime(t, workspaceID)
+
+	consumedPath := filepath.Join(manager.WorkspaceDir(h.dataRoot, workspaceID), ".guard", "permit.consumed")
+	require.NoError(t, os.WriteFile(consumedPath, []byte(`{"permit_id":"permit-old","consumed_at":1758192000}`), 0o644))
+
+	response, body := h.request(t, http.MethodPost, fmt.Sprintf("/internal/v1/runtimes/%d/permits", workspaceID), "Bearer "+testToken,
+		`{"permit_id":"permit-0002","kind":"project_create","ttl_seconds":300}`)
+	require.Equal(t, http.StatusOK, response.StatusCode, string(body))
+
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(body, &raw))
+	assert.ElementsMatch(t, []string{"permit_id", "expires_at"}, mapKeys(raw))
+	assert.Equal(t, "permit-0002", raw["permit_id"])
+	assert.NotZero(t, raw["expires_at"])
+	assert.NotContains(t, string(body), h.dataRoot)
+	assert.NoFileExists(t, consumedPath)
+
+	permitData, err := os.ReadFile(filepath.Join(manager.WorkspaceDir(h.dataRoot, workspaceID), ".guard", "permit.json"))
+	require.NoError(t, err)
+	var stored struct {
+		PermitID  string `json:"permit_id"`
+		Kind      string `json:"kind"`
+		IssuedAt  int64  `json:"issued_at"`
+		ExpiresAt int64  `json:"expires_at"`
+	}
+	require.NoError(t, json.Unmarshal(permitData, &stored))
+	assert.Equal(t, "permit-0002", stored.PermitID)
+	assert.Equal(t, "project_create", stored.Kind)
+	assert.NotZero(t, stored.IssuedAt)
+	assert.Equal(t, int64(raw["expires_at"].(float64)), stored.ExpiresAt)
+}
+
+func TestPermitEndpointRejectsInvalidRequest(t *testing.T) {
+	h := newHarness(t)
+	workspaceID := int64(53)
+	h.startRuntime(t, workspaceID)
+	endpoint := fmt.Sprintf("/internal/v1/runtimes/%d/permits", workspaceID)
+
+	cases := []string{
+		`{"permit_id":"short","kind":"project_create","ttl_seconds":300}`,
+		fmt.Sprintf(`{"permit_id":"%s","kind":"project_create","ttl_seconds":300}`, strings.Repeat("p", 65)),
+		`{"permit_id":"permit-0001","kind":"project_delete","ttl_seconds":300}`,
+		`{"permit_id":"permit-0001","kind":"project_create","ttl_seconds":0}`,
+		`{"permit_id":"permit-0001","kind":"project_create","ttl_seconds":3601}`,
+		`not-json`,
+	}
+	for _, payload := range cases {
+		response, body := h.request(t, http.MethodPost, endpoint, "Bearer "+testToken, payload)
+		assert.Equal(t, http.StatusBadRequest, response.StatusCode, payload)
+		assert.JSONEq(t, `{"success":false,"error":"invalid_request"}`, string(body))
+	}
+	assert.NoFileExists(t, filepath.Join(manager.WorkspaceDir(h.dataRoot, workspaceID), ".guard", "permit.json"))
+}
+
+func TestObservationsEndpointPullAndAck(t *testing.T) {
+	h := newHarness(t)
+	workspaceID := int64(61)
+	h.startRuntime(t, workspaceID)
+	endpoint := fmt.Sprintf("/internal/v1/runtimes/%d/observations", workspaceID)
+
+	response, body := h.request(t, http.MethodGet, endpoint, "Bearer "+testToken, "")
+	require.Equal(t, http.StatusOK, response.StatusCode, string(body))
+	assert.JSONEq(t, `{"observations":[],"next_offset":0}`, string(body))
+
+	complete := `{"event":"project_created","permit_id":"permit-0001","external_project_id":"g-p-` + strings.Repeat("a", 32) + `","slug":"demo","observed_at":100}`
+	partial := `{"event":"conversation_created"`
+	observationsPath := filepath.Join(manager.WorkspaceDir(h.dataRoot, workspaceID), ".guard", "observations.jsonl")
+	require.NoError(t, os.WriteFile(observationsPath, []byte(complete+"\n"+partial), 0o644))
+
+	response, body = h.request(t, http.MethodGet, endpoint, "Bearer "+testToken, "")
+	require.Equal(t, http.StatusOK, response.StatusCode, string(body))
+	var page struct {
+		Observations []json.RawMessage `json:"observations"`
+		NextOffset   int64             `json:"next_offset"`
+	}
+	require.NoError(t, json.Unmarshal(body, &page))
+	require.Len(t, page.Observations, 1)
+	assert.JSONEq(t, complete, string(page.Observations[0]))
+	assert.Equal(t, int64(len(complete)+1), page.NextOffset)
+
+	response, body = h.request(t, http.MethodGet, endpoint, "Bearer "+testToken, "")
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	assert.JSONEq(t, fmt.Sprintf(`{"observations":[%s],"next_offset":%d}`, complete, page.NextOffset), string(body))
+
+	ackEndpoint := fmt.Sprintf("/internal/v1/runtimes/%d/observations/ack", workspaceID)
+	response, body = h.request(t, http.MethodPost, ackEndpoint, "Bearer "+testToken, fmt.Sprintf(`{"offset":%d}`, page.NextOffset))
+	require.Equal(t, http.StatusOK, response.StatusCode, string(body))
+	assert.JSONEq(t, fmt.Sprintf(`{"offset":%d}`, page.NextOffset), string(body))
+
+	response, body = h.request(t, http.MethodGet, endpoint, "Bearer "+testToken, "")
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	assert.JSONEq(t, fmt.Sprintf(`{"observations":[],"next_offset":%d}`, page.NextOffset), string(body))
+}
+
+func TestAckObservationsEndpointRejectsInvalidOffset(t *testing.T) {
+	h := newHarness(t)
+	workspaceID := int64(62)
+	h.startRuntime(t, workspaceID)
+	endpoint := fmt.Sprintf("/internal/v1/runtimes/%d/observations/ack", workspaceID)
+
+	for _, payload := range []string{`{"offset":-1}`, `{"offset":1}`, `{}`, `not-json`} {
+		response, body := h.request(t, http.MethodPost, endpoint, "Bearer "+testToken, payload)
+		assert.Equal(t, http.StatusBadRequest, response.StatusCode, payload)
+		assert.JSONEq(t, `{"success":false,"error":"invalid_request"}`, string(body))
+	}
+
+	response, body := h.request(t, http.MethodPost, endpoint, "Bearer "+testToken, `{"offset":0}`)
+	require.Equal(t, http.StatusOK, response.StatusCode, string(body))
+	assert.JSONEq(t, `{"offset":0}`, string(body))
+	assert.NotContains(t, string(body), h.dataRoot)
 }

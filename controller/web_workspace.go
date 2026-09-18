@@ -70,11 +70,26 @@ func GetWebWorkspaceStatus(c *gin.Context) {
 	common.ApiSuccess(c, status)
 }
 
-// GetWebWorkspaceProjects lists only the projects owned by the current user.
+// GetWebWorkspaceProjects synchronises the guard observations first and then
+// lists only the projects owned by the current user. A failed pull or apply is
+// never reported as success and leaves the agent offset unacknowledged.
 func GetWebWorkspaceProjects(c *gin.Context) {
 	user := requireWebWorkspaceEntitlement(c)
 	if user == nil {
 		return
+	}
+	workspace, err := webworkspace.GetWorkspaceByUserID(user.Id)
+	if err != nil && !errors.Is(err, webworkspace.ErrResourceNotFound) {
+		writeWebWorkspaceInternalError(c)
+		return
+	}
+	// A user who never started a session has no runtime and no observations, so
+	// there is nothing to synchronise yet.
+	if err == nil {
+		if err := webworkspace.SyncWorkspace(c.Request.Context(), workspace.Id); err != nil {
+			writeWebWorkspaceSessionError(c, err)
+			return
+		}
 	}
 	projects, err := webworkspace.ListOwnedProjects(user.Id)
 	if err != nil {
@@ -106,8 +121,8 @@ func GetWebWorkspaceProject(c *gin.Context) {
 	common.ApiSuccess(c, toWebProjectDto(project))
 }
 
-// UpdateWebWorkspaceProject renames the local project mapping. Provider-side
-// rename lands with the Phase 4 adapter.
+// UpdateWebWorkspaceProject renames the local project mapping and republishes
+// the ownership document so the guard and the control plane stay consistent.
 func UpdateWebWorkspaceProject(c *gin.Context) {
 	user := requireWebWorkspaceEntitlement(c)
 	if user == nil {
@@ -132,11 +147,16 @@ func UpdateWebWorkspaceProject(c *gin.Context) {
 		writeWebWorkspaceResourceError(c, err)
 		return
 	}
+	if err := webworkspace.PushOwnership(c.Request.Context(), project.WorkspaceId); err != nil {
+		writeWebWorkspaceOwnershipError(c, err)
+		return
+	}
 	common.ApiSuccess(c, toWebProjectDto(project))
 }
 
 // DeleteWebWorkspaceProject removes the local project mapping and its
-// conversation mappings. Provider-side deletion lands with the Phase 4 adapter.
+// conversation mappings, then revokes the project in the guard's ownership
+// document. The provider-side project itself is never touched here.
 func DeleteWebWorkspaceProject(c *gin.Context) {
 	user := requireWebWorkspaceEntitlement(c)
 	if user == nil {
@@ -146,11 +166,45 @@ func DeleteWebWorkspaceProject(c *gin.Context) {
 	if !ok {
 		return
 	}
+	project, err := webworkspace.GetOwnedProject(user.Id, projectID)
+	if err != nil {
+		writeWebWorkspaceResourceError(c, err)
+		return
+	}
 	if err := webworkspace.DeleteOwnedProject(user.Id, projectID); err != nil {
 		writeWebWorkspaceResourceError(c, err)
 		return
 	}
+	if err := webworkspace.PushOwnership(c.Request.Context(), project.WorkspaceId); err != nil {
+		writeWebWorkspaceOwnershipError(c, err)
+		return
+	}
 	common.ApiSuccess(c, gin.H{"id": projectID})
+}
+
+// CreateWebWorkspaceProject issues a short-lived creation permit for one new
+// provider-side project. The local row is created later from the guard's
+// project_created observation, so a permit alone never registers a project the
+// user did not actually open.
+func CreateWebWorkspaceProject(c *gin.Context) {
+	user := requireWebWorkspaceEntitlement(c)
+	if user == nil {
+		return
+	}
+	settings := system_setting.GetWebWorkspaceSettings()
+	permit, err := webworkspace.IssueProjectPermit(c.Request.Context(), user.Id, settings.MaxProjects)
+	switch {
+	case errors.Is(err, webworkspace.ErrSessionRequired):
+		writeWebWorkspaceError(c, http.StatusConflict, webWorkspaceCodeSessionRequired, "a running web workspace session is required", "")
+		return
+	case errors.Is(err, webworkspace.ErrProjectLimitReached):
+		writeWebWorkspaceError(c, http.StatusConflict, webWorkspaceCodeProjectLimit, "web workspace project limit reached", "")
+		return
+	case err != nil:
+		writeWebWorkspaceSessionError(c, err)
+		return
+	}
+	common.ApiSuccess(c, dto.WebWorkspaceProjectPermitDto{PermitId: permit.PermitId, ExpiresAt: permit.ExpiresAt})
 }
 
 // GetWebWorkspaceProjectConversations lists the conversations of one owned
@@ -258,6 +312,8 @@ func toWebConversationDto(conversation *model.WebConversation) dto.WebConversati
 const (
 	webWorkspaceCodeAgentUnavailable = "WEB_WORKSPACE_AGENT_UNAVAILABLE"
 	webWorkspaceCodeSessionNotFound  = "WEB_WORKSPACE_SESSION_NOT_FOUND"
+	webWorkspaceCodeSessionRequired  = "WEB_WORKSPACE_SESSION_REQUIRED"
+	webWorkspaceCodeProjectLimit     = "WEB_WORKSPACE_PROJECT_LIMIT"
 	webWorkspaceCodeTicketInvalid    = "WEB_WORKSPACE_TICKET_INVALID"
 )
 
@@ -443,6 +499,20 @@ func proxyWebWorkspaceStream(client *websocket.Conn, agent *websocket.Conn) {
 	_ = client.Close()
 	_ = agent.Close()
 	<-done
+}
+
+// writeWebWorkspaceOwnershipError reports an ownership push that failed after a
+// local change was committed. The client must not see success while the guard
+// still enforces the previous ownership document.
+func writeWebWorkspaceOwnershipError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, webworkspace.ErrAgentUnavailable),
+		errors.Is(err, webworkspace.ErrAgentRejected),
+		errors.Is(err, webworkspace.ErrAgentRuntimeNotFound):
+		writeWebWorkspaceError(c, http.StatusServiceUnavailable, webWorkspaceCodeAgentUnavailable, "web workspace agent unavailable", "")
+	default:
+		writeWebWorkspaceInternalError(c)
+	}
 }
 
 func writeWebWorkspaceSessionError(c *gin.Context, err error) {

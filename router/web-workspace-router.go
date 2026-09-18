@@ -17,6 +17,7 @@ func SetWebWorkspaceRouter(apiRouter *gin.RouterGroup) {
 		webWorkspaceRoute.GET("/config", controller.GetWebWorkspaceConfig)
 		webWorkspaceRoute.GET("/status", controller.GetWebWorkspaceStatus)
 		webWorkspaceRoute.GET("/projects", controller.GetWebWorkspaceProjects)
+		webWorkspaceRoute.POST("/projects", controller.CreateWebWorkspaceProject)
 		webWorkspaceRoute.GET("/projects/:id", controller.GetWebWorkspaceProject)
 		webWorkspaceRoute.PATCH("/projects/:id", controller.UpdateWebWorkspaceProject)
 		webWorkspaceRoute.DELETE("/projects/:id", controller.DeleteWebWorkspaceProject)

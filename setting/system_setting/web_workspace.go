@@ -15,6 +15,9 @@ type WebWorkspaceSettings struct {
 	Enabled       bool     `json:"enabled"`
 	MinimumRole   int      `json:"minimum_role"`
 	AllowedGroups []string `json:"allowed_groups"`
+	// MaxProjects caps the number of projects one workspace may register. Zero
+	// means no limit.
+	MaxProjects int `json:"max_projects"`
 	// AgentBaseURL is the private Browser Agent endpoint, for example
 	// http://browser-agent:8730. The service token is never stored here; it is
 	// read from the WEB_WORKSPACE_AGENT_TOKEN environment variable.
@@ -25,6 +28,7 @@ var defaultWebWorkspaceSettings = WebWorkspaceSettings{
 	Enabled:       false,
 	MinimumRole:   common.RoleCommonUser,
 	AllowedGroups: []string{},
+	MaxProjects:   0,
 	AgentBaseURL:  "",
 }
 

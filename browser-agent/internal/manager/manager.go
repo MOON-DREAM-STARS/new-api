@@ -5,12 +5,15 @@ package manager
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -64,6 +67,15 @@ const (
 	cleanupTimeout = 30 * time.Second
 )
 
+// Creation permit bounds (phase 4 contract §4).
+const (
+	permitKindProjectCreate = "project_create"
+	minPermitIDLength       = 8
+	maxPermitIDLength       = 64
+	minPermitTTLSeconds     = 1
+	maxPermitTTLSeconds     = 3600
+)
+
 var (
 	// ErrNotFound reports that the agent has no runtime state for a workspace.
 	ErrNotFound = errors.New("runtime not found")
@@ -74,6 +86,9 @@ var (
 	ErrProviderRequired = errors.New("provider is required")
 
 	providerPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+	projectIDPattern      = regexp.MustCompile(`^g-p-[0-9a-f]{32}$`)
+	conversationIDPattern = regexp.MustCompile(`^[0-9A-Za-z-]{8,64}$`)
 )
 
 // Snapshot is the runtime JSON shape exposed by the HTTP API. It never contains
@@ -110,6 +125,34 @@ type Options struct {
 	// bind source of a runtime container is built from it; every local file
 	// operation uses DataRoot. Empty falls back to DataRoot.
 	HostDataRoot string
+}
+
+// Ownership is the resource snapshot the control plane pushes to the guard. The
+// guard state files never carry client supplied paths; ids are validated first.
+type Ownership struct {
+	Generation    int64
+	Projects      []string
+	Conversations []string
+}
+
+// OwnershipCounts is the API result of an ownership push.
+type OwnershipCounts struct {
+	Generation    int64 `json:"generation"`
+	Projects      int   `json:"projects"`
+	Conversations int   `json:"conversations"`
+}
+
+// IssuedPermit is the API result of a creation permit issue.
+type IssuedPermit struct {
+	PermitID  string `json:"permit_id"`
+	ExpiresAt int64  `json:"expires_at"`
+}
+
+// ObservationPage is the API result of an observation pull: the raw observation
+// objects the guard appended and the offset the control plane must acknowledge.
+type ObservationPage struct {
+	Observations []json.RawMessage `json:"observations"`
+	NextOffset   int64             `json:"next_offset"`
 }
 
 type runtimeState struct {
@@ -348,6 +391,139 @@ func (m *Manager) Touch(workspaceID int64) {
 		return
 	}
 	m.touchRuntime(rt, m.now())
+}
+
+// PutOwnership atomically replaces the guard ownership snapshot of a workspace.
+// External ids are validated and de-duplicated before they reach the guard, and
+// the guard state directory is created (0700, runtime identity) when missing.
+func (m *Manager) PutOwnership(workspaceID int64, update Ownership) (OwnershipCounts, error) {
+	if workspaceID <= 0 {
+		return OwnershipCounts{}, fmt.Errorf("%w: workspace id must be positive", ErrInvalidRequest)
+	}
+	if update.Generation < 0 {
+		return OwnershipCounts{}, fmt.Errorf("%w: generation must not be negative", ErrInvalidRequest)
+	}
+	projects, err := normalizeExternalIDs(update.Projects, projectIDPattern, "project id")
+	if err != nil {
+		return OwnershipCounts{}, err
+	}
+	conversations, err := normalizeExternalIDs(update.Conversations, conversationIDPattern, "conversation id")
+	if err != nil {
+		return OwnershipCounts{}, err
+	}
+
+	dir, err := ensureGuardStateDir(WorkspaceDir(m.dataRoot, workspaceID), m.chown)
+	if err != nil {
+		return OwnershipCounts{}, fmt.Errorf("prepare guard state directory: %w", err)
+	}
+	payload, err := json.Marshal(guardOwnership{
+		Generation:    update.Generation,
+		Projects:      projects,
+		Conversations: conversations,
+		UpdatedAt:     m.now().Unix(),
+	})
+	if err != nil {
+		return OwnershipCounts{}, fmt.Errorf("encode ownership state: %w", err)
+	}
+	if err := writeStateFileAtomic(dir, ownershipFileName, payload); err != nil {
+		return OwnershipCounts{}, fmt.Errorf("write ownership state: %w", err)
+	}
+	return OwnershipCounts{
+		Generation:    update.Generation,
+		Projects:      len(projects),
+		Conversations: len(conversations),
+	}, nil
+}
+
+// IssuePermit writes a short-lived single-use creation permit for the runtime of
+// a workspace and drops the consumed marker of the previous permit, so the guard
+// only treats the new permit as spendable.
+func (m *Manager) IssuePermit(workspaceID int64, permitID string, kind string, ttlSeconds int) (IssuedPermit, error) {
+	if workspaceID <= 0 || len(permitID) < minPermitIDLength || len(permitID) > maxPermitIDLength ||
+		kind != permitKindProjectCreate || ttlSeconds < minPermitTTLSeconds || ttlSeconds > maxPermitTTLSeconds {
+		return IssuedPermit{}, fmt.Errorf("%w: permit request is invalid", ErrInvalidRequest)
+	}
+
+	// Serialise with the lifecycle operations so a permit is never issued for a
+	// runtime that is stopping, failing or restarting.
+	lock := m.lockFor(workspaceID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	m.mu.Lock()
+	rt := m.runtimes[workspaceID]
+	state := State("")
+	if rt != nil {
+		state = rt.state
+	}
+	m.mu.Unlock()
+	if rt == nil {
+		return IssuedPermit{}, ErrNotFound
+	}
+	if state != StateRunning && state != StateIdle {
+		return IssuedPermit{}, fmt.Errorf("%w: runtime is %s", runtime.ErrNotRunning, state)
+	}
+
+	dir, err := ensureGuardStateDir(WorkspaceDir(m.dataRoot, workspaceID), m.chown)
+	if err != nil {
+		return IssuedPermit{}, fmt.Errorf("prepare guard state directory: %w", err)
+	}
+	now := m.now()
+	permit := guardPermit{
+		PermitID:  permitID,
+		Kind:      permitKindProjectCreate,
+		IssuedAt:  now.Unix(),
+		ExpiresAt: now.Add(time.Duration(ttlSeconds) * time.Second).Unix(),
+	}
+	payload, err := json.Marshal(permit)
+	if err != nil {
+		return IssuedPermit{}, fmt.Errorf("encode permit state: %w", err)
+	}
+	if err := writeStateFileAtomic(dir, permitFileName, payload); err != nil {
+		return IssuedPermit{}, fmt.Errorf("write permit state: %w", err)
+	}
+	if err := clearConsumedPermit(dir, permitID); err != nil {
+		return IssuedPermit{}, fmt.Errorf("clear consumed permit: %w", err)
+	}
+	return IssuedPermit{PermitID: permitID, ExpiresAt: permit.ExpiresAt}, nil
+}
+
+// Observations returns every complete observation object the guard appended
+// after the acknowledged offset. The offset only moves when the control plane
+// acknowledges it, so repeated pulls are idempotent.
+func (m *Manager) Observations(workspaceID int64) (ObservationPage, error) {
+	if workspaceID <= 0 {
+		return ObservationPage{}, fmt.Errorf("%w: workspace id must be positive", ErrInvalidRequest)
+	}
+	observations, nextOffset, err := readObservationLines(guardStateDir(WorkspaceDir(m.dataRoot, workspaceID)))
+	if err != nil {
+		return ObservationPage{}, fmt.Errorf("read observations: %w", err)
+	}
+	return ObservationPage{Observations: observations, NextOffset: nextOffset}, nil
+}
+
+// AckObservations persists the offset the control plane has applied. The offset
+// must never move past the end of the observation file.
+func (m *Manager) AckObservations(workspaceID int64, offset int64) (int64, error) {
+	if workspaceID <= 0 || offset < 0 {
+		return 0, fmt.Errorf("%w: observation offset is invalid", ErrInvalidRequest)
+	}
+	workspaceDir := WorkspaceDir(m.dataRoot, workspaceID)
+	size, err := observationFileSize(guardStateDir(workspaceDir))
+	if err != nil {
+		return 0, fmt.Errorf("read observations: %w", err)
+	}
+	if offset > size {
+		return 0, fmt.Errorf("%w: observation offset %d exceeds file size %d", ErrInvalidRequest, offset, size)
+	}
+	dir, err := ensureGuardStateDir(workspaceDir, m.chown)
+	if err != nil {
+		return 0, fmt.Errorf("prepare guard state directory: %w", err)
+	}
+	if err := writeStateFileAtomic(dir, observationsOffsetName, []byte(strconv.FormatInt(offset, 10))); err != nil {
+		return 0, fmt.Errorf("write observation offset: %w", err)
+	}
+	return offset, nil
 }
 
 // OpenDisplayStream returns a raw display connection for a streamable runtime.
@@ -836,6 +1012,47 @@ func closeStreams(handles []*streamHandle) {
 	for _, handle := range handles {
 		handle.close()
 	}
+}
+
+// normalizeExternalIDs rejects malformed external ids and removes duplicates
+// while keeping the first occurrence order.
+func normalizeExternalIDs(ids []string, pattern *regexp.Regexp, label string) ([]string, error) {
+	normalized := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if !pattern.MatchString(id) {
+			return nil, fmt.Errorf("%w: %s is invalid", ErrInvalidRequest, label)
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		normalized = append(normalized, id)
+	}
+	return normalized, nil
+}
+
+// clearConsumedPermit drops the consumed marker of the previous permit so the
+// guard does not treat a fresh permit as already spent. A marker that already
+// names the new permit is kept: the guard may have consumed that permit between
+// the permit write and this cleanup, and deleting it would allow a second use.
+func clearConsumedPermit(dir string, permitID string) error {
+	path := filepath.Join(dir, permitConsumedFileName)
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var consumed guardConsumedPermit
+	if json.Unmarshal(data, &consumed) == nil && consumed.PermitID == permitID {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func validateOptions(workspaceID int64, opts StartOptions) error {

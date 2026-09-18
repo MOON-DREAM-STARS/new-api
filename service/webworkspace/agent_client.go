@@ -55,6 +55,41 @@ type agentCreateRuntimeRequest struct {
 	Height      int    `json:"height,omitempty"`
 }
 
+// Ownership, permit and observation payloads of the Browser Agent internal API
+// (Phase 4 contract §4). They carry provider-side identifiers only; runtime
+// addresses, ports and service tokens never appear here.
+type agentOwnershipRequest struct {
+	Generation    int64    `json:"generation"`
+	Projects      []string `json:"projects"`
+	Conversations []string `json:"conversations"`
+}
+
+type agentOwnershipResult struct {
+	Generation    int64 `json:"generation"`
+	Projects      int   `json:"projects"`
+	Conversations int   `json:"conversations"`
+}
+
+type agentPermitRequest struct {
+	PermitId   string `json:"permit_id"`
+	Kind       string `json:"kind"`
+	TtlSeconds int    `json:"ttl_seconds"`
+}
+
+type agentPermitResult struct {
+	PermitId  string `json:"permit_id"`
+	ExpiresAt int64  `json:"expires_at"`
+}
+
+type agentObservationsResult struct {
+	Observations []Observation `json:"observations"`
+	NextOffset   int64         `json:"next_offset"`
+}
+
+type agentAckRequest struct {
+	Offset int64 `json:"offset"`
+}
+
 // AgentConfigured reports whether the Web Workspace agent connection is
 // configured. Session endpoints must return a closed failure when it is not.
 func AgentConfigured() bool {
@@ -187,6 +222,57 @@ func (c *AgentClient) RestartRuntime(ctx context.Context, workspaceId int) (*Age
 		return nil, err
 	}
 	return &runtime, nil
+}
+
+// PutOwnership publishes the workspace ownership document the guard enforces.
+// Generation is the newest project row timestamp of the workspace.
+func (c *AgentClient) PutOwnership(ctx context.Context, workspaceId int, generation int64, projects []string, conversations []string) error {
+	if projects == nil {
+		projects = []string{}
+	}
+	if conversations == nil {
+		conversations = []string{}
+	}
+	payload := agentOwnershipRequest{Generation: generation, Projects: projects, Conversations: conversations}
+	path := fmt.Sprintf("/internal/v1/runtimes/%d/ownership", workspaceId)
+	var result agentOwnershipResult
+	return c.do(ctx, http.MethodPut, path, payload, &result)
+}
+
+// IssueProjectPermit asks the agent for one short-lived project creation
+// permit and returns the expiry the guard will enforce.
+func (c *AgentClient) IssueProjectPermit(ctx context.Context, workspaceId int, permitId string, ttlSeconds int) (int64, error) {
+	payload := agentPermitRequest{PermitId: permitId, Kind: ProjectPermitKind, TtlSeconds: ttlSeconds}
+	path := fmt.Sprintf("/internal/v1/runtimes/%d/permits", workspaceId)
+	var result agentPermitResult
+	if err := c.do(ctx, http.MethodPost, path, payload, &result); err != nil {
+		return 0, err
+	}
+	if result.ExpiresAt <= 0 {
+		return 0, fmt.Errorf("%w: permit response is missing expires_at", ErrAgentUnavailable)
+	}
+	return result.ExpiresAt, nil
+}
+
+// PullObservations returns the guard observations that were not acknowledged
+// yet together with the offset that acknowledges them.
+func (c *AgentClient) PullObservations(ctx context.Context, workspaceId int) ([]Observation, int64, error) {
+	path := fmt.Sprintf("/internal/v1/runtimes/%d/observations", workspaceId)
+	var result agentObservationsResult
+	if err := c.do(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, 0, err
+	}
+	if result.NextOffset < 0 {
+		return nil, 0, fmt.Errorf("%w: negative observations offset", ErrAgentUnavailable)
+	}
+	return result.Observations, result.NextOffset, nil
+}
+
+// AckObservations confirms that every observation below the offset was applied
+// so the next pull starts after it.
+func (c *AgentClient) AckObservations(ctx context.Context, workspaceId int, offset int64) error {
+	path := fmt.Sprintf("/internal/v1/runtimes/%d/observations/ack", workspaceId)
+	return c.do(ctx, http.MethodPost, path, agentAckRequest{Offset: offset}, nil)
 }
 
 // DialStream opens the agent-side display stream for one workspace. The caller
