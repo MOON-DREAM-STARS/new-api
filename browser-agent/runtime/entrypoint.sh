@@ -11,6 +11,17 @@ WW_SCREEN_WIDTH="${WW_SCREEN_WIDTH:-1280}"
 WW_SCREEN_HEIGHT="${WW_SCREEN_HEIGHT:-720}"
 WW_VNC_PORT="${WW_VNC_PORT:-5900}"
 WW_PROVIDER="${WW_PROVIDER:-unknown}"
+WW_START_URL="${WW_START_URL:-}"
+
+# The runtime window is the provider application window: it opens on the
+# provider shell with no tab strip, no address bar and no warning bar. A
+# provider without a start page keeps the empty window instead of guessing.
+if [ -z "$WW_START_URL" ]; then
+    case "$WW_PROVIDER" in
+        chatgpt) WW_START_URL="https://chatgpt.com/" ;;
+        *) WW_START_URL="about:blank" ;;
+    esac
+fi
 
 if [ -z "${WW_PROXY_SERVER:-}" ]; then
     log "WW_PROXY_SERVER is required and must be the egress proxy as http(s)://host[:port]"
@@ -86,7 +97,7 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-log "starting provider=${WW_PROVIDER} workspace=${WW_WORKSPACE_DIR} display=${WW_DISPLAY} screen=${WW_SCREEN_WIDTH}x${WW_SCREEN_HEIGHT} vnc_port=${WW_VNC_PORT} guard_mode=${WW_GUARD_MODE}"
+log "starting provider=${WW_PROVIDER} workspace=${WW_WORKSPACE_DIR} display=${WW_DISPLAY} screen=${WW_SCREEN_WIDTH}x${WW_SCREEN_HEIGHT} vnc_port=${WW_VNC_PORT} guard_mode=${WW_GUARD_MODE} start_url=${WW_START_URL}"
 
 umask 077
 mkdir -p "$WW_WORKSPACE_DIR/profile" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_RUNTIME_DIR"
@@ -167,12 +178,14 @@ log "x11vnc ready pid=$X11VNC_PID port=$WW_VNC_PORT"
 
 log "starting chromium with profile=$WW_WORKSPACE_DIR/profile guard_mode=$WW_GUARD_MODE"
 chromium --no-sandbox \
+    --test-type \
     --user-data-dir="$WW_WORKSPACE_DIR/profile" \
     --display="$WW_DISPLAY" \
     --no-first-run \
     --no-default-browser-check \
     --disable-features=TranslateUI \
-    --start-maximized \
+    --window-size="${WW_SCREEN_WIDTH},${WW_SCREEN_HEIGHT}" \
+    --window-position=0,0 \
     --proxy-server="$WW_PROXY_SERVER" \
     --proxy-bypass-list="<-loopback>" \
     --disable-quic \
@@ -180,7 +193,7 @@ chromium --no-sandbox \
     --remote-debugging-port=9222 \
     --remote-debugging-address=127.0.0.1 \
     --deny-permission-prompts \
-    about:blank &
+    --app="$WW_START_URL" &
 CHROMIUM_PID=$!
 
 log "starting workspace-guard mode=$WW_GUARD_MODE"
