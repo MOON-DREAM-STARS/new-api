@@ -217,6 +217,11 @@ export function WebWorkspace() {
             sessionId={session?.session_id ?? null}
             sessionState={session?.state}
             enabled={isDesktop}
+            projectsEmpty={
+              !projectsQuery.isPending &&
+              !projectsQuery.isError &&
+              projects.length === 0
+            }
             immersive={immersive.immersive}
             surface={surface}
             onStart={() => startMutation.mutate()}
