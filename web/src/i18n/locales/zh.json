@@ -7354,6 +7354,23 @@
     "You have reached the project limit. Remove an existing project first.": "已达到项目数量上限，请先删除一个已有项目。",
     "Your account group does not include Web Workspace access.": "你的账号分组不包含 Web 工作区权限。",
     "Permit expires in {{time}}.": "许可剩余有效期 {{time}}。",
-    "Issue a new permit and finish creating the project.": "请重新签发许可并完成项目创建。"
+    "Issue a new permit and finish creating the project.": "请重新签发许可并完成项目创建。",
+    "The remote page layout is being re-adapted.": "远程页面布局发生变化，正在重新适配…",
+    "Starting the remote browser...": "正在启动远程浏览器…",
+    "Connection lost. Reconnecting (attempt {{attempt}} of {{max}})...": "连接中断，正在重新连接（第 {{attempt}}/{{max}} 次）…",
+    "Immersive mode": "沉浸模式",
+    "Connecting to ChatGPT...": "正在连接 ChatGPT…",
+    "The workspace view stays paused until the page layout can be mapped safely.": "在页面布局可安全映射之前，工作区视图保持暂停。",
+    "More workspace actions": "更多工作区操作",
+    "Waiting for the remote page to become ready.": "正在等待远程页面就绪。",
+    "Not started": "未启动",
+    "Start a session to open the remote browser.": "启动会话后即可打开远程浏览器。",
+    "Session {{state}} · stream {{stream}}": "会话 {{state}} · 流 {{stream}}",
+    "Projects are registered by the browser guard when they are created inside the remote browser.": "项目由浏览器守卫在远程浏览器中创建后自动登记。",
+    "Exit immersive mode": "退出沉浸模式",
+    "Project settings": "项目设置",
+    "Remote browser is not running": "远程浏览器尚未启动",
+    "No projects yet. Create one inside the remote browser and it is registered here automatically.": "尚无项目。请在远程浏览器中创建项目，系统会自动登记。",
+    "Connection details": "连接详情"
   }
 }

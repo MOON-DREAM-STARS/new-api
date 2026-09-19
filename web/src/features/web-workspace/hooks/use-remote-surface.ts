@@ -34,6 +34,8 @@ export type RemoteSurfaceStatus =
 export type RemoteSurfaceController = {
   /** Host element noVNC renders its canvas into. */
   containerRef: RefObject<HTMLDivElement | null>
+  /** Remote framebuffer size in remote pixels once the stream is up. */
+  screen: { width: number; height: number } | null
   status: RemoteSurfaceStatus
   /** Failed automatic attempts. Reset on a successful connect. */
   attempt: number
@@ -70,6 +72,10 @@ export function useRemoteSurface(
   const [status, setStatus] = useState<RemoteSurfaceStatus>('connecting')
   const [attempt, setAttempt] = useState(0)
   const [errorMessageKey, setErrorMessageKey] = useState<string | null>(null)
+  const [screen, setScreen] = useState<{
+    width: number
+    height: number
+  } | null>(null)
 
   const clearTimer = useCallback(() => {
     if (timerRef.current === null) return
@@ -145,6 +151,9 @@ export function useRemoteSurface(
         socketRef.current = socket
         const rfb = new RFB(container, socket, {
           scaleViewport: true,
+          // The runtime desktop is fixed at the session screen size; a remote
+          // resize would move the framebuffer under the presentation crop.
+          resizeSession: false,
           viewOnly: false,
           focusOnClick: true,
         })
@@ -195,6 +204,16 @@ export function useRemoteSurface(
     }
   }, [enabled, sessionId, reconnectToken, clearTimer, teardown])
 
+  useEffect(() => {
+    if (status !== 'connected') {
+      setScreen(null)
+      return
+    }
+    const canvas = containerRef.current?.querySelector('canvas')
+    if (!canvas) return
+    setScreen({ width: canvas.width, height: canvas.height })
+  }, [status])
+
   const reconnect = useCallback(() => {
     attemptsRef.current = 0
     setReconnectToken((token) => token + 1)
@@ -202,6 +221,7 @@ export function useRemoteSurface(
 
   return {
     containerRef,
+    screen,
     status,
     attempt,
     maxAttempts: WEB_WORKSPACE_RECONNECT_MAX_ATTEMPTS,

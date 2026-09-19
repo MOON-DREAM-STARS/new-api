@@ -245,3 +245,9 @@ For commercial licensing, please contact support@quantumnous.com
     var(--background)
   );
 }
+
+/* Web Workspace immersive mode keeps only the remote browser on screen. */
+html[data-web-workspace-immersive="true"] [data-app-header],
+html[data-web-workspace-immersive="true"] [data-slot="sidebar-container"] {
+  display: none;
+}
