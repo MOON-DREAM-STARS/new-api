@@ -139,6 +139,7 @@ type runtimeJSON struct {
 	LastActivityAt int64                     `json:"last_activity_at"`
 	IdleDeadlineAt int64                     `json:"idle_deadline_at"`
 	Navigation     *manager.NavigationStatus `json:"navigation"`
+	Page           *manager.PageStatus       `json:"page"`
 }
 
 func TestHealthzIsPublicAndMinimal(t *testing.T) {
@@ -327,7 +328,7 @@ func TestRuntimeResponsesDoNotLeakInternals(t *testing.T) {
 	require.NoError(t, json.Unmarshal(body, &raw))
 	assert.ElementsMatch(t, []string{
 		"runtime_id", "workspace_id", "state", "mode", "created_at", "last_activity_at", "idle_deadline_at",
-		"navigation", "stream_bytes_out", "stream_bytes_in",
+		"navigation", "page", "stream_bytes_out", "stream_bytes_in",
 	}, mapKeys(raw))
 }
 
@@ -644,6 +645,37 @@ func TestNavigationEndpointReturnsReceiptAndSnapshot(t *testing.T) {
 	assert.True(t, snapshot.Navigation.CanGoBack)
 	assert.False(t, snapshot.Navigation.CanGoForward)
 	assert.Equal(t, int64(2000), snapshot.Navigation.UpdatedAt)
+}
+
+func TestSnapshotExposesPageHealthWithoutURLs(t *testing.T) {
+	h := newHarness(t)
+	workspaceID := int64(85)
+	h.startRuntime(t, workspaceID)
+	dir := filepath.Join(manager.WorkspaceDir(h.dataRoot, workspaceID), ".guard")
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	payload, err := json.Marshal(map[string]any{
+		"id":             7,
+		"can_go_back":    false,
+		"can_go_forward": false,
+		"updated_at":     3000,
+		"page_state":     "FAILED",
+		"page_error":     "ERR_TUNNEL_CONNECTION_FAILED",
+		"page_attempts":  3,
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "navigation.json"), payload, 0o644))
+
+	response, body := h.request(t, http.MethodGet, fmt.Sprintf("/internal/v1/runtimes/%d", workspaceID), "Bearer "+testToken, "")
+	require.Equal(t, http.StatusOK, response.StatusCode, string(body))
+	var snapshot runtimeJSON
+	require.NoError(t, json.Unmarshal(body, &snapshot))
+	require.NotNil(t, snapshot.Page)
+	assert.Equal(t, manager.PageStateFailed, snapshot.Page.State)
+	assert.Equal(t, "ERR_TUNNEL_CONNECTION_FAILED", snapshot.Page.Error)
+	assert.Equal(t, 3, snapshot.Page.Attempts)
+	assert.Equal(t, int64(3000), snapshot.Page.UpdatedAt)
+	assert.NotContains(t, string(body), "https://")
+	assert.NotContains(t, string(body), "chrome-error://")
 }
 
 func TestNavigationEndpointMapsErrors(t *testing.T) {

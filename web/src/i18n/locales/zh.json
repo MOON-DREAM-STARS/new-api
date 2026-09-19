@@ -7377,6 +7377,11 @@
     "Browser back": "浏览器后退",
     "Finish sign-in and lock": "完成登录并锁定",
     "Login mode": "登录模式",
-    "Session {{state}} · stream {{stream}} · sent {{bytes}}": "会话 {{state}} · 画面流 {{stream}} · 已传画面 {{bytes}}"
+    "Session {{state}} · stream {{stream}} · sent {{bytes}}": "会话 {{state}} · 画面流 {{stream}} · 已传画面 {{bytes}}",
+    "Error code: {{error}}": "错误码：{{error}}",
+    "Reload": "重新加载",
+    "The remote page failed to load. Retrying...": "远程页面加载失败，正在重试…",
+    "The remote page failed to load": "远程页面加载失败",
+    "Retried {{attempts}} times · {{error}}": "已重试 {{attempts}} 次 · {{error}}"
   }
 }

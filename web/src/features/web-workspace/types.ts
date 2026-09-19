@@ -63,6 +63,14 @@ export type WebWorkspaceNavigation = {
 /** Runtime policy mode reported by the control plane. Never client supplied. */
 export type WebWorkspaceSessionMode = 'LOCKED' | 'LOGIN'
 
+/** URL-free health state for the page inside the remote browser. */
+export type WebWorkspacePage = {
+  state: 'READY' | 'RETRYING' | 'FAILED'
+  error: string
+  attempts: number
+  updated_at: number
+}
+
 /** Control-plane view of one browser session. Runtime ids never reach the client. */
 export type WebWorkspaceSession = {
   session_id: string
@@ -74,6 +82,7 @@ export type WebWorkspaceSession = {
   stream_bytes_out: number
   stream_bytes_in: number
   navigation: WebWorkspaceNavigation | null
+  page: WebWorkspacePage | null
 }
 
 export type WebWorkspaceStatus = {

@@ -66,10 +66,15 @@ type Config struct {
 	CDPURL string
 	Mode   policy.Mode
 	Logger *slog.Logger
+	// StartURL is the provider shell URL used by bounded automatic recovery.
+	// Empty disables automatic retries and reports a failed page directly.
+	StartURL string
 	// StateDir is the workspace .guard directory holding ownership.json,
 	// permit.json, permit.consumed and observations.jsonl. Empty falls back to
 	// WW_GUARD_STATE_DIR and then to DefaultStateDir.
 	StateDir string
+	// retryDelays is test-only injection for the bounded retry schedule.
+	retryDelays []time.Duration
 }
 
 // Run connects to Chromium, installs the browser guard and blocks until the CDP
@@ -100,6 +105,8 @@ func Run(ctx context.Context, cfg Config) error {
 	client := newCDPClient(conn, g.handleEvent)
 	g.client = client
 	g.navigation = newNavigationController(stateDir, client, logger)
+	g.pageHealth = newPageHealthController(client, g.navigation, cfg.StartURL, cfg.retryDelays, logger)
+	g.navigation.onReload = g.pageHealth.reload
 	defer func() {
 		cancelRun()
 		g.waitBackground()
@@ -110,6 +117,7 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	g.runBackground(func() { g.pollOwnershipState(runCtx) })
 	g.runBackground(func() { g.pollNavigationState(runCtx) })
+	g.runBackground(func() { g.pageHealth.run(runCtx) })
 	logger.Info("browser guard active", "event", "guard_active", "component", "guard", "mode", string(cfg.Mode))
 
 	select {
@@ -254,6 +262,7 @@ type guard struct {
 	client     *cdpClient
 	state      *providerState
 	navigation *navigationController
+	pageHealth *pageHealthController
 
 	backgroundMu     sync.Mutex
 	backgroundWG     sync.WaitGroup
@@ -315,7 +324,7 @@ func (g *guard) handleEvent(ctx context.Context, sessionID, method string, param
 	case "Fetch.requestPaused":
 		return g.onRequestPaused(ctx, sessionID, params)
 	case "Page.frameNavigated":
-		if err := g.onFrameNavigated(ctx, params); err != nil {
+		if err := g.onFrameNavigated(ctx, sessionID, params); err != nil {
 			return err
 		}
 		g.refreshNavigation(ctx, sessionID)
@@ -333,6 +342,15 @@ func (g *guard) handleEvent(ctx context.Context, sessionID, method string, param
 		// The network observer only feeds observations; a malformed or
 		// unexpected event must never stop enforcement.
 		g.onNetworkResponse(params)
+		return nil
+	case "Network.requestWillBeSent":
+		g.pageHealth.observeRequestWillBeSent(sessionID, params)
+		return nil
+	case "Network.loadingFailed":
+		g.pageHealth.observeLoadingFailed(sessionID, params)
+		return nil
+	case "Network.loadingFinished":
+		g.pageHealth.observeLoadingFinished(sessionID, params)
 		return nil
 	default:
 		return nil
@@ -549,9 +567,10 @@ func (g *guard) evaluateNavigation(rawURL string) (string, string, bool) {
 // level frame. Older Chromium builds may not implement the permission; the
 // entrypoint flag --deny-permission-prompts is the enforced fallback, so a
 // rejected command is logged at debug level instead of failing the guard.
-func (g *guard) onFrameNavigated(ctx context.Context, params json.RawMessage) error {
+func (g *guard) onFrameNavigated(ctx context.Context, sessionID string, params json.RawMessage) error {
 	var event struct {
 		Frame struct {
+			ID       string `json:"id"`
 			ParentID string `json:"parentId"`
 			URL      string `json:"url"`
 		} `json:"frame"`
@@ -562,6 +581,7 @@ func (g *guard) onFrameNavigated(ctx context.Context, params json.RawMessage) er
 	if event.Frame.ParentID != "" {
 		return nil
 	}
+	g.pageHealth.observeFrameNavigated(sessionID, event.Frame.ParentID, event.Frame.ID, event.Frame.URL)
 	origin := originOf(event.Frame.URL)
 	if origin == "" {
 		return nil

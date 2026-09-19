@@ -37,5 +37,10 @@ func run(logger *slog.Logger) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return guard.Run(ctx, guard.Config{CDPURL: cdpURL, Mode: mode, Logger: logger})
+	return guard.Run(ctx, guard.Config{
+		CDPURL:   cdpURL,
+		Mode:     mode,
+		Logger:   logger,
+		StartURL: strings.TrimSpace(os.Getenv("WW_START_URL")),
+	})
 }

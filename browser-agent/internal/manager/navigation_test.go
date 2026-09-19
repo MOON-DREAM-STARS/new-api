@@ -26,6 +26,22 @@ func writeNavigationReceipt(t *testing.T, dir string, id int64, back bool, forwa
 	require.NoError(t, os.WriteFile(filepath.Join(dir, navigationReceiptFileName), payload, 0o644))
 }
 
+func writePageNavigationReceipt(t *testing.T, dir string, page map[string]any) {
+	t.Helper()
+	payload := map[string]any{
+		"id":             9,
+		"can_go_back":    true,
+		"can_go_forward": false,
+		"updated_at":     2222,
+	}
+	for key, value := range page {
+		payload[key] = value
+	}
+	data, err := json.Marshal(payload)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, navigationReceiptFileName), data, 0o644))
+}
+
 func serveNavigationCommand(t *testing.T, dir string) (<-chan navigationCommandFile, func()) {
 	t.Helper()
 	commands := make(chan navigationCommandFile, 1)
@@ -180,4 +196,45 @@ func TestSnapshotRefreshesNavigationReceipt(t *testing.T) {
 	corrupt, found := h.mgr.Get(workspaceID)
 	require.True(t, found)
 	assert.Nil(t, corrupt.Navigation)
+}
+
+func TestSnapshotParsesPageHealthAndRejectsInvalidValues(t *testing.T) {
+	h := newHarness(t)
+	workspaceID := int64(76)
+	_, err := h.mgr.Start(context.Background(), workspaceID, StartOptions{Provider: "chatgpt"})
+	require.NoError(t, err)
+
+	dir := guardStateDir(WorkspaceDir(h.dataRoot, workspaceID))
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	writePageNavigationReceipt(t, dir, map[string]any{
+		"page_state":    "RETRYING",
+		"page_error":    "ERR_TUNNEL_CONNECTION_FAILED",
+		"page_attempts": 2,
+	})
+
+	snapshot, found := h.mgr.Get(workspaceID)
+	require.True(t, found)
+	require.NotNil(t, snapshot.Page)
+	assert.Equal(t, PageStateRetrying, snapshot.Page.State)
+	assert.Equal(t, "ERR_TUNNEL_CONNECTION_FAILED", snapshot.Page.Error)
+	assert.Equal(t, 2, snapshot.Page.Attempts)
+	assert.Equal(t, int64(2222), snapshot.Page.UpdatedAt)
+
+	for name, page := range map[string]map[string]any{
+		"missing page fields": nil,
+		"invalid state":       {"page_state": "BUSY", "page_error": "", "page_attempts": 1},
+		"negative attempts":   {"page_state": "RETRYING", "page_error": "", "page_attempts": -1},
+		"non-number attempts": {"page_state": "RETRYING", "page_error": "", "page_attempts": "2"},
+		"non-string state":    {"page_state": 1, "page_error": "", "page_attempts": 1},
+		"url in error":        {"page_state": "FAILED", "page_error": "https://provider.example/private", "page_attempts": 1},
+		"ready with attempts": {"page_state": "READY", "page_error": "", "page_attempts": 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			writePageNavigationReceipt(t, dir, page)
+			snapshot, found := h.mgr.Get(workspaceID)
+			require.True(t, found)
+			assert.Nil(t, snapshot.Page)
+			require.NotNil(t, snapshot.Navigation, "page validation must not invalidate navigation state")
+		})
+	}
 }

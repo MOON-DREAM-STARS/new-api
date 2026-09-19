@@ -33,6 +33,23 @@ type NavigationStatus struct {
 	UpdatedAt    int64 `json:"updated_at"`
 }
 
+// PageState is the URL-free health state reported by the guard's page monitor.
+type PageState string
+
+const (
+	PageStateReady    PageState = "READY"
+	PageStateRetrying PageState = "RETRYING"
+	PageStateFailed   PageState = "FAILED"
+)
+
+// PageStatus is the URL-free page health exposed in a runtime snapshot.
+type PageStatus struct {
+	State     PageState `json:"state"`
+	Error     string    `json:"error"`
+	Attempts  int       `json:"attempts"`
+	UpdatedAt int64     `json:"updated_at"`
+}
+
 type navigationCommandFile struct {
 	ID          int64  `json:"id"`
 	Action      string `json:"action"`
@@ -44,13 +61,17 @@ type navigationReceipt struct {
 	CanGoBack    bool
 	CanGoForward bool
 	UpdatedAt    int64
+	Page         *PageStatus
 }
 
 type navigationReceiptFile struct {
-	ID           *int64 `json:"id"`
-	CanGoBack    *bool  `json:"can_go_back"`
-	CanGoForward *bool  `json:"can_go_forward"`
-	UpdatedAt    *int64 `json:"updated_at"`
+	ID           *int64          `json:"id"`
+	CanGoBack    *bool           `json:"can_go_back"`
+	CanGoForward *bool           `json:"can_go_forward"`
+	UpdatedAt    *int64          `json:"updated_at"`
+	PageState    json.RawMessage `json:"page_state"`
+	PageError    json.RawMessage `json:"page_error"`
+	PageAttempts json.RawMessage `json:"page_attempts"`
 }
 
 func (file navigationReceiptFile) valid() bool {
@@ -64,6 +85,74 @@ func (receipt navigationReceipt) status() NavigationStatus {
 		CanGoForward: receipt.CanGoForward,
 		UpdatedAt:    receipt.UpdatedAt,
 	}
+}
+
+func (file navigationReceiptFile) pageStatus() (*PageStatus, bool) {
+	stateText, stateOK := optionalString(file.PageState)
+	errorText, errorOK := optionalString(file.PageError)
+	attempts, attemptsOK := optionalInt(file.PageAttempts)
+	if !stateOK || !errorOK || !attemptsOK || file.UpdatedAt == nil {
+		return nil, false
+	}
+	state := PageState(stateText)
+	if !state.valid() || attempts < 0 || !validPageError(errorText) {
+		return nil, false
+	}
+	if state == PageStateReady && (attempts != 0 || errorText != "") {
+		return nil, false
+	}
+	return &PageStatus{
+		State:     state,
+		Error:     errorText,
+		Attempts:  attempts,
+		UpdatedAt: *file.UpdatedAt,
+	}, true
+}
+
+func optionalString(raw json.RawMessage) (string, bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return "", false
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", false
+	}
+	return value, true
+}
+
+func optionalInt(raw json.RawMessage) (int, bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0, false
+	}
+	var value int
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return 0, false
+	}
+	return value, true
+}
+
+func (state PageState) valid() bool {
+	switch state {
+	case PageStateReady, PageStateRetrying, PageStateFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func validPageError(value string) bool {
+	if value == "" {
+		return true
+	}
+	if len(value) <= len("ERR_") || value[:len("ERR_")] != "ERR_" {
+		return false
+	}
+	for _, char := range value {
+		if (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 func validNavigationAction(action string) bool {
@@ -141,6 +230,7 @@ func (m *Manager) Navigate(workspaceID int64, action string) (NavigationStatus, 
 			m.mu.Lock()
 			if current := m.runtimes[workspaceID]; current == rt {
 				current.navigation = &status
+				current.page = receipt.Page
 				if receipt.ID > current.navCommandID {
 					current.navCommandID = receipt.ID
 				}
@@ -167,11 +257,13 @@ func readNavigationReceipt(root *os.Root) (navigationReceipt, bool, error) {
 	if err := json.Unmarshal(data, &file); err != nil || !file.valid() {
 		return navigationReceipt{}, false, nil
 	}
+	page, _ := file.pageStatus()
 	return navigationReceipt{
 		ID:           *file.ID,
 		CanGoBack:    *file.CanGoBack,
 		CanGoForward: *file.CanGoForward,
 		UpdatedAt:    *file.UpdatedAt,
+		Page:         page,
 	}, true, nil
 }
 
@@ -181,16 +273,19 @@ func (m *Manager) refreshNavigationLocked(rt *runtimeState, workspaceID int64) {
 	root, err := openGuardStateDir(WorkspaceDir(m.dataRoot, workspaceID))
 	if err != nil {
 		rt.navigation = nil
+		rt.page = nil
 		return
 	}
 	defer root.Close()
 	receipt, ok, err := readNavigationReceipt(root)
 	if err != nil || !ok {
 		rt.navigation = nil
+		rt.page = nil
 		return
 	}
 	status := receipt.status()
 	rt.navigation = &status
+	rt.page = receipt.Page
 	if receipt.ID > rt.navCommandID {
 		rt.navCommandID = receipt.ID
 	}

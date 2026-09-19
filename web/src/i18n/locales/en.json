@@ -7360,6 +7360,11 @@
     "Browser back": "Browser back",
     "Finish sign-in and lock": "Finish sign-in and lock",
     "Login mode": "Login mode",
-    "Session {{state}} · stream {{stream}} · sent {{bytes}}": "Session {{state}} · stream {{stream}} · sent {{bytes}}"
+    "Session {{state}} · stream {{stream}} · sent {{bytes}}": "Session {{state}} · stream {{stream}} · sent {{bytes}}",
+    "Error code: {{error}}": "Error code: {{error}}",
+    "Reload": "Reload",
+    "The remote page failed to load. Retrying...": "The remote page failed to load. Retrying...",
+    "The remote page failed to load": "The remote page failed to load",
+    "Retried {{attempts}} times · {{error}}": "Retried {{attempts}} times · {{error}}"
   }
 }
