@@ -93,6 +93,7 @@ type fakeCDP struct {
 	conn      *websocket.Conn
 	overrides map[string]*cdpError
 	silent    map[string]bool
+	results   map[string][]json.RawMessage
 
 	writeMu  sync.Mutex
 	commands chan cdpMessage
@@ -109,6 +110,7 @@ func newFakeCDP(t *testing.T) *fakeCDP {
 		commands:  make(chan cdpMessage, 256),
 		overrides: map[string]*cdpError{},
 		silent:    map[string]bool{},
+		results:   map[string][]json.RawMessage{},
 		closed:    make(chan struct{}),
 	}
 	mux := http.NewServeMux()
@@ -157,6 +159,11 @@ func (f *fakeCDP) readLoop(conn *websocket.Conn) {
 		if silent {
 			delete(f.silent, msg.Method)
 		}
+		var result json.RawMessage
+		if queue := f.results[msg.Method]; len(queue) > 0 {
+			result = queue[0]
+			f.results[msg.Method] = queue[1:]
+		}
 		f.mu.Unlock()
 
 		if !silent {
@@ -164,9 +171,12 @@ func (f *fakeCDP) readLoop(conn *websocket.Conn) {
 			if msg.SessionID != "" {
 				reply["sessionId"] = msg.SessionID
 			}
-			if override != nil {
+			switch {
+			case override != nil:
 				reply["error"] = map[string]any{"code": override.Code, "message": override.Message}
-			} else {
+			case result != nil:
+				reply["result"] = result
+			default:
 				reply["result"] = map[string]any{}
 			}
 			f.write(conn, reply)
@@ -215,6 +225,15 @@ func (f *fakeCDP) silenceNext(method string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.silent[method] = true
+}
+
+func (f *fakeCDP) queueResult(method string, result any) {
+	f.t.Helper()
+	raw, err := json.Marshal(result)
+	require.NoError(f.t, err)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.results[method] = append(f.results[method], raw)
 }
 
 func (f *fakeCDP) closeConnection() {

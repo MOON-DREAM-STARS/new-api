@@ -18,6 +18,20 @@ const (
 )
 
 var pageRetryDelays = []time.Duration{5 * time.Second, 15 * time.Second, 30 * time.Second}
+var pageContentProbeDelays = []time.Duration{2 * time.Second, 2 * time.Second}
+
+const (
+	pageErrorBlankPage         = "ERR_BLANK_PAGE"
+	pageErrorUnresponsive      = "ERR_PAGE_UNRESPONSIVE"
+	defaultContentProbeTimeout = 3 * time.Second
+	pageContentReadyExpression = `(() => {
+		const body = document.body;
+		return document.readyState === 'complete' &&
+			!!body &&
+			body.childElementCount > 0 &&
+			(body.innerText || '').trim().length > 0;
+	})()`
+)
 
 type pageHealthPhase uint8
 
@@ -40,11 +54,13 @@ type pageHealthSnapshot struct {
 // automatic retry schedule. It writes status through navigationController so
 // every navigation.json update remains one atomic write.
 type pageHealthController struct {
-	client      *cdpClient
-	navigation  *navigationController
-	logger      *slog.Logger
-	startURL    string
-	retryDelays []time.Duration
+	client              *cdpClient
+	navigation          *navigationController
+	logger              *slog.Logger
+	startURL            string
+	retryDelays         []time.Duration
+	contentProbeDelays  []time.Duration
+	contentProbeTimeout time.Duration
 
 	mu               sync.Mutex
 	state            string
@@ -56,27 +72,36 @@ type pageHealthController struct {
 	retryAt          time.Time
 	mainSessionID    string
 	mainFrameID      string
+	probeGeneration  uint64
 	documentRequests map[string]string
 
 	wake chan struct{}
 }
 
-func newPageHealthController(client *cdpClient, navigation *navigationController, startURL string, retryDelays []time.Duration, logger *slog.Logger) *pageHealthController {
+func newPageHealthController(client *cdpClient, navigation *navigationController, startURL string, retryDelays []time.Duration, contentProbeDelays []time.Duration, contentProbeTimeout time.Duration, logger *slog.Logger) *pageHealthController {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	if retryDelays == nil {
 		retryDelays = pageRetryDelays
 	}
+	if len(contentProbeDelays) == 0 {
+		contentProbeDelays = pageContentProbeDelays
+	}
+	if contentProbeTimeout <= 0 {
+		contentProbeTimeout = defaultContentProbeTimeout
+	}
 	return &pageHealthController{
-		client:           client,
-		navigation:       navigation,
-		logger:           logger,
-		startURL:         strings.TrimSpace(startURL),
-		retryDelays:      append([]time.Duration(nil), retryDelays...),
-		state:            pageStateUnknown,
-		documentRequests: make(map[string]string),
-		wake:             make(chan struct{}, 1),
+		client:              client,
+		navigation:          navigation,
+		logger:              logger,
+		startURL:            strings.TrimSpace(startURL),
+		retryDelays:         append([]time.Duration(nil), retryDelays...),
+		contentProbeDelays:  append([]time.Duration(nil), contentProbeDelays...),
+		contentProbeTimeout: contentProbeTimeout,
+		state:               pageStateUnknown,
+		documentRequests:    make(map[string]string),
+		wake:                make(chan struct{}, 1),
 	}
 }
 
@@ -149,14 +174,11 @@ func (p *pageHealthController) observeFrameNavigated(sessionID, parentID, frameI
 	if frameID != "" {
 		p.mainFrameID = frameID
 	}
+	p.probeGeneration++
 	p.mu.Unlock()
 
 	if isChromeErrorPage(rawURL) {
 		p.recordFailure(sessionID, "")
-		return
-	}
-	if isHTTPSDocument(rawURL) {
-		p.recordSuccess(sessionID)
 	}
 }
 
@@ -219,18 +241,98 @@ func (p *pageHealthController) observeLoadingFinished(sessionID string, params j
 		return
 	}
 	p.mu.Lock()
-	frameID, known := p.documentRequests[event.RequestID]
 	delete(p.documentRequests, event.RequestID)
-	mainDocument := known && (p.mainFrameID == "" || frameID == p.mainFrameID)
 	p.mu.Unlock()
-	if mainDocument {
-		p.recordSuccess(sessionID)
+}
+
+func (p *pageHealthController) observeLoadEvent(ctx context.Context, sessionID string) {
+	if !p.isMainSession(sessionID) {
+		return
 	}
+
+	p.mu.Lock()
+	p.mainSessionID = sessionID
+	p.probeGeneration++
+	generation := p.probeGeneration
+	p.mu.Unlock()
+
+	go p.probeContent(ctx, sessionID, generation)
+}
+
+func (p *pageHealthController) probeContent(ctx context.Context, sessionID string, generation uint64) {
+	var probeErr error
+	for _, delay := range p.contentProbeDelays {
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+
+		if !p.probeIsCurrent(generation) {
+			return
+		}
+
+		ready, err := p.evaluateContentReady(ctx, sessionID)
+		if err != nil {
+			probeErr = err
+		}
+		if !p.probeIsCurrent(generation) {
+			return
+		}
+		if ready {
+			p.recordSuccess(sessionID, generation)
+			return
+		}
+	}
+
+	errorCode := pageErrorBlankPage
+	if probeErr != nil {
+		errorCode = pageErrorUnresponsive
+	}
+	p.recordFailureForGeneration(sessionID, errorCode, generation)
+}
+
+func (p *pageHealthController) probeIsCurrent(generation uint64) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.probeGeneration == generation
+}
+
+func (p *pageHealthController) evaluateContentReady(ctx context.Context, sessionID string) (bool, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, p.contentProbeTimeout)
+	defer cancel()
+	raw, err := p.client.callResult(probeCtx, sessionID, "Runtime.evaluate", map[string]any{
+		"expression":    pageContentReadyExpression,
+		"returnByValue": true,
+	})
+	if err != nil {
+		return false, err
+	}
+	var response struct {
+		Result struct {
+			Value bool `json:"value"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return false, err
+	}
+	return response.Result.Value, nil
 }
 
 func (p *pageHealthController) recordFailure(sessionID, rawError string) {
+	p.recordFailureForGeneration(sessionID, rawError, 0)
+}
+
+func (p *pageHealthController) recordFailureForGeneration(sessionID, rawError string, generation uint64) {
 	errorCode := normalizePageError(rawError)
 	p.mu.Lock()
+	if generation != 0 && p.probeGeneration != generation {
+		p.mu.Unlock()
+		return
+	}
+	p.probeGeneration++
 	if sessionID != "" {
 		p.mainSessionID = sessionID
 	}
@@ -274,8 +376,12 @@ func (p *pageHealthController) recordFailure(sessionID, rawError string) {
 	p.notify()
 }
 
-func (p *pageHealthController) recordSuccess(sessionID string) {
+func (p *pageHealthController) recordSuccess(sessionID string, generation uint64) {
 	p.mu.Lock()
+	if p.probeGeneration != generation {
+		p.mu.Unlock()
+		return
+	}
 	if sessionID != "" {
 		p.mainSessionID = sessionID
 	}
@@ -417,12 +523,4 @@ func isChromeErrorPage(rawURL string) bool {
 		return false
 	}
 	return strings.EqualFold(parsed.Scheme, "chrome-error")
-}
-
-func isHTTPSDocument(rawURL string) bool {
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return false
-	}
-	return parsed.Scheme == "http" || parsed.Scheme == "https"
 }
