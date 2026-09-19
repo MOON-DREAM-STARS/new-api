@@ -2,6 +2,7 @@ package controller
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -24,6 +25,10 @@ const (
 	webWorkspaceCodeResourceNotFound  = "WEB_WORKSPACE_RESOURCE_NOT_FOUND"
 	webWorkspaceCodeInvalidRequest    = "WEB_WORKSPACE_INVALID_REQUEST"
 	webWorkspaceCodeInternalError     = "WEB_WORKSPACE_INTERNAL_ERROR"
+
+	// webWorkspaceModeLocked is the only runtime mode transition this API exposes:
+	// leaving the operator-opened sign-in window and locking the provider session.
+	webWorkspaceModeLocked = "LOCKED"
 )
 
 // GetWebWorkspaceConfig is the capability probe. It answers whether the feature
@@ -379,7 +384,20 @@ func RestartWebWorkspaceSession(c *gin.Context) {
 		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid session id", "")
 		return
 	}
-	session, err := webworkspace.RestartSession(c.Request.Context(), user.Id, sessionId)
+	// The body is optional: a restart without one keeps the current runtime
+	// mode, and only the explicit "signed in, lock the session" transition is
+	// reachable from this API. Opening the LOGIN window stays an operator action.
+	var request dto.WebWorkspaceRestartRequest
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil && !errors.Is(err, io.EOF) {
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid request body", "")
+		return
+	}
+	mode := strings.TrimSpace(request.Mode)
+	if mode != "" && mode != webWorkspaceModeLocked {
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid runtime mode", "")
+		return
+	}
+	session, err := webworkspace.RestartSession(c.Request.Context(), user.Id, sessionId, mode)
 	if err != nil {
 		writeWebWorkspaceSessionError(c, err)
 		return
@@ -577,6 +595,7 @@ func toWebWorkspaceSessionDto(session *webworkspace.Session) dto.WebWorkspaceSes
 	result := dto.WebWorkspaceSessionDto{
 		SessionId:      session.Id,
 		State:          session.State,
+		Mode:           session.Mode,
 		CreatedAt:      session.CreatedAt,
 		LastSeenAt:     session.LastSeenAt,
 		IdleDeadlineAt: session.IdleDeadlineAt,

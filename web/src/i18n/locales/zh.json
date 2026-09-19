@@ -5729,6 +5729,8 @@
     "Waiting for the remote page to become ready.": "正在等待远程页面就绪。",
     "Browser back": "浏览器后退",
     "Browser forward": "浏览器前进",
-    "Refresh page": "刷新页面"
+    "Refresh page": "刷新页面",
+    "Login mode": "登录模式",
+    "Finish sign-in and lock": "完成登录并锁定"
   }
 }

@@ -92,6 +92,7 @@ describe('ProjectCreateDialog', () => {
         return ok({
           session_id: 'session-1',
           state: 'RUNNING',
+          mode: 'LOCKED',
           created_at: 1,
           last_seen_at: 1,
           idle_deadline_at: futureExpiry(600),

@@ -70,11 +70,21 @@ export async function stopWebWorkspaceSession(
   await api.delete(`${BASE_PATH}/session/${encodeURIComponent(sessionId)}`)
 }
 
+export type RestartWebWorkspaceSessionOptions = {
+  /**
+   * Only the "signed in, lock the runtime" transition is exposed here; opening
+   * the sign-in window stays an operator action.
+   */
+  mode?: 'LOCKED'
+}
+
 export async function restartWebWorkspaceSession(
-  sessionId: string
+  sessionId: string,
+  options: RestartWebWorkspaceSessionOptions = {}
 ): Promise<WebWorkspaceSession> {
   const res = await api.post<ApiEnvelope<WebWorkspaceSession>>(
-    `${BASE_PATH}/session/${encodeURIComponent(sessionId)}/restart`
+    `${BASE_PATH}/session/${encodeURIComponent(sessionId)}/restart`,
+    { mode: options.mode ?? '' }
   )
   return res.data.data
 }

@@ -139,6 +139,11 @@ export function WebWorkspace() {
     navigationMutation.mutate({ sessionId: session.session_id, action })
   }
 
+  function lockSession() {
+    if (!session) return
+    restartMutation.mutate({ sessionId: session.session_id, mode: 'LOCKED' })
+  }
+
   if (configQuery.isPending) {
     return (
       <SectionPageLayout>
@@ -199,6 +204,7 @@ export function WebWorkspace() {
             stream: surface.status,
           })}
           currentProjectName={selectedProject?.name ?? null}
+          sessionMode={session?.mode ?? null}
           isLive={isLive}
           isBusy={isBusy}
           navigation={navigation}
@@ -208,8 +214,9 @@ export function WebWorkspace() {
           onStart={() => startMutation.mutate()}
           onReconnect={surface.reconnect}
           onRestart={() => {
-            if (session) restartMutation.mutate(session.session_id)
+            if (session) restartMutation.mutate({ sessionId: session.session_id })
           }}
+          onLockSession={lockSession}
           onStop={() => {
             if (session) stopMutation.mutate(session.session_id)
           }}

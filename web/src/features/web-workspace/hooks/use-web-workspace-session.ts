@@ -79,10 +79,16 @@ export function useStopWebWorkspaceSession() {
   })
 }
 
+export type RestartWebWorkspaceSessionInput = {
+  sessionId: string
+  mode?: 'LOCKED'
+}
+
 export function useRestartWebWorkspaceSession() {
   const syncSessionCache = useSyncSessionCache()
   return useMutation({
-    mutationFn: restartWebWorkspaceSession,
+    mutationFn: (input: RestartWebWorkspaceSessionInput) =>
+      restartWebWorkspaceSession(input.sessionId, { mode: input.mode }),
     onSuccess: syncSessionCache,
   })
 }

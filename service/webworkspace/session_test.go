@@ -23,12 +23,13 @@ import (
 const testAgentToken = "web-workspace-test-agent-token"
 
 type fakeAgentServer struct {
-	server      *httptest.Server
-	mutex       sync.Mutex
-	runtimes    map[int]AgentRuntime
-	createCalls int
-	stopCalls   int
-	failCreate  bool
+	server       *httptest.Server
+	mutex        sync.Mutex
+	runtimes     map[int]AgentRuntime
+	createCalls  int
+	stopCalls    int
+	restartModes []string
+	failCreate   bool
 }
 
 func newFakeAgentServer(t *testing.T) *fakeAgentServer {
@@ -59,6 +60,7 @@ func newFakeAgentServer(t *testing.T) *fakeAgentServer {
 					RuntimeId:      "ws-" + strconv.Itoa(request.WorkspaceId),
 					WorkspaceId:    request.WorkspaceId,
 					State:          AgentStateRunning,
+					Mode:           "LOCKED",
 					CreatedAt:      now,
 					LastActivityAt: now,
 					IdleDeadlineAt: now + 600,
@@ -92,8 +94,20 @@ func newFakeAgentServer(t *testing.T) *fakeAgentServer {
 					agent.runtimes[workspaceId] = runtime
 				}
 			case suffix == "restart" && r.Method == http.MethodPost:
+				var restartRequest agentRestartRuntimeRequest
+				if len(body) > 0 {
+					if err := common.Unmarshal(body, &restartRequest); err != nil {
+						agent.mutex.Unlock()
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+				}
+				agent.restartModes = append(agent.restartModes, restartRequest.Mode)
 				if ok {
 					runtime.State = AgentStateRunning
+					if restartRequest.Mode != "" {
+						runtime.Mode = restartRequest.Mode
+					}
 					runtime.LastActivityAt = time.Now().Unix()
 					runtime.IdleDeadlineAt = time.Now().Unix() + 600
 					agent.runtimes[workspaceId] = runtime
@@ -215,9 +229,14 @@ func TestWebWorkspaceSessionLifecycle(t *testing.T) {
 	createCalls, _ := agent.counts()
 	assert.Equal(t, 1, createCalls)
 
-	restarted, err := RestartSession(ctx, user.Id, session.Id)
+	restarted, err := RestartSession(ctx, user.Id, session.Id, "LOCKED")
 	require.NoError(t, err)
 	assert.Equal(t, AgentStateRunning, restarted.State)
+	assert.Equal(t, "LOCKED", restarted.Mode)
+	agent.mutex.Lock()
+	modes := append([]string{}, agent.restartModes...)
+	agent.mutex.Unlock()
+	assert.Equal(t, []string{"LOCKED"}, modes)
 
 	require.NoError(t, TouchSession(user.Id, session.Id))
 	require.NoError(t, MarkSessionIdle(user.Id, session.Id))

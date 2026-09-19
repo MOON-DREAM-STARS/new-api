@@ -31,6 +31,7 @@ type Session struct {
 	WorkspaceId    int
 	RuntimeId      string
 	State          string
+	Mode           string
 	CreatedAt      int64
 	LastSeenAt     int64
 	IdleDeadlineAt int64
@@ -126,6 +127,7 @@ func (s *sessionStore) applyRuntime(sessionId string, runtime *AgentRuntime) (Se
 	}
 	session.RuntimeId = runtime.RuntimeId
 	session.State = runtime.State
+	session.Mode = runtime.Mode
 	session.IdleDeadlineAt = runtime.IdleDeadlineAt
 	session.Navigation = runtime.Navigation
 	if runtime.LastActivityAt > session.LastSeenAt {
@@ -215,6 +217,7 @@ func StartSession(ctx context.Context, userId int) (*Session, error) {
 		WorkspaceId:    workspace.Id,
 		RuntimeId:      runtime.RuntimeId,
 		State:          runtime.State,
+		Mode:           runtime.Mode,
 		CreatedAt:      now,
 		LastSeenAt:     now,
 		IdleDeadlineAt: runtime.IdleDeadlineAt,
@@ -267,7 +270,7 @@ func StopSession(ctx context.Context, userId int, sessionId string) error {
 	return nil
 }
 
-func RestartSession(ctx context.Context, userId int, sessionId string) (*Session, error) {
+func RestartSession(ctx context.Context, userId int, sessionId string, mode string) (*Session, error) {
 	session, err := GetSession(userId, sessionId)
 	if err != nil {
 		return nil, err
@@ -276,7 +279,7 @@ func RestartSession(ctx context.Context, userId int, sessionId string) (*Session
 	if err != nil {
 		return nil, err
 	}
-	runtime, err := client.RestartRuntime(ctx, session.WorkspaceId)
+	runtime, err := client.RestartRuntime(ctx, session.WorkspaceId, mode)
 	if err != nil {
 		return nil, err
 	}

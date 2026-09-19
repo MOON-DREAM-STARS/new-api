@@ -153,6 +153,7 @@ function renderPage(ui: ReactNode) {
 const runningSession = {
   session_id: 'session-1',
   state: 'RUNNING',
+  mode: 'LOCKED',
   created_at: 1,
   last_seen_at: 1,
   idle_deadline_at: 600,
@@ -397,6 +398,22 @@ describe('WebWorkspace page', () => {
     })
   })
 
+  test('marks the operator-opened sign-in window', async () => {
+    mockWorkspaceGets({ ...runningSession, mode: 'LOGIN' })
+
+    renderPage(<WebWorkspace />)
+
+    expect(await screen.findByText('Login mode')).toBeTruthy()
+  })
+
+  test('does not mark a locked session', async () => {
+    mockWorkspaceGets(runningSession)
+
+    renderPage(<WebWorkspace />)
+
+    await screen.findByRole('button', { name: 'Browser back' })
+    expect(screen.queryByText('Login mode')).toBeNull()
+  })
   test('disables navigation when the session is not live', async () => {
     mockWorkspaceGets({ ...runningSession, state: 'STOPPED' })
 

@@ -5712,6 +5712,8 @@
     "Dismiss": "Dismiss",
     "Browser back": "Browser back",
     "Browser forward": "Browser forward",
-    "Refresh page": "Refresh page"
+    "Refresh page": "Refresh page",
+    "Login mode": "Login mode",
+    "Finish sign-in and lock": "Finish sign-in and lock"
   }
 }

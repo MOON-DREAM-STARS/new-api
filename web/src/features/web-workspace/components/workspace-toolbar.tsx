@@ -109,6 +109,7 @@ type WorkspaceToolbarProps = {
   connection: WorkspaceConnection
   connectionDetail: string
   currentProjectName: string | null
+  sessionMode: string | null
   isLive: boolean
   isBusy: boolean
   navigation: WebWorkspaceNavigation | null
@@ -118,6 +119,7 @@ type WorkspaceToolbarProps = {
   onStart: () => void
   onReconnect: () => void
   onRestart: () => void
+  onLockSession: () => void
   onStop: () => void
   onNavigateBack: () => void
   onNavigateForward: () => void
@@ -157,6 +159,12 @@ export function WorkspaceToolbar(props: WorkspaceToolbarProps) {
           </>
         ) : null}
       </span>
+
+      {props.sessionMode === 'LOGIN' ? (
+        <span className='rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-600 dark:text-amber-400'>
+          {t('Login mode')}
+        </span>
+      ) : null}
 
       {props.isLive ? null : (
         <Button
@@ -229,6 +237,14 @@ export function WorkspaceToolbar(props: WorkspaceToolbarProps) {
           >
             {t('Restart session')}
           </DropdownMenuItem>
+          {props.sessionMode === 'LOGIN' ? (
+            <DropdownMenuItem
+              disabled={!props.isLive || props.isBusy}
+              onSelect={props.onLockSession}
+            >
+              {t('Finish sign-in and lock')}
+            </DropdownMenuItem>
+          ) : null}
           <DropdownMenuItem
             disabled={!props.isLive || props.isBusy}
             onSelect={props.onStop}

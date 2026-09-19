@@ -96,6 +96,7 @@ type Snapshot struct {
 	RuntimeID      string            `json:"runtime_id"`
 	WorkspaceID    int64             `json:"workspace_id"`
 	State          State             `json:"state"`
+	Mode           policy.Mode       `json:"mode"`
 	CreatedAt      int64             `json:"created_at"`
 	LastActivityAt int64             `json:"last_activity_at"`
 	IdleDeadlineAt int64             `json:"idle_deadline_at"`
@@ -177,6 +178,7 @@ func (rt *runtimeState) snapshot(workspaceID int64) Snapshot {
 		RuntimeID:      runtimeID(workspaceID),
 		WorkspaceID:    workspaceID,
 		State:          rt.state,
+		Mode:           rt.mode,
 		CreatedAt:      rt.createdAt.Unix(),
 		LastActivityAt: rt.lastActivity.Unix(),
 	}
