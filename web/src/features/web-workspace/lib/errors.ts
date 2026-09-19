@@ -93,7 +93,11 @@ function classifyKind(
     case WEB_WORKSPACE_ERROR_CODES.projectLimit:
       return 'project_limit'
     case WEB_WORKSPACE_ERROR_CODES.agentUnavailable:
+    case 'WEB_WORKSPACE_NAVIGATION_TIMEOUT':
+    case 'WEB_WORKSPACE_NAVIGATION_UNAVAILABLE':
       return 'agent_unavailable'
+    case WEB_WORKSPACE_ERROR_CODES.invalidRequest:
+      return 'unknown'
     case WEB_WORKSPACE_ERROR_CODES.resourceNotFound:
     case WEB_WORKSPACE_ERROR_CODES.sessionNotFound:
     case WEB_WORKSPACE_ERROR_CODES.ticketInvalid:

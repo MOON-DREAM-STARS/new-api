@@ -42,11 +42,13 @@ type routerFakeAgent struct {
 	stop     int
 	echo     bool
 
-	ownership    map[int]webworkspace.OwnershipSnapshot
-	observations map[int][]webworkspace.Observation
-	acked        map[int]int
-	permitCalls  []routerPermitCall
-	failPermits  bool
+	ownership       map[int]webworkspace.OwnershipSnapshot
+	observations    map[int][]webworkspace.Observation
+	acked           map[int]int
+	permitCalls     []routerPermitCall
+	navigationCalls []routerNavigationCall
+	failPermits     bool
+	navigationFail  string
 }
 
 type routerPermitCall struct {
@@ -54,6 +56,11 @@ type routerPermitCall struct {
 	PermitId    string
 	Kind        string
 	TtlSeconds  int
+}
+
+type routerNavigationCall struct {
+	WorkspaceId int
+	Action      string
 }
 
 func newRouterFakeAgent(t *testing.T) *routerFakeAgent {
@@ -153,6 +160,41 @@ func newRouterFakeAgent(t *testing.T) *routerFakeAgent {
 			agent.runtimes[workspaceId] = runtime
 			agent.mutex.Unlock()
 			writeRouterAgentJSON(t, w, runtime)
+		case suffix == "navigation" && r.Method == http.MethodPost:
+			var request struct {
+				Action string `json:"action"`
+			}
+			if err := common.Unmarshal(body, &request); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"success":false,"error":"invalid_request"}`))
+				return
+			}
+			agent.mutex.Lock()
+			agent.navigationCalls = append(agent.navigationCalls, routerNavigationCall{WorkspaceId: workspaceId, Action: request.Action})
+			failure := agent.navigationFail
+			if failure == "" {
+				runtime.Navigation = &webworkspace.AgentNavigation{
+					CanGoBack:    true,
+					CanGoForward: false,
+					UpdatedAt:    1700000000,
+				}
+				agent.runtimes[workspaceId] = runtime
+			}
+			agent.mutex.Unlock()
+			switch failure {
+			case "timeout":
+				w.WriteHeader(http.StatusGatewayTimeout)
+				_, _ = w.Write([]byte(`{"success":false,"error":"navigation_timeout"}`))
+				return
+			case "navigation_unavailable", "runtime_not_running":
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(`{"success":false,"error":"` + failure + `"}`))
+				return
+			}
+			writeRouterAgentJSON(t, w, struct {
+				Action     string                        `json:"action"`
+				Navigation *webworkspace.AgentNavigation `json:"navigation"`
+			}{Action: request.Action, Navigation: runtime.Navigation})
 		case suffix == "ownership" && r.Method == http.MethodPut:
 			var request webworkspace.OwnershipSnapshot
 			if err := common.Unmarshal(body, &request); err != nil {
@@ -287,6 +329,12 @@ func (a *routerFakeAgent) setFailPermits(fail bool) {
 	a.failPermits = fail
 }
 
+func (a *routerFakeAgent) setNavigationFail(failure string) {
+	a.mutex.Lock()
+	defer a.mutex.Unlock()
+	a.navigationFail = failure
+}
+
 func writeRouterAgentJSON(t *testing.T, w http.ResponseWriter, payload any) {
 	t.Helper()
 	raw, err := common.Marshal(payload)
@@ -418,6 +466,160 @@ func TestWebWorkspaceRouterSessionLifecycle(t *testing.T) {
 	afterStop := doWebWorkspaceRequest(fixture.engine, http.MethodGet, "/api/web-workspace/session", token, "")
 	assert.Equal(t, http.StatusOK, afterStop.Code)
 	assert.Contains(t, afterStop.Body.String(), `"data":null`)
+}
+
+func startWebWorkspaceRouterSession(t *testing.T, fixture *webWorkspaceSessionRouterFixture, token string) string {
+	t.Helper()
+	start := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/session", token, "")
+	require.Equal(t, http.StatusOK, start.Code, start.Body.String())
+	var payload struct {
+		Data struct {
+			SessionId string `json:"session_id"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(start.Body.Bytes(), &payload))
+	require.NotEmpty(t, payload.Data.SessionId)
+	return payload.Data.SessionId
+}
+
+func TestWebWorkspaceRouterNavigationSuccess(t *testing.T) {
+	agent := newRouterFakeAgent(t)
+	fixture := setupWebWorkspaceSessionRouterTest(t, agent.server.URL)
+	token := webWorkspaceBearer(t, fixture.userA)
+	sessionId := startWebWorkspaceRouterSession(t, fixture, token)
+
+	recorder := doWebWorkspaceRequest(
+		fixture.engine,
+		http.MethodPost,
+		"/api/web-workspace/session/"+sessionId+"/navigation",
+		token,
+		`{"action":"back"}`,
+	)
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+
+	var payload struct {
+		Success bool `json:"success"`
+		Data    struct {
+			SessionId  string `json:"session_id"`
+			Navigation *struct {
+				CanGoBack    bool  `json:"can_go_back"`
+				CanGoForward bool  `json:"can_go_forward"`
+				UpdatedAt    int64 `json:"updated_at"`
+			} `json:"navigation"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &payload))
+	assert.True(t, payload.Success)
+	assert.Equal(t, sessionId, payload.Data.SessionId)
+	require.NotNil(t, payload.Data.Navigation)
+	assert.True(t, payload.Data.Navigation.CanGoBack)
+	assert.False(t, payload.Data.Navigation.CanGoForward)
+	assert.EqualValues(t, 1700000000, payload.Data.Navigation.UpdatedAt)
+
+	body := recorder.Body.String()
+	assert.NotContains(t, body, `"url"`)
+	assert.NotContains(t, body, `"address"`)
+	assert.NotContains(t, body, `"workspace_id"`)
+	assert.NotContains(t, body, `"runtime_id"`)
+
+	agent.mutex.Lock()
+	calls := append([]routerNavigationCall{}, agent.navigationCalls...)
+	agent.mutex.Unlock()
+	require.Len(t, calls, 1)
+	assert.Equal(t, "back", calls[0].Action)
+
+	current := doWebWorkspaceRequest(fixture.engine, http.MethodGet, "/api/web-workspace/session", token, "")
+	require.Equal(t, http.StatusOK, current.Code, current.Body.String())
+	assert.Contains(t, current.Body.String(), `"can_go_back":true`)
+}
+
+func TestWebWorkspaceRouterNavigationOwnership(t *testing.T) {
+	agent := newRouterFakeAgent(t)
+	fixture := setupWebWorkspaceSessionRouterTest(t, agent.server.URL)
+	tokenA := webWorkspaceBearer(t, fixture.userA)
+	tokenB := webWorkspaceBearer(t, fixture.userB)
+	sessionId := startWebWorkspaceRouterSession(t, fixture, tokenA)
+
+	foreign := doWebWorkspaceRequest(
+		fixture.engine,
+		http.MethodPost,
+		"/api/web-workspace/session/"+sessionId+"/navigation",
+		tokenB,
+		`{"action":"back"}`,
+	)
+	forged := doWebWorkspaceRequest(
+		fixture.engine,
+		http.MethodPost,
+		"/api/web-workspace/session/forged-session/navigation",
+		tokenB,
+		`{"action":"back"}`,
+	)
+	assert.Equal(t, http.StatusNotFound, foreign.Code)
+	assert.Equal(t, http.StatusNotFound, forged.Code)
+	assert.Equal(t, "WEB_WORKSPACE_SESSION_NOT_FOUND", decodeWebWorkspaceError(t, foreign).Code)
+	assert.Equal(t, foreign.Body.String(), forged.Body.String())
+}
+
+func TestWebWorkspaceRouterNavigationRejectsInvalidAction(t *testing.T) {
+	agent := newRouterFakeAgent(t)
+	fixture := setupWebWorkspaceSessionRouterTest(t, agent.server.URL)
+	token := webWorkspaceBearer(t, fixture.userA)
+	sessionId := startWebWorkspaceRouterSession(t, fixture, token)
+
+	recorder := doWebWorkspaceRequest(
+		fixture.engine,
+		http.MethodPost,
+		"/api/web-workspace/session/"+sessionId+"/navigation",
+		token,
+		`{"action":"jump"}`,
+	)
+	assert.Equal(t, http.StatusBadRequest, recorder.Code)
+	assert.Equal(t, "WEB_WORKSPACE_INVALID_REQUEST", decodeWebWorkspaceError(t, recorder).Code)
+}
+
+func TestWebWorkspaceRouterNavigationMapsAgentErrors(t *testing.T) {
+	agent := newRouterFakeAgent(t)
+	fixture := setupWebWorkspaceSessionRouterTest(t, agent.server.URL)
+	token := webWorkspaceBearer(t, fixture.userA)
+	sessionId := startWebWorkspaceRouterSession(t, fixture, token)
+	path := "/api/web-workspace/session/" + sessionId + "/navigation"
+
+	cases := []struct {
+		name       string
+		failure    string
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "navigation timeout", failure: "timeout", wantStatus: http.StatusGatewayTimeout, wantCode: "WEB_WORKSPACE_NAVIGATION_TIMEOUT"},
+		{name: "navigation unavailable", failure: "navigation_unavailable", wantStatus: http.StatusConflict, wantCode: "WEB_WORKSPACE_NAVIGATION_UNAVAILABLE"},
+		{name: "runtime not running", failure: "runtime_not_running", wantStatus: http.StatusConflict, wantCode: "WEB_WORKSPACE_NAVIGATION_UNAVAILABLE"},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			agent.setNavigationFail(testCase.failure)
+			recorder := doWebWorkspaceRequest(fixture.engine, http.MethodPost, path, token, `{"action":"reload"}`)
+			assert.Equal(t, testCase.wantStatus, recorder.Code, recorder.Body.String())
+			assert.Equal(t, testCase.wantCode, decodeWebWorkspaceError(t, recorder).Code)
+		})
+	}
+}
+
+func TestWebWorkspaceRouterNavigationFailsClosedWithoutAgent(t *testing.T) {
+	agent := newRouterFakeAgent(t)
+	fixture := setupWebWorkspaceSessionRouterTest(t, agent.server.URL)
+	token := webWorkspaceBearer(t, fixture.userA)
+	sessionId := startWebWorkspaceRouterSession(t, fixture, token)
+	system_setting.GetWebWorkspaceSettings().AgentBaseURL = ""
+
+	recorder := doWebWorkspaceRequest(
+		fixture.engine,
+		http.MethodPost,
+		"/api/web-workspace/session/"+sessionId+"/navigation",
+		token,
+		`{"action":"reload"}`,
+	)
+	assert.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	assert.Equal(t, "WEB_WORKSPACE_AGENT_UNAVAILABLE", decodeWebWorkspaceError(t, recorder).Code)
 }
 
 func TestWebWorkspaceRouterStreamGateway(t *testing.T) {

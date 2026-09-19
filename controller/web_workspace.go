@@ -310,11 +310,13 @@ func toWebConversationDto(conversation *model.WebConversation) dto.WebConversati
 }
 
 const (
-	webWorkspaceCodeAgentUnavailable = "WEB_WORKSPACE_AGENT_UNAVAILABLE"
-	webWorkspaceCodeSessionNotFound  = "WEB_WORKSPACE_SESSION_NOT_FOUND"
-	webWorkspaceCodeSessionRequired  = "WEB_WORKSPACE_SESSION_REQUIRED"
-	webWorkspaceCodeProjectLimit     = "WEB_WORKSPACE_PROJECT_LIMIT"
-	webWorkspaceCodeTicketInvalid    = "WEB_WORKSPACE_TICKET_INVALID"
+	webWorkspaceCodeAgentUnavailable      = "WEB_WORKSPACE_AGENT_UNAVAILABLE"
+	webWorkspaceCodeSessionNotFound       = "WEB_WORKSPACE_SESSION_NOT_FOUND"
+	webWorkspaceCodeSessionRequired       = "WEB_WORKSPACE_SESSION_REQUIRED"
+	webWorkspaceCodeProjectLimit          = "WEB_WORKSPACE_PROJECT_LIMIT"
+	webWorkspaceCodeTicketInvalid         = "WEB_WORKSPACE_TICKET_INVALID"
+	webWorkspaceCodeNavigationTimeout     = "WEB_WORKSPACE_NAVIGATION_TIMEOUT"
+	webWorkspaceCodeNavigationUnavailable = "WEB_WORKSPACE_NAVIGATION_UNAVAILABLE"
 )
 
 // StartWebWorkspaceSession starts (or reuses) the caller's browser runtime. The
@@ -380,6 +382,32 @@ func RestartWebWorkspaceSession(c *gin.Context) {
 	session, err := webworkspace.RestartSession(c.Request.Context(), user.Id, sessionId)
 	if err != nil {
 		writeWebWorkspaceSessionError(c, err)
+		return
+	}
+	common.ApiSuccess(c, toWebWorkspaceSessionDto(session))
+}
+
+// NavigateWebWorkspaceSession applies one navigation command to the caller's
+// runtime and returns the updated session DTO. The response never contains a
+// browser URL, runtime address or agent credential.
+func NavigateWebWorkspaceSession(c *gin.Context) {
+	user := requireWebWorkspaceEntitlement(c)
+	if user == nil {
+		return
+	}
+	sessionId := c.Param("id")
+	if sessionId == "" {
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid session id", "")
+		return
+	}
+	var request dto.WebWorkspaceNavigationRequest
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid request body", "")
+		return
+	}
+	session, err := webworkspace.NavigateSession(c.Request.Context(), user.Id, sessionId, request.Action)
+	if err != nil {
+		writeWebWorkspaceNavigationError(c, err)
 		return
 	}
 	common.ApiSuccess(c, toWebWorkspaceSessionDto(session))
@@ -528,12 +556,37 @@ func writeWebWorkspaceSessionError(c *gin.Context, err error) {
 	}
 }
 
+func writeWebWorkspaceNavigationError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, webworkspace.ErrInvalidNavigationAction):
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid navigation action", "")
+	case errors.Is(err, webworkspace.ErrAgentNavigationTimeout):
+		writeWebWorkspaceError(c, http.StatusGatewayTimeout, webWorkspaceCodeNavigationTimeout, "web workspace navigation timed out", "")
+	case errors.Is(err, webworkspace.ErrAgentNavigationUnavailable):
+		writeWebWorkspaceError(c, http.StatusConflict, webWorkspaceCodeNavigationUnavailable, "web workspace navigation unavailable", "")
+	case errors.Is(err, webworkspace.ErrSessionNotFound), errors.Is(err, webworkspace.ErrAgentRuntimeNotFound):
+		writeWebWorkspaceError(c, http.StatusNotFound, webWorkspaceCodeSessionNotFound, "web workspace session not found", "")
+	case errors.Is(err, webworkspace.ErrAgentUnavailable), errors.Is(err, webworkspace.ErrAgentRejected):
+		writeWebWorkspaceError(c, http.StatusServiceUnavailable, webWorkspaceCodeAgentUnavailable, "web workspace agent unavailable", "")
+	default:
+		writeWebWorkspaceInternalError(c)
+	}
+}
+
 func toWebWorkspaceSessionDto(session *webworkspace.Session) dto.WebWorkspaceSessionDto {
-	return dto.WebWorkspaceSessionDto{
+	result := dto.WebWorkspaceSessionDto{
 		SessionId:      session.Id,
 		State:          session.State,
 		CreatedAt:      session.CreatedAt,
 		LastSeenAt:     session.LastSeenAt,
 		IdleDeadlineAt: session.IdleDeadlineAt,
 	}
+	if session.Navigation != nil {
+		result.Navigation = &dto.WebWorkspaceNavigationDto{
+			CanGoBack:    session.Navigation.CanGoBack,
+			CanGoForward: session.Navigation.CanGoForward,
+			UpdatedAt:    session.Navigation.UpdatedAt,
+		}
+	}
+	return result
 }

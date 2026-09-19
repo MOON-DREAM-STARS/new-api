@@ -7354,6 +7354,9 @@
     "You have reached the project limit. Remove an existing project first.": "You have reached the project limit. Remove an existing project first.",
     "Your account group does not include Web Workspace access.": "Your account group does not include Web Workspace access.",
     "Permit expires in {{time}}.": "Permit expires in {{time}}.",
-    "Issue a new permit and finish creating the project.": "Issue a new permit and finish creating the project."
+    "Issue a new permit and finish creating the project.": "Issue a new permit and finish creating the project.",
+    "Refresh page": "Refresh page",
+    "Browser forward": "Browser forward",
+    "Browser back": "Browser back"
   }
 }

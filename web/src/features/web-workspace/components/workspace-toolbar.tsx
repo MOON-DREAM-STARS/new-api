@@ -16,7 +16,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Ellipsis, Maximize2, Minimize2, RefreshCw } from 'lucide-react'
+import {
+  ArrowLeft,
+  ArrowRight,
+  Ellipsis,
+  Maximize2,
+  Minimize2,
+  RefreshCw,
+  RotateCw,
+} from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -35,6 +43,67 @@ import {
   CONNECTION_LABEL_KEYS,
   type WorkspaceConnection,
 } from '../lib/connection'
+import type { WebWorkspaceNavigation } from '../types'
+
+export type WorkspaceNavigationControlsProps = {
+  navigation: WebWorkspaceNavigation | null
+  isAvailable: boolean
+  isPending: boolean
+  onBack: () => void
+  onForward: () => void
+  onReload: () => void
+}
+
+/** Shared real-navigation controls for the toolbar and immersive overlay. */
+export function WorkspaceNavigationControls(
+  props: WorkspaceNavigationControlsProps
+) {
+  const { t } = useTranslation()
+  const isBackDisabled =
+    props.isPending ||
+    !props.isAvailable ||
+    props.navigation?.can_go_back !== true
+  const isForwardDisabled =
+    props.isPending ||
+    !props.isAvailable ||
+    props.navigation?.can_go_forward !== true
+  const isReloadDisabled = props.isPending || !props.isAvailable
+
+  return (
+    <div className='flex items-center gap-2'>
+      <Button
+        type='button'
+        size='icon-sm'
+        variant='ghost'
+        aria-label={t('Browser back')}
+        disabled={isBackDisabled}
+        onClick={props.onBack}
+      >
+        <ArrowLeft aria-hidden='true' />
+      </Button>
+      <Button
+        type='button'
+        size='icon-sm'
+        variant='ghost'
+        aria-label={t('Browser forward')}
+        disabled={isForwardDisabled}
+        onClick={props.onForward}
+      >
+        <ArrowRight aria-hidden='true' />
+      </Button>
+      <Button
+        type='button'
+        size='icon-sm'
+        variant='ghost'
+        aria-label={t('Refresh page')}
+        disabled={isReloadDisabled}
+        onClick={props.onReload}
+      >
+        <RotateCw aria-hidden='true' />
+      </Button>
+    </div>
+  )
+}
 
 type WorkspaceToolbarProps = {
   connection: WorkspaceConnection
@@ -42,11 +111,17 @@ type WorkspaceToolbarProps = {
   currentProjectName: string | null
   isLive: boolean
   isBusy: boolean
+  navigation: WebWorkspaceNavigation | null
+  isNavigationAvailable: boolean
+  isNavigationPending: boolean
   immersive: boolean
   onStart: () => void
   onReconnect: () => void
   onRestart: () => void
   onStop: () => void
+  onNavigateBack: () => void
+  onNavigateForward: () => void
+  onNavigateReload: () => void
   onToggleImmersive: () => void
 }
 
@@ -104,6 +179,17 @@ export function WorkspaceToolbar(props: WorkspaceToolbarProps) {
       >
         <RefreshCw aria-hidden='true' />
       </Button>
+
+      {props.immersive ? null : (
+        <WorkspaceNavigationControls
+          navigation={props.navigation}
+          isAvailable={props.isNavigationAvailable}
+          isPending={props.isNavigationPending}
+          onBack={props.onNavigateBack}
+          onForward={props.onNavigateForward}
+          onReload={props.onNavigateReload}
+        />
+      )}
 
       <Button
         type='button'

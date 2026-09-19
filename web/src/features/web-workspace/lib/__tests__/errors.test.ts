@@ -63,6 +63,27 @@ describe('classifyWebWorkspaceError', () => {
     )
   })
 
+  test('classifies navigation failures without throwing for unknown codes', () => {
+    expect(
+      classifyWebWorkspaceError(
+        apiError(400, WEB_WORKSPACE_ERROR_CODES.invalidRequest)
+      ).kind
+    ).toBe('unknown')
+    expect(
+      classifyWebWorkspaceError(
+        apiError(504, 'WEB_WORKSPACE_NAVIGATION_TIMEOUT')
+      ).kind
+    ).toBe('agent_unavailable')
+    expect(
+      classifyWebWorkspaceError(
+        apiError(409, 'WEB_WORKSPACE_NAVIGATION_UNAVAILABLE')
+      ).kind
+    ).toBe('agent_unavailable')
+    expect(
+      classifyWebWorkspaceError(apiError(418, 'WEB_WORKSPACE_UNKNOWN')).kind
+    ).toBe('unknown')
+  })
+
   test('classifies removed resources from 404 and policy codes', () => {
     expect(
       classifyWebWorkspaceError(

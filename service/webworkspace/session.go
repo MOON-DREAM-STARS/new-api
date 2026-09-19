@@ -18,6 +18,10 @@ const DefaultProvider = "chatgpt"
 // user, so callers cannot tell the two apart.
 var ErrSessionNotFound = errors.New("web workspace session not found")
 
+// ErrInvalidNavigationAction rejects values outside the frozen navigation
+// command contract before any agent request is made.
+var ErrInvalidNavigationAction = errors.New("web workspace navigation action invalid")
+
 // Session is the control plane view of one workspace browser session. Sessions
 // are ephemeral: they live in memory and are re-derived from the agent on the
 // next start after a New API restart.
@@ -30,6 +34,7 @@ type Session struct {
 	CreatedAt      int64
 	LastSeenAt     int64
 	IdleDeadlineAt int64
+	Navigation     *AgentNavigation
 }
 
 type sessionStore struct {
@@ -122,9 +127,22 @@ func (s *sessionStore) applyRuntime(sessionId string, runtime *AgentRuntime) (Se
 	session.RuntimeId = runtime.RuntimeId
 	session.State = runtime.State
 	session.IdleDeadlineAt = runtime.IdleDeadlineAt
+	session.Navigation = runtime.Navigation
 	if runtime.LastActivityAt > session.LastSeenAt {
 		session.LastSeenAt = runtime.LastActivityAt
 	}
+	s.entries[sessionId] = session
+	return session, true
+}
+
+func (s *sessionStore) setNavigation(sessionId string, navigation *AgentNavigation) (Session, bool) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	session, ok := s.entries[sessionId]
+	if !ok {
+		return Session{}, false
+	}
+	session.Navigation = navigation
 	s.entries[sessionId] = session
 	return session, true
 }
@@ -200,6 +218,7 @@ func StartSession(ctx context.Context, userId int) (*Session, error) {
 		CreatedAt:      now,
 		LastSeenAt:     now,
 		IdleDeadlineAt: runtime.IdleDeadlineAt,
+		Navigation:     runtime.Navigation,
 	}
 	sessions.put(session)
 	// The guard denies every unregistered provider resource, so the session is
@@ -262,6 +281,33 @@ func RestartSession(ctx context.Context, userId int, sessionId string) (*Session
 		return nil, err
 	}
 	updated, ok := sessions.applyRuntime(sessionId, runtime)
+	if !ok {
+		return nil, ErrSessionNotFound
+	}
+	return &updated, nil
+}
+
+// NavigateSession sends one validated navigation command through the agent and
+// writes the returned snapshot back into the caller's session.
+func NavigateSession(ctx context.Context, userId int, sessionId string, action string) (*Session, error) {
+	session, err := GetSession(userId, sessionId)
+	if err != nil {
+		return nil, err
+	}
+	switch action {
+	case "back", "forward", "reload", "state":
+	default:
+		return nil, ErrInvalidNavigationAction
+	}
+	client, err := newAgentClient()
+	if err != nil {
+		return nil, err
+	}
+	navigation, err := client.NavigateRuntime(ctx, session.WorkspaceId, action)
+	if err != nil {
+		return nil, err
+	}
+	updated, ok := sessions.setNavigation(sessionId, navigation)
 	if !ok {
 		return nil, ErrSessionNotFound
 	}

@@ -35,17 +35,32 @@ var (
 	ErrAgentRejected = errors.New("web workspace agent rejected the request")
 	// ErrAgentRuntimeNotFound means the agent has no runtime for the workspace.
 	ErrAgentRuntimeNotFound = errors.New("web workspace runtime not found")
+	// ErrAgentNavigationTimeout means the agent reported that a navigation
+	// command exceeded its execution deadline.
+	ErrAgentNavigationTimeout = errors.New("web workspace navigation timeout")
+	// ErrAgentNavigationUnavailable means the runtime cannot accept navigation
+	// commands in its current state.
+	ErrAgentNavigationUnavailable = errors.New("web workspace navigation unavailable")
 )
+
+// AgentNavigation is the browser navigation snapshot exposed by the agent.
+// It never contains a URL, page address or runtime endpoint.
+type AgentNavigation struct {
+	CanGoBack    bool  `json:"can_go_back"`
+	CanGoForward bool  `json:"can_go_forward"`
+	UpdatedAt    int64 `json:"updated_at"`
+}
 
 // AgentRuntime is the metadata the agent exposes about one workspace runtime.
 // It never contains container addresses, ports or file system paths.
 type AgentRuntime struct {
-	RuntimeId      string `json:"runtime_id"`
-	WorkspaceId    int    `json:"workspace_id"`
-	State          string `json:"state"`
-	CreatedAt      int64  `json:"created_at"`
-	LastActivityAt int64  `json:"last_activity_at"`
-	IdleDeadlineAt int64  `json:"idle_deadline_at"`
+	RuntimeId      string           `json:"runtime_id"`
+	WorkspaceId    int              `json:"workspace_id"`
+	State          string           `json:"state"`
+	CreatedAt      int64            `json:"created_at"`
+	LastActivityAt int64            `json:"last_activity_at"`
+	IdleDeadlineAt int64            `json:"idle_deadline_at"`
+	Navigation     *AgentNavigation `json:"navigation"`
 }
 
 type agentCreateRuntimeRequest struct {
@@ -84,6 +99,20 @@ type agentPermitResult struct {
 type agentObservationsResult struct {
 	Observations []Observation `json:"observations"`
 	NextOffset   int64         `json:"next_offset"`
+}
+
+type agentNavigationRequest struct {
+	Action string `json:"action"`
+}
+
+type agentNavigationResponse struct {
+	Action     string           `json:"action"`
+	Navigation *AgentNavigation `json:"navigation"`
+}
+
+type agentErrorResponse struct {
+	Error string `json:"error"`
+	Code  string `json:"code"`
 }
 
 type agentAckRequest struct {
@@ -168,6 +197,9 @@ func (c *AgentClient) do(ctx context.Context, method string, path string, body a
 	}
 	response, err := c.client.Do(request)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("%w: %w: %v", ErrAgentUnavailable, ErrAgentNavigationTimeout, err)
+		}
 		return fmt.Errorf("%w: %v", ErrAgentUnavailable, err)
 	}
 	defer response.Body.Close()
@@ -179,6 +211,23 @@ func (c *AgentClient) do(ctx context.Context, method string, path string, body a
 		return ErrAgentRuntimeNotFound
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		code := ""
+		var agentError agentErrorResponse
+		if len(raw) > 0 && common.Unmarshal(raw, &agentError) == nil {
+			code = strings.TrimSpace(agentError.Code)
+			if code == "" {
+				code = strings.TrimSpace(agentError.Error)
+			}
+		}
+		switch code {
+		case "navigation_timeout":
+			return fmt.Errorf("%w: %w: code=%s status=%d", ErrAgentRejected, ErrAgentNavigationTimeout, code, response.StatusCode)
+		case "navigation_unavailable", "runtime_not_running":
+			return fmt.Errorf("%w: %w: code=%s status=%d", ErrAgentRejected, ErrAgentNavigationUnavailable, code, response.StatusCode)
+		}
+		if code != "" {
+			return fmt.Errorf("%w: code=%s status=%d", ErrAgentRejected, code, response.StatusCode)
+		}
 		return fmt.Errorf("%w: status=%d", ErrAgentRejected, response.StatusCode)
 	}
 	if out == nil || len(raw) == 0 {
@@ -222,6 +271,20 @@ func (c *AgentClient) RestartRuntime(ctx context.Context, workspaceId int) (*Age
 		return nil, err
 	}
 	return &runtime, nil
+}
+
+// NavigateRuntime sends one navigation command to the workspace runtime and
+// returns the agent's updated navigation snapshot.
+func (c *AgentClient) NavigateRuntime(ctx context.Context, workspaceId int, action string) (*AgentNavigation, error) {
+	var result agentNavigationResponse
+	path := fmt.Sprintf("/internal/v1/runtimes/%d/navigation", workspaceId)
+	if err := c.do(ctx, http.MethodPost, path, agentNavigationRequest{Action: action}, &result); err != nil {
+		return nil, err
+	}
+	if result.Navigation == nil {
+		return nil, fmt.Errorf("%w: navigation response is missing navigation", ErrAgentUnavailable)
+	}
+	return result.Navigation, nil
 }
 
 // PutOwnership publishes the workspace ownership document the guard enforces.

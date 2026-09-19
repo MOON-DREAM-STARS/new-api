@@ -132,12 +132,13 @@ func (h *harness) dialStream(t *testing.T, workspaceID int64) *websocket.Conn {
 }
 
 type runtimeJSON struct {
-	RuntimeID      string `json:"runtime_id"`
-	WorkspaceID    int64  `json:"workspace_id"`
-	State          string `json:"state"`
-	CreatedAt      int64  `json:"created_at"`
-	LastActivityAt int64  `json:"last_activity_at"`
-	IdleDeadlineAt int64  `json:"idle_deadline_at"`
+	RuntimeID      string                    `json:"runtime_id"`
+	WorkspaceID    int64                     `json:"workspace_id"`
+	State          string                    `json:"state"`
+	CreatedAt      int64                     `json:"created_at"`
+	LastActivityAt int64                     `json:"last_activity_at"`
+	IdleDeadlineAt int64                     `json:"idle_deadline_at"`
+	Navigation     *manager.NavigationStatus `json:"navigation"`
 }
 
 func TestHealthzIsPublicAndMinimal(t *testing.T) {
@@ -156,6 +157,7 @@ func TestProtectedEndpointsRequireBearerToken(t *testing.T) {
 		{http.MethodPost, "/internal/v1/runtimes/1/stop"},
 		{http.MethodPost, "/internal/v1/runtimes/1/restart"},
 		{http.MethodPost, "/internal/v1/runtimes/1/activity"},
+		{http.MethodPost, "/internal/v1/runtimes/1/navigation"},
 		{http.MethodPut, "/internal/v1/runtimes/1/ownership"},
 		{http.MethodPost, "/internal/v1/runtimes/1/permits"},
 		{http.MethodGet, "/internal/v1/runtimes/1/observations"},
@@ -324,7 +326,7 @@ func TestRuntimeResponsesDoNotLeakInternals(t *testing.T) {
 	var raw map[string]any
 	require.NoError(t, json.Unmarshal(body, &raw))
 	assert.ElementsMatch(t, []string{
-		"runtime_id", "workspace_id", "state", "created_at", "last_activity_at", "idle_deadline_at",
+		"runtime_id", "workspace_id", "state", "created_at", "last_activity_at", "idle_deadline_at", "navigation",
 	}, mapKeys(raw))
 }
 
@@ -583,4 +585,105 @@ func TestAckObservationsEndpointRejectsInvalidOffset(t *testing.T) {
 	require.Equal(t, http.StatusOK, response.StatusCode, string(body))
 	assert.JSONEq(t, `{"offset":0}`, string(body))
 	assert.NotContains(t, string(body), h.dataRoot)
+}
+
+func serveNavigationReceipt(t *testing.T, dir string) func() {
+	t.Helper()
+	stop := make(chan struct{})
+	go func() {
+		commandPath := filepath.Join(dir, "command.json")
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			data, err := os.ReadFile(commandPath)
+			if err == nil {
+				var command struct {
+					ID int64 `json:"id"`
+				}
+				if json.Unmarshal(data, &command) == nil && command.ID > 0 {
+					payload, marshalErr := json.Marshal(map[string]any{
+						"id":             command.ID,
+						"can_go_back":    true,
+						"can_go_forward": false,
+						"updated_at":     2000,
+					})
+					if marshalErr == nil {
+						_ = os.WriteFile(filepath.Join(dir, "navigation.json"), payload, 0o644)
+					}
+					return
+				}
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	return func() { close(stop) }
+}
+
+func TestNavigationEndpointReturnsReceiptAndSnapshot(t *testing.T) {
+	h := newHarness(t)
+	workspaceID := int64(81)
+	h.startRuntime(t, workspaceID)
+	dir := filepath.Join(manager.WorkspaceDir(h.dataRoot, workspaceID), ".guard")
+	stop := serveNavigationReceipt(t, dir)
+	defer stop()
+
+	endpoint := fmt.Sprintf("/internal/v1/runtimes/%d/navigation", workspaceID)
+	response, body := h.request(t, http.MethodPost, endpoint, "Bearer "+testToken, `{"action":"back"}`)
+	require.Equal(t, http.StatusOK, response.StatusCode, string(body))
+	assert.JSONEq(t, `{"action":"back","navigation":{"can_go_back":true,"can_go_forward":false,"updated_at":2000}}`, string(body))
+
+	response, body = h.request(t, http.MethodGet, fmt.Sprintf("/internal/v1/runtimes/%d", workspaceID), "Bearer "+testToken, "")
+	require.Equal(t, http.StatusOK, response.StatusCode, string(body))
+	var snapshot runtimeJSON
+	require.NoError(t, json.Unmarshal(body, &snapshot))
+	require.NotNil(t, snapshot.Navigation)
+	assert.True(t, snapshot.Navigation.CanGoBack)
+	assert.False(t, snapshot.Navigation.CanGoForward)
+	assert.Equal(t, int64(2000), snapshot.Navigation.UpdatedAt)
+}
+
+func TestNavigationEndpointMapsErrors(t *testing.T) {
+	h := newHarness(t)
+	workspaceID := int64(82)
+	h.startRuntime(t, workspaceID)
+	endpoint := fmt.Sprintf("/internal/v1/runtimes/%d/navigation", workspaceID)
+
+	for _, payload := range []string{`{"action":"bogus"}`, `{}`, `not-json`} {
+		response, body := h.request(t, http.MethodPost, endpoint, "Bearer "+testToken, payload)
+		assert.Equal(t, http.StatusBadRequest, response.StatusCode, payload)
+		assert.JSONEq(t, `{"success":false,"error":"invalid_request"}`, string(body))
+	}
+	response, body := h.request(t, http.MethodPost, "/internal/v1/runtimes/abc/navigation", "Bearer "+testToken, `{"action":"state"}`)
+	assert.Equal(t, http.StatusBadRequest, response.StatusCode)
+	assert.JSONEq(t, `{"success":false,"error":"invalid_request"}`, string(body))
+
+	response, body = h.request(t, http.MethodPost, "/internal/v1/runtimes/999/navigation", "Bearer "+testToken, `{"action":"state"}`)
+	assert.Equal(t, http.StatusNotFound, response.StatusCode)
+	assert.JSONEq(t, `{"success":false,"error":"runtime_not_found"}`, string(body))
+
+	_, err := h.mgr.Stop(context.Background(), workspaceID)
+	require.NoError(t, err)
+	response, body = h.request(t, http.MethodPost, endpoint, "Bearer "+testToken, `{"action":"state"}`)
+	assert.Equal(t, http.StatusConflict, response.StatusCode)
+	assert.JSONEq(t, `{"success":false,"error":"runtime_not_running"}`, string(body))
+
+	unavailableID := int64(83)
+	h.startRuntime(t, unavailableID)
+	guardDir := filepath.Join(manager.WorkspaceDir(h.dataRoot, unavailableID), ".guard")
+	require.NoError(t, os.Mkdir(filepath.Join(guardDir, "command.json"), 0o700))
+	response, body = h.request(t, http.MethodPost, fmt.Sprintf("/internal/v1/runtimes/%d/navigation", unavailableID), "Bearer "+testToken, `{"action":"reload"}`)
+	assert.Equal(t, http.StatusConflict, response.StatusCode)
+	assert.JSONEq(t, `{"success":false,"error":"navigation_unavailable"}`, string(body))
+}
+
+func TestNavigationEndpointTimesOutWithoutGuardReceipt(t *testing.T) {
+	h := newHarness(t)
+	workspaceID := int64(84)
+	h.startRuntime(t, workspaceID)
+	response, body := h.request(t, http.MethodPost, fmt.Sprintf("/internal/v1/runtimes/%d/navigation", workspaceID), "Bearer "+testToken, `{"action":"state"}`)
+	assert.Equal(t, http.StatusGatewayTimeout, response.StatusCode)
+	assert.JSONEq(t, `{"success":false,"error":"navigation_timeout"}`, string(body))
 }

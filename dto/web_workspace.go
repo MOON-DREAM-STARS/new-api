@@ -61,14 +61,29 @@ type WebWorkspaceProjectPermitDto struct {
 	ExpiresAt int64  `json:"expires_at"`
 }
 
+// WebWorkspaceNavigationDto is the control-plane view of browser navigation
+// state. It intentionally contains no URL or runtime address.
+type WebWorkspaceNavigationDto struct {
+	CanGoBack    bool  `json:"can_go_back"`
+	CanGoForward bool  `json:"can_go_forward"`
+	UpdatedAt    int64 `json:"updated_at"`
+}
+
+// WebWorkspaceNavigationRequest is the only client input for a navigation
+// command. The action is validated by the service before reaching the agent.
+type WebWorkspaceNavigationRequest struct {
+	Action string `json:"action"`
+}
+
 // WebWorkspaceSessionDto is the control-plane view of one browser session.
 // Runtime ids, container addresses and ports never leave the control plane.
 type WebWorkspaceSessionDto struct {
-	SessionId      string `json:"session_id"`
-	State          string `json:"state"`
-	CreatedAt      int64  `json:"created_at"`
-	LastSeenAt     int64  `json:"last_seen_at"`
-	IdleDeadlineAt int64  `json:"idle_deadline_at"`
+	SessionId      string                     `json:"session_id"`
+	State          string                     `json:"state"`
+	CreatedAt      int64                      `json:"created_at"`
+	LastSeenAt     int64                      `json:"last_seen_at"`
+	IdleDeadlineAt int64                      `json:"idle_deadline_at"`
+	Navigation     *WebWorkspaceNavigationDto `json:"navigation"`
 }
 
 // WebWorkspaceStreamTicketDto carries the one-time ticket for a stream attach.

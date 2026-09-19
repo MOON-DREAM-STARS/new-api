@@ -27,6 +27,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -87,25 +88,33 @@ func Run(ctx context.Context, cfg Config) error {
 		return err
 	}
 	defer conn.Close()
+	runCtx, cancelRun := context.WithCancel(ctx)
 
 	// The registry is read before interception is armed so no provider
 	// document can slip through with an unknown ownership state.
-	state := newProviderState(resolveStateDir(cfg.StateDir), cfg.Mode, logger)
+	stateDir := resolveStateDir(cfg.StateDir)
+	state := newProviderState(stateDir, cfg.Mode, logger)
 	state.refresh()
 
 	g := &guard{mode: cfg.Mode, logger: logger, state: state}
 	client := newCDPClient(conn, g.handleEvent)
 	g.client = client
-	client.start(ctx)
-	if err := g.install(ctx); err != nil {
+	g.navigation = newNavigationController(stateDir, client, logger)
+	defer func() {
+		cancelRun()
+		g.waitBackground()
+	}()
+	client.start(runCtx)
+	if err := g.install(runCtx); err != nil {
 		return err
 	}
-	go g.pollOwnershipState(ctx)
+	g.runBackground(func() { g.pollOwnershipState(runCtx) })
+	g.runBackground(func() { g.pollNavigationState(runCtx) })
 	logger.Info("browser guard active", "event", "guard_active", "component", "guard", "mode", string(cfg.Mode))
 
 	select {
-	case <-ctx.Done():
-		return fmt.Errorf("guard stopped: %w", ctx.Err())
+	case <-runCtx.Done():
+		return fmt.Errorf("guard stopped: %w", runCtx.Err())
 	case <-client.done:
 		return client.fatalError()
 	}
@@ -240,10 +249,38 @@ func isLoopbackHost(host string) bool {
 // guard holds the policy view of one runtime and the CDP client it enforces
 // through.
 type guard struct {
-	mode   policy.Mode
-	logger *slog.Logger
-	client *cdpClient
-	state  *providerState
+	mode       policy.Mode
+	logger     *slog.Logger
+	client     *cdpClient
+	state      *providerState
+	navigation *navigationController
+
+	backgroundMu     sync.Mutex
+	backgroundWG     sync.WaitGroup
+	backgroundClosed bool
+}
+
+// runBackground tracks best-effort event work so Run does not return while a
+// refresh is still writing into the workspace state directory.
+func (g *guard) runBackground(fn func()) {
+	g.backgroundMu.Lock()
+	if g.backgroundClosed {
+		g.backgroundMu.Unlock()
+		return
+	}
+	g.backgroundWG.Add(1)
+	g.backgroundMu.Unlock()
+	go func() {
+		defer g.backgroundWG.Done()
+		fn()
+	}()
+}
+
+func (g *guard) waitBackground() {
+	g.backgroundMu.Lock()
+	g.backgroundClosed = true
+	g.backgroundMu.Unlock()
+	g.backgroundWG.Wait()
 }
 
 // install arms the browser level guard: every target is discovered and
@@ -278,7 +315,17 @@ func (g *guard) handleEvent(ctx context.Context, sessionID, method string, param
 	case "Fetch.requestPaused":
 		return g.onRequestPaused(ctx, sessionID, params)
 	case "Page.frameNavigated":
-		return g.onFrameNavigated(ctx, params)
+		if err := g.onFrameNavigated(ctx, params); err != nil {
+			return err
+		}
+		g.refreshNavigation(ctx, sessionID)
+		return nil
+	case "Page.navigatedWithinDocument":
+		g.refreshNavigation(ctx, sessionID)
+		return nil
+	case "Target.detachedFromTarget":
+		g.navigation.clearFromEvent(params)
+		return nil
 	case "Browser.downloadWillBegin":
 		g.auditDownload(params)
 		return nil
@@ -316,6 +363,7 @@ func (g *guard) onAttachedToTarget(ctx context.Context, params json.RawMessage) 
 	}
 	isPage := event.TargetInfo.Type == "page"
 	if isPage {
+		g.navigation.setSession(event.SessionID)
 		initialURL := strings.TrimSpace(event.TargetInfo.URL)
 		if initialURL != "" && initialURL != "about:blank" {
 			// A new target is a document navigation: it must pass the address
@@ -343,9 +391,9 @@ func (g *guard) onAttachedToTarget(ctx context.Context, params json.RawMessage) 
 	// requested after the resume for the same reason: interception is Fetch
 	// based and --deny-permission-prompts remains the clipboard fallback.
 	if event.WaitingForDebugger {
-		go g.resumeThenEnablePage(ctx, event.SessionID, isPage)
+		g.runBackground(func() { g.resumeThenEnablePage(ctx, event.SessionID, isPage) })
 	} else if isPage {
-		go g.enablePageDomain(ctx, event.SessionID)
+		g.runBackground(func() { g.enablePageDomain(ctx, event.SessionID) })
 	}
 	return nil
 }
@@ -392,6 +440,7 @@ func (g *guard) enablePageDomain(ctx context.Context, sessionID string) {
 			"error", err,
 		)
 	}
+	g.navigation.refreshCurrent(ctx, sessionID)
 	// Network.enable feeds the project_not_found observation. It is requested
 	// after the page domain and stays non-fatal for the same reason: the guard
 	// loses an observation, never an enforcement step.

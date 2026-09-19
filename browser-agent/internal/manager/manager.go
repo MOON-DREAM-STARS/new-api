@@ -93,12 +93,13 @@ var (
 // Snapshot is the runtime JSON shape exposed by the HTTP API. It never contains
 // container addresses, ports, Docker identifiers or file system paths.
 type Snapshot struct {
-	RuntimeID      string `json:"runtime_id"`
-	WorkspaceID    int64  `json:"workspace_id"`
-	State          State  `json:"state"`
-	CreatedAt      int64  `json:"created_at"`
-	LastActivityAt int64  `json:"last_activity_at"`
-	IdleDeadlineAt int64  `json:"idle_deadline_at"`
+	RuntimeID      string            `json:"runtime_id"`
+	WorkspaceID    int64             `json:"workspace_id"`
+	State          State             `json:"state"`
+	CreatedAt      int64             `json:"created_at"`
+	LastActivityAt int64             `json:"last_activity_at"`
+	IdleDeadlineAt int64             `json:"idle_deadline_at"`
+	Navigation     *NavigationStatus `json:"navigation"`
 }
 
 // StartOptions carries the request parameters of a runtime start.
@@ -167,6 +168,8 @@ type runtimeState struct {
 	createdAt    time.Time
 	lastActivity time.Time
 	idleDeadline time.Time
+	navCommandID int64
+	navigation   *NavigationStatus
 }
 
 func (rt *runtimeState) snapshot(workspaceID int64) Snapshot {
@@ -179,6 +182,10 @@ func (rt *runtimeState) snapshot(workspaceID int64) Snapshot {
 	}
 	if !rt.idleDeadline.IsZero() {
 		snapshot.IdleDeadlineAt = rt.idleDeadline.Unix()
+	}
+	if rt.navigation != nil {
+		navigation := *rt.navigation
+		snapshot.Navigation = &navigation
 	}
 	return snapshot
 }
@@ -281,6 +288,7 @@ func (m *Manager) Get(workspaceID int64) (Snapshot, bool) {
 	if rt == nil {
 		return Snapshot{}, false
 	}
+	m.refreshNavigationLocked(rt, workspaceID)
 	return rt.snapshot(workspaceID), true
 }
 
@@ -377,6 +385,7 @@ func (m *Manager) Activity(workspaceID int64) (Snapshot, bool) {
 	if rt == nil {
 		return Snapshot{}, false
 	}
+	m.refreshNavigationLocked(rt, workspaceID)
 	if rt.state == StateRunning || rt.state == StateIdle {
 		m.touchRuntime(rt, m.now())
 	}
