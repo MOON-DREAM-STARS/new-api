@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 
 import { api } from '@/lib/api'
 
-import { restartWebWorkspaceSession } from '../api'
+import { restartWebWorkspaceSession, startWebWorkspaceSession } from '../api'
 
 type ApiPost = (url: string, data?: unknown) => Promise<{ data: unknown }>
 
@@ -37,7 +37,7 @@ function recordPosts(posts: Array<{ url: string; data: unknown }>) {
   }
 }
 
-describe('restartWebWorkspaceSession', () => {
+describe('web workspace session requests', () => {
   test('locks the runtime through the restart endpoint', async () => {
     const posts: Array<{ url: string; data: unknown }> = []
     recordPosts(posts)
@@ -45,11 +45,14 @@ describe('restartWebWorkspaceSession', () => {
     await restartWebWorkspaceSession('s1', { mode: 'LOCKED' })
 
     expect(posts).toEqual([
-      { url: '/api/web-workspace/session/s1/restart', data: { mode: 'LOCKED' } },
+      {
+        url: '/api/web-workspace/session/s1/restart',
+        data: { mode: 'LOCKED', screen_width: 0, screen_height: 0 },
+      },
     ])
   })
 
-  test('restarts without a mode override and encodes the session id', async () => {
+  test('restarts without overrides and encodes the session id', async () => {
     const posts: Array<{ url: string; data: unknown }> = []
     recordPosts(posts)
 
@@ -58,7 +61,28 @@ describe('restartWebWorkspaceSession', () => {
     expect(posts).toEqual([
       {
         url: '/api/web-workspace/session/s%201%2F2/restart',
-        data: { mode: '' },
+        data: { mode: '', screen_width: 0, screen_height: 0 },
+      },
+    ])
+  })
+
+  test('forwards the proposed remote screen size', async () => {
+    const posts: Array<{ url: string; data: unknown }> = []
+    recordPosts(posts)
+
+    await restartWebWorkspaceSession('s1', {
+      screenSize: { width: 2180, height: 900 },
+    })
+    await startWebWorkspaceSession({ width: 1540, height: 720 })
+
+    expect(posts).toEqual([
+      {
+        url: '/api/web-workspace/session/s1/restart',
+        data: { mode: '', screen_width: 2180, screen_height: 900 },
+      },
+      {
+        url: '/api/web-workspace/session',
+        data: { screen_width: 1540, screen_height: 720 },
       },
     ])
   })

@@ -293,7 +293,7 @@ func TestWebWorkspaceStartSessionPushesOwnership(t *testing.T) {
 	require.NoError(t, db.Create(project).Error)
 	require.NoError(t, db.Create(&model.WebConversation{ProjectId: project.Id, Provider: DefaultProvider, ExternalConversationId: syncTestConversation, Title: "Conversation"}).Error)
 
-	session, err := StartSession(context.Background(), user.Id)
+	session, err := StartSession(context.Background(), user.Id, 0, 0)
 	require.NoError(t, err)
 	require.True(t, LiveRuntimeState(session.State))
 
@@ -304,7 +304,7 @@ func TestWebWorkspaceStartSessionPushesOwnership(t *testing.T) {
 	assert.Equal(t, []string{syncTestProjectA}, pushes[0].Request.Projects)
 	assert.Equal(t, []string{syncTestConversation}, pushes[0].Request.Conversations)
 
-	_, err = StartSession(context.Background(), user.Id)
+	_, err = StartSession(context.Background(), user.Id, 0, 0)
 	require.NoError(t, err)
 	assert.Len(t, agent.pushes(), 2, "reusing a live runtime must republish ownership")
 }

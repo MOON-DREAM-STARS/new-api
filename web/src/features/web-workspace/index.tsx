@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Minimize2 } from 'lucide-react'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { SectionPageLayout } from '@/components/layout'
@@ -38,6 +38,7 @@ import {
 } from './components/workspace-toolbar'
 import { useCompactSidebar } from './hooks/use-compact-sidebar'
 import { useDesktopViewport } from './hooks/use-desktop-viewport'
+import { useElementSize } from './hooks/use-element-size'
 import { useImmersiveMode } from './hooks/use-immersive-mode'
 import { useProjectRemovalNotice } from './hooks/use-project-removal-notice'
 import { useRemoteSurface } from './hooks/use-remote-surface'
@@ -54,6 +55,10 @@ import {
 import { resolveWebWorkspaceAccess } from './lib/access'
 import { resolveConnection } from './lib/connection'
 import { classifyWebWorkspaceError } from './lib/errors'
+import {
+  findPresentationProfile,
+  remoteScreenSizeForFrame,
+} from './lib/presentation'
 import { isLiveSessionState } from './lib/session'
 import type {
   WebProject,
@@ -122,6 +127,15 @@ export function WebWorkspace() {
     sessionId: session?.session_id ?? '',
     enabled: isDesktop && isLive,
   })
+
+  // The frame is measured here so the remote screen size proposal and the
+  // presentation crop both derive from the same real element box.
+  const frameRef = useRef<HTMLDivElement | null>(null)
+  const frameSize = useElementSize(frameRef)
+  const presentationProfile = findPresentationProfile(provider)
+  const proposedScreen = presentationProfile
+    ? remoteScreenSizeForFrame(frameSize, presentationProfile)
+    : null
   const connection = resolveConnection({
     sessionState: session?.state,
     surfaceStatus: surface.status,
@@ -139,9 +153,25 @@ export function WebWorkspace() {
     navigationMutation.mutate({ sessionId: session.session_id, action })
   }
 
+  function startSession() {
+    startMutation.mutate({ screenSize: proposedScreen })
+  }
+
+  function restartSession() {
+    if (!session) return
+    restartMutation.mutate({
+      sessionId: session.session_id,
+      screenSize: proposedScreen,
+    })
+  }
+
   function lockSession() {
     if (!session) return
-    restartMutation.mutate({ sessionId: session.session_id, mode: 'LOCKED' })
+    restartMutation.mutate({
+      sessionId: session.session_id,
+      mode: 'LOCKED',
+      screenSize: proposedScreen,
+    })
   }
 
   if (configQuery.isPending) {
@@ -211,11 +241,9 @@ export function WebWorkspace() {
           isNavigationAvailable={isNavigationAvailable}
           isNavigationPending={isBusy}
           immersive={immersive.immersive}
-          onStart={() => startMutation.mutate()}
+          onStart={startSession}
           onReconnect={surface.reconnect}
-          onRestart={() => {
-            if (session) restartMutation.mutate({ sessionId: session.session_id })
-          }}
+          onRestart={restartSession}
           onLockSession={lockSession}
           onStop={() => {
             if (session) stopMutation.mutate(session.session_id)
@@ -255,7 +283,9 @@ export function WebWorkspace() {
             }
             immersive={immersive.immersive}
             surface={surface}
-            onStart={() => startMutation.mutate()}
+            frameRef={frameRef}
+            frameSize={frameSize}
+            onStart={startSession}
             onExitImmersive={immersive.exit}
           />
 

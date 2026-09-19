@@ -57,9 +57,26 @@ export async function fetchWebWorkspaceSession(): Promise<WebWorkspaceSession | 
   return res.data.data ?? null
 }
 
-export async function startWebWorkspaceSession(): Promise<WebWorkspaceSession> {
+/** Remote screen size proposal. The agent validates the same range. */
+export type WebWorkspaceScreenSize = {
+  width: number
+  height: number
+}
+
+/** Zero means "keep the agent default" for both dimensions. */
+function screenSizePayload(screen?: WebWorkspaceScreenSize | null) {
+  return {
+    screen_width: screen?.width ?? 0,
+    screen_height: screen?.height ?? 0,
+  }
+}
+
+export async function startWebWorkspaceSession(
+  screen?: WebWorkspaceScreenSize | null
+): Promise<WebWorkspaceSession> {
   const res = await api.post<ApiEnvelope<WebWorkspaceSession>>(
-    `${BASE_PATH}/session`
+    `${BASE_PATH}/session`,
+    screenSizePayload(screen)
   )
   return res.data.data
 }
@@ -76,6 +93,7 @@ export type RestartWebWorkspaceSessionOptions = {
    * the sign-in window stays an operator action.
    */
   mode?: 'LOCKED'
+  screenSize?: WebWorkspaceScreenSize | null
 }
 
 export async function restartWebWorkspaceSession(
@@ -84,7 +102,7 @@ export async function restartWebWorkspaceSession(
 ): Promise<WebWorkspaceSession> {
   const res = await api.post<ApiEnvelope<WebWorkspaceSession>>(
     `${BASE_PATH}/session/${encodeURIComponent(sessionId)}/restart`,
-    { mode: options.mode ?? '' }
+    { mode: options.mode ?? '', ...screenSizePayload(options.screenSize) }
   )
   return res.data.data
 }

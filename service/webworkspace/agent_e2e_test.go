@@ -54,7 +54,7 @@ func TestWebWorkspaceAgentEndToEnd(t *testing.T) {
 	require.NoError(t, db.Create(user).Error)
 
 	ctx := context.Background()
-	session, err := StartSession(ctx, user.Id)
+	session, err := StartSession(ctx, user.Id, 0, 0)
 	require.NoError(t, err, "StartSession against the real agent failed")
 	require.Truef(t, LiveRuntimeState(session.State), "unexpected runtime state %s", session.State)
 	t.Cleanup(func() { _ = StopSession(context.Background(), user.Id, session.Id) })

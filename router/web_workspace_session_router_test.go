@@ -48,6 +48,8 @@ type routerFakeAgent struct {
 	permitCalls     []routerPermitCall
 	navigationCalls []routerNavigationCall
 	restartModes    []string
+	createdSizes    [][2]int
+	restartSizes    [][2]int
 	failPermits     bool
 	navigationFail  string
 }
@@ -102,6 +104,8 @@ func newRouterFakeAgent(t *testing.T) *routerFakeAgent {
 		if path == "" && r.Method == http.MethodPost {
 			var request struct {
 				WorkspaceId int `json:"workspace_id"`
+				Width       int `json:"width"`
+				Height      int `json:"height"`
 			}
 			if err := common.Unmarshal(body, &request); err != nil {
 				w.WriteHeader(http.StatusBadRequest)
@@ -109,6 +113,7 @@ func newRouterFakeAgent(t *testing.T) *routerFakeAgent {
 			}
 			agent.mutex.Lock()
 			agent.create++
+			agent.createdSizes = append(agent.createdSizes, [2]int{request.Width, request.Height})
 			runtime, ok := agent.runtimes[request.WorkspaceId]
 			if !ok {
 				now := time.Now().Unix()
@@ -156,7 +161,9 @@ func newRouterFakeAgent(t *testing.T) *routerFakeAgent {
 			writeRouterAgentJSON(t, w, runtime)
 		case suffix == "restart" && r.Method == http.MethodPost:
 			var restartRequest struct {
-				Mode string `json:"mode"`
+				Mode   string `json:"mode"`
+				Width  int    `json:"width"`
+				Height int    `json:"height"`
 			}
 			if len(body) > 0 {
 				if err := common.Unmarshal(body, &restartRequest); err != nil {
@@ -167,6 +174,7 @@ func newRouterFakeAgent(t *testing.T) *routerFakeAgent {
 			}
 			agent.mutex.Lock()
 			agent.restartModes = append(agent.restartModes, restartRequest.Mode)
+			agent.restartSizes = append(agent.restartSizes, [2]int{restartRequest.Width, restartRequest.Height})
 			if restartRequest.Mode != "" {
 				runtime.Mode = restartRequest.Mode
 			}
@@ -677,6 +685,63 @@ func TestWebWorkspaceRouterRestartModeTransition(t *testing.T) {
 	modes = append([]string{}, agent.restartModes...)
 	agent.mutex.Unlock()
 	assert.Equal(t, []string{"LOCKED", ""}, modes)
+}
+func TestWebWorkspaceRouterScreenSizeProposal(t *testing.T) {
+	agent := newRouterFakeAgent(t)
+	fixture := setupWebWorkspaceSessionRouterTest(t, agent.server.URL)
+	token := webWorkspaceBearer(t, fixture.userA)
+
+	start := doWebWorkspaceRequest(
+		fixture.engine,
+		http.MethodPost,
+		"/api/web-workspace/session",
+		token,
+		`{"screen_width":1540,"screen_height":720}`,
+	)
+	require.Equal(t, http.StatusOK, start.Code, start.Body.String())
+
+	agent.mutex.Lock()
+	created := append([][2]int{}, agent.createdSizes...)
+	agent.mutex.Unlock()
+	assert.Equal(t, [][2]int{{1540, 720}}, created)
+
+	var payload struct {
+		Data struct {
+			SessionId string `json:"session_id"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(start.Body.Bytes(), &payload))
+	require.NotEmpty(t, payload.Data.SessionId)
+
+	restart := doWebWorkspaceRequest(
+		fixture.engine,
+		http.MethodPost,
+		"/api/web-workspace/session/"+payload.Data.SessionId+"/restart",
+		token,
+		`{"screen_width":2180,"screen_height":900}`,
+	)
+	require.Equal(t, http.StatusOK, restart.Code, restart.Body.String())
+
+	agent.mutex.Lock()
+	restarted := append([][2]int{}, agent.restartSizes...)
+	agent.mutex.Unlock()
+	assert.Equal(t, [][2]int{{2180, 900}}, restarted)
+
+	for _, body := range []string{
+		`{"screen_width":5000,"screen_height":720}`,
+		`{"screen_width":1540,"screen_height":100}`,
+		`{"screen_width":1540}`,
+	} {
+		rejected := doWebWorkspaceRequest(
+			fixture.engine,
+			http.MethodPost,
+			"/api/web-workspace/session",
+			token,
+			body,
+		)
+		assert.Equal(t, http.StatusBadRequest, rejected.Code, body)
+		assert.Equal(t, "WEB_WORKSPACE_INVALID_REQUEST", decodeWebWorkspaceError(t, rejected).Code)
+	}
 }
 func TestWebWorkspaceRouterStreamGateway(t *testing.T) {
 	agent := newRouterFakeAgent(t)

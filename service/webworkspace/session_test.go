@@ -29,6 +29,8 @@ type fakeAgentServer struct {
 	createCalls  int
 	stopCalls    int
 	restartModes []string
+	createdSizes [][2]int
+	restartSizes [][2]int
 	failCreate   bool
 }
 
@@ -52,6 +54,7 @@ func newFakeAgentServer(t *testing.T) *fakeAgentServer {
 			}
 			agent.mutex.Lock()
 			agent.createCalls++
+			agent.createdSizes = append(agent.createdSizes, [2]int{request.Width, request.Height})
 			failCreate := agent.failCreate
 			runtime, ok := agent.runtimes[request.WorkspaceId]
 			if !ok && !failCreate {
@@ -103,6 +106,7 @@ func newFakeAgentServer(t *testing.T) *fakeAgentServer {
 					}
 				}
 				agent.restartModes = append(agent.restartModes, restartRequest.Mode)
+				agent.restartSizes = append(agent.restartSizes, [2]int{restartRequest.Width, restartRequest.Height})
 				if ok {
 					runtime.State = AgentStateRunning
 					if restartRequest.Mode != "" {
@@ -213,7 +217,7 @@ func TestWebWorkspaceSessionLifecycle(t *testing.T) {
 	user := firstSessionUser(t, db)
 
 	ctx := context.Background()
-	session, err := StartSession(ctx, user.Id)
+	session, err := StartSession(ctx, user.Id, 0, 0)
 	require.NoError(t, err)
 	require.NotEmpty(t, session.Id)
 	assert.Equal(t, AgentStateRunning, session.State)
@@ -223,13 +227,13 @@ func TestWebWorkspaceSessionLifecycle(t *testing.T) {
 	require.NoError(t, db.Where("user_id = ?", user.Id).First(&workspace).Error)
 	assert.Equal(t, session.WorkspaceId, workspace.Id)
 
-	again, err := StartSession(ctx, user.Id)
+	again, err := StartSession(ctx, user.Id, 0, 0)
 	require.NoError(t, err)
 	assert.Equal(t, session.Id, again.Id)
 	createCalls, _ := agent.counts()
 	assert.Equal(t, 1, createCalls)
 
-	restarted, err := RestartSession(ctx, user.Id, session.Id, "LOCKED")
+	restarted, err := RestartSession(ctx, user.Id, session.Id, "LOCKED", 0, 0)
 	require.NoError(t, err)
 	assert.Equal(t, AgentStateRunning, restarted.State)
 	assert.Equal(t, "LOCKED", restarted.Mode)
@@ -254,6 +258,29 @@ func TestWebWorkspaceSessionLifecycle(t *testing.T) {
 	assert.Equal(t, 1, stopCalls)
 }
 
+func TestWebWorkspaceSessionProposesRemoteScreenSize(t *testing.T) {
+	db := setupWebWorkspaceSessionTest(t)
+	agent := newFakeAgentServer(t)
+	system_setting.GetWebWorkspaceSettings().AgentBaseURL = agent.url()
+	user := firstSessionUser(t, db)
+
+	ctx := context.Background()
+	session, err := StartSession(ctx, user.Id, 1540, 720)
+	require.NoError(t, err)
+
+	agent.mutex.Lock()
+	created := append([][2]int{}, agent.createdSizes...)
+	agent.mutex.Unlock()
+	assert.Equal(t, [][2]int{{1540, 720}}, created, "the start must forward the proposed size")
+
+	_, err = RestartSession(ctx, user.Id, session.Id, "", 2180, 900)
+	require.NoError(t, err)
+
+	agent.mutex.Lock()
+	restarted := append([][2]int{}, agent.restartSizes...)
+	agent.mutex.Unlock()
+	assert.Equal(t, [][2]int{{2180, 900}}, restarted, "the restart must forward the proposed size")
+}
 func TestWebWorkspaceSessionReplacesStaleRuntime(t *testing.T) {
 	db := setupWebWorkspaceSessionTest(t)
 	agent := newFakeAgentServer(t)
@@ -261,11 +288,11 @@ func TestWebWorkspaceSessionReplacesStaleRuntime(t *testing.T) {
 	user := firstSessionUser(t, db)
 
 	ctx := context.Background()
-	session, err := StartSession(ctx, user.Id)
+	session, err := StartSession(ctx, user.Id, 0, 0)
 	require.NoError(t, err)
 
 	agent.removeRuntime(session.WorkspaceId)
-	replacement, err := StartSession(ctx, user.Id)
+	replacement, err := StartSession(ctx, user.Id, 0, 0)
 	require.NoError(t, err)
 	assert.NotEqual(t, session.Id, replacement.Id)
 	createCalls, _ := agent.counts()
@@ -278,19 +305,19 @@ func TestWebWorkspaceSessionFailsClosed(t *testing.T) {
 	ctx := context.Background()
 
 	// No agent base url configured.
-	_, err := StartSession(ctx, user.Id)
+	_, err := StartSession(ctx, user.Id, 0, 0)
 	assert.ErrorIs(t, err, ErrAgentUnavailable)
 
 	agent := newFakeAgentServer(t)
 	system_setting.GetWebWorkspaceSettings().AgentBaseURL = agent.url()
 	t.Setenv("WEB_WORKSPACE_AGENT_TOKEN", "")
-	_, err = StartSession(ctx, user.Id)
+	_, err = StartSession(ctx, user.Id, 0, 0)
 	assert.ErrorIs(t, err, ErrAgentUnavailable)
 
 	// Agent rejects the create request.
 	t.Setenv("WEB_WORKSPACE_AGENT_TOKEN", testAgentToken)
 	agent.setFailCreate(true)
-	_, err = StartSession(ctx, user.Id)
+	_, err = StartSession(ctx, user.Id, 0, 0)
 	assert.ErrorIs(t, err, ErrAgentRejected)
 
 	// Unreachable agent.
@@ -299,6 +326,6 @@ func TestWebWorkspaceSessionFailsClosed(t *testing.T) {
 	url := stopped.url()
 	stopped.server.Close()
 	system_setting.GetWebWorkspaceSettings().AgentBaseURL = url
-	_, err = StartSession(ctx, user.Id)
+	_, err = StartSession(ctx, user.Id, 0, 0)
 	assert.ErrorIs(t, err, ErrAgentUnavailable)
 }
