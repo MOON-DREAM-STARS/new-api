@@ -103,6 +103,7 @@ type Snapshot struct {
 	StreamBytesOut int64             `json:"stream_bytes_out"`
 	StreamBytesIn  int64             `json:"stream_bytes_in"`
 	Navigation     *NavigationStatus `json:"navigation"`
+	Page           *PageStatus       `json:"page"`
 }
 
 // StartOptions carries the request parameters of a runtime start.
@@ -173,6 +174,7 @@ type runtimeState struct {
 	idleDeadline   time.Time
 	navCommandID   int64
 	navigation     *NavigationStatus
+	page           *PageStatus
 	streamBytesOut int64
 	streamBytesIn  int64
 }
@@ -194,6 +196,10 @@ func (rt *runtimeState) snapshot(workspaceID int64) Snapshot {
 	if rt.navigation != nil {
 		navigation := *rt.navigation
 		snapshot.Navigation = &navigation
+	}
+	if rt.page != nil {
+		page := *rt.page
+		snapshot.Page = &page
 	}
 	return snapshot
 }

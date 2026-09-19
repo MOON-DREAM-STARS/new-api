@@ -685,5 +685,13 @@ func toWebWorkspaceSessionDto(session *webworkspace.Session) dto.WebWorkspaceSes
 			UpdatedAt:    session.Navigation.UpdatedAt,
 		}
 	}
+	if session.Page != nil {
+		result.Page = &dto.WebWorkspacePageDto{
+			State:     session.Page.State,
+			Error:     session.Page.Error,
+			Attempts:  session.Page.Attempts,
+			UpdatedAt: session.Page.UpdatedAt,
+		}
+	}
 	return result
 }

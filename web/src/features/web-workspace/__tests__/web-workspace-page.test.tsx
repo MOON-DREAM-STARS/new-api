@@ -274,6 +274,109 @@ describe('WebWorkspace page', () => {
     expect(screen.queryByText('Browser session')).toBeNull()
   })
 
+  test('shows remote page retry health with the real attempts and error code', async () => {
+    mockWorkspaceGets({
+      ...runningSession,
+      page: {
+        state: 'RETRYING',
+        error: 'ERR_TUNNEL_CONNECTION_FAILED',
+        attempts: 2,
+        updated_at: 2,
+      },
+    })
+
+    renderPage(<WebWorkspace />)
+
+    expect(
+      await screen.findByText('The remote page failed to load. Retrying...')
+    ).toBeTruthy()
+    expect(
+      screen.getByText('Retried 2 times · ERR_TUNNEL_CONNECTION_FAILED')
+    ).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Reload' })).toBeNull()
+  })
+
+  test('reloads a failed remote page through the navigation API', async () => {
+    const failedSession = {
+      ...runningSession,
+      page: {
+        state: 'FAILED',
+        error: 'ERR_TUNNEL_CONNECTION_FAILED',
+        attempts: 3,
+        updated_at: 3,
+      },
+    }
+    mockWorkspaceGets(failedSession)
+
+    const posts: Array<{ url: string; data: unknown }> = []
+    let resolvePost: ((value: { data: unknown }) => void) | undefined
+    apiClient.post = async (url, data) => {
+      posts.push({ url, data })
+      return new Promise<{ data: unknown }>((resolve) => {
+        resolvePost = resolve
+      })
+    }
+
+    renderPage(<WebWorkspace />)
+
+    const reloadButton = await screen.findByRole('button', { name: 'Reload' })
+    reloadButton.click()
+
+    await waitFor(() => {
+      expect(posts).toEqual([
+        {
+          url: `${SESSION_PATH}/${runningSession.session_id}/navigation`,
+          data: { action: 'reload' },
+        },
+      ])
+      expect((reloadButton as HTMLButtonElement).disabled).toBe(true)
+    })
+
+    resolvePost?.(
+      ok({
+        ...failedSession,
+        page: {
+          state: 'READY',
+          error: '',
+          attempts: 0,
+          updated_at: 4,
+        },
+      })
+    )
+  })
+
+  test('does not render page health when the remote page is READY', async () => {
+    mockWorkspaceGets({
+      ...runningSession,
+      page: {
+        state: 'READY',
+        error: '',
+        attempts: 0,
+        updated_at: 4,
+      },
+    })
+
+    renderPage(<WebWorkspace />)
+
+    await screen.findByRole('button', { name: 'Browser back' })
+    expect(
+      screen.queryByText('The remote page failed to load. Retrying...')
+    ).toBeNull()
+    expect(screen.queryByText('The remote page failed to load')).toBeNull()
+  })
+
+  test('does not render page health when page is null', async () => {
+    mockWorkspaceGets({ ...runningSession, page: null })
+
+    renderPage(<WebWorkspace />)
+
+    await screen.findByRole('button', { name: 'Browser back' })
+    expect(
+      screen.queryByText('The remote page failed to load. Retrying...')
+    ).toBeNull()
+    expect(screen.queryByText('The remote page failed to load')).toBeNull()
+  })
+
   test('never invents a project when the account has none', async () => {
     apiClient.get = async (url) => {
       if (url === CONFIG_PATH) return ok({ enabled: true, entitled: true })

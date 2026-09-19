@@ -38,6 +38,7 @@ type Session struct {
 	StreamBytesOut int64
 	StreamBytesIn  int64
 	Navigation     *AgentNavigation
+	Page           *AgentPageStatus
 }
 
 type sessionStore struct {
@@ -134,6 +135,7 @@ func (s *sessionStore) applyRuntime(sessionId string, runtime *AgentRuntime) (Se
 	session.StreamBytesOut = runtime.StreamBytesOut
 	session.StreamBytesIn = runtime.StreamBytesIn
 	session.Navigation = runtime.Navigation
+	session.Page = runtime.Page.normalized()
 	if runtime.LastActivityAt > session.LastSeenAt {
 		session.LastSeenAt = runtime.LastActivityAt
 	}
@@ -228,6 +230,7 @@ func StartSession(ctx context.Context, userId int, screenWidth int, screenHeight
 		StreamBytesOut: runtime.StreamBytesOut,
 		StreamBytesIn:  runtime.StreamBytesIn,
 		Navigation:     runtime.Navigation,
+		Page:           runtime.Page.normalized(),
 	}
 	sessions.put(session)
 	// The guard denies every unregistered provider resource, so the session is

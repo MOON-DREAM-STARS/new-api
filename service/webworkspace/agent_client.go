@@ -51,6 +51,56 @@ type AgentNavigation struct {
 	UpdatedAt    int64 `json:"updated_at"`
 }
 
+// AgentPageStatus is the URL-free health state of the remote page.
+type AgentPageStatus struct {
+	State     string `json:"state"`
+	Error     string `json:"error"`
+	Attempts  int    `json:"attempts"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
+func (page *AgentPageStatus) normalized() *AgentPageStatus {
+	if page == nil {
+		return nil
+	}
+	if !validAgentPageState(page.State) || page.Attempts < 0 || !validAgentPageError(page.Error) {
+		return nil
+	}
+	if page.State == "READY" && (page.Attempts != 0 || page.Error != "") {
+		return nil
+	}
+	return &AgentPageStatus{
+		State:     page.State,
+		Error:     page.Error,
+		Attempts:  page.Attempts,
+		UpdatedAt: page.UpdatedAt,
+	}
+}
+
+func validAgentPageState(state string) bool {
+	switch state {
+	case "READY", "RETRYING", "FAILED":
+		return true
+	default:
+		return false
+	}
+}
+
+func validAgentPageError(value string) bool {
+	if value == "" {
+		return true
+	}
+	if !strings.HasPrefix(value, "ERR_") {
+		return false
+	}
+	for _, char := range value {
+		if (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '_' {
+			return false
+		}
+	}
+	return true
+}
+
 // AgentRuntime is the metadata the agent exposes about one workspace runtime.
 // It never contains container addresses, ports or file system paths.
 type AgentRuntime struct {
@@ -64,6 +114,7 @@ type AgentRuntime struct {
 	StreamBytesOut int64            `json:"stream_bytes_out"`
 	StreamBytesIn  int64            `json:"stream_bytes_in"`
 	Navigation     *AgentNavigation `json:"navigation"`
+	Page           *AgentPageStatus `json:"page"`
 }
 
 type agentRestartRuntimeRequest struct {

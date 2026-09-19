@@ -29,17 +29,23 @@ type navigationCommand struct {
 }
 
 type navigationStatus struct {
-	ID           int64 `json:"id"`
-	CanGoBack    bool  `json:"can_go_back"`
-	CanGoForward bool  `json:"can_go_forward"`
-	UpdatedAt    int64 `json:"updated_at"`
+	ID           int64  `json:"id"`
+	CanGoBack    bool   `json:"can_go_back"`
+	CanGoForward bool   `json:"can_go_forward"`
+	UpdatedAt    int64  `json:"updated_at"`
+	PageState    string `json:"page_state"`
+	PageError    string `json:"page_error"`
+	PageAttempts int    `json:"page_attempts"`
 }
 
 type navigationReceiptFile struct {
-	ID           *int64 `json:"id"`
-	CanGoBack    *bool  `json:"can_go_back"`
-	CanGoForward *bool  `json:"can_go_forward"`
-	UpdatedAt    *int64 `json:"updated_at"`
+	ID           *int64  `json:"id"`
+	CanGoBack    *bool   `json:"can_go_back"`
+	CanGoForward *bool   `json:"can_go_forward"`
+	UpdatedAt    *int64  `json:"updated_at"`
+	PageState    *string `json:"page_state"`
+	PageError    *string `json:"page_error"`
+	PageAttempts *int    `json:"page_attempts"`
 }
 
 func (file navigationReceiptFile) valid() bool {
@@ -69,8 +75,14 @@ type navigationController struct {
 	sessionMu  sync.Mutex
 	sessionIDs []string
 
-	writeMu     sync.Mutex
-	lastWritten int64
+	writeMu      sync.Mutex
+	lastWritten  int64
+	canGoBack    bool
+	canGoForward bool
+	pageState    string
+	pageError    string
+	pageAttempts int
+	onReload     func(context.Context, string) (bool, error)
 }
 
 func newNavigationController(dir string, client *cdpClient, logger *slog.Logger) *navigationController {
@@ -88,6 +100,14 @@ func newNavigationController(dir string, client *cdpClient, logger *slog.Logger)
 			controller.lastSeen = *file.ID
 			controller.lastApplied = *file.ID
 			controller.lastWritten = *file.ID
+			controller.canGoBack = *file.CanGoBack
+			controller.canGoForward = *file.CanGoForward
+			if file.PageState != nil && file.PageError != nil && file.PageAttempts != nil &&
+				validPageState(*file.PageState) && *file.PageAttempts >= 0 {
+				controller.pageState = *file.PageState
+				controller.pageError = normalizePageError(*file.PageError)
+				controller.pageAttempts = *file.PageAttempts
+			}
 		}
 	}
 	return controller
@@ -264,6 +284,16 @@ func (n *navigationController) applyCommand(ctx context.Context, command navigat
 			}
 		}
 	case "reload":
+		if n.onReload != nil {
+			handled, err := n.onReload(ctx, sessionID)
+			if err != nil {
+				return err
+			}
+			if handled {
+				n.markApplied(command.ID)
+				return n.refresh(ctx, sessionID, command.ID)
+			}
+		}
 		if err := n.client.call(ctx, sessionID, "Page.reload", nil); err != nil {
 			return err
 		}
@@ -316,20 +346,30 @@ func (n *navigationController) refresh(ctx context.Context, sessionID string, id
 	if err != nil {
 		return err
 	}
-	status := navigationStatus{
-		ID:           id,
-		CanGoBack:    history.CurrentIndex > 0 && history.CurrentIndex < len(history.Entries),
-		CanGoForward: history.CurrentIndex >= 0 && history.CurrentIndex < len(history.Entries)-1,
-		UpdatedAt:    time.Now().Unix(),
-	}
-	return n.writeStatus(status)
+	return n.writeNavigation(
+		id,
+		history.CurrentIndex > 0 && history.CurrentIndex < len(history.Entries),
+		history.CurrentIndex >= 0 && history.CurrentIndex < len(history.Entries)-1,
+		time.Now().Unix(),
+	)
 }
 
-func (n *navigationController) writeStatus(status navigationStatus) error {
+func (n *navigationController) writeNavigation(id int64, canGoBack, canGoForward bool, updatedAt int64) error {
 	n.writeMu.Lock()
 	defer n.writeMu.Unlock()
-	if status.ID < n.lastWritten {
+	if id < n.lastWritten {
 		return nil
+	}
+	n.canGoBack = canGoBack
+	n.canGoForward = canGoForward
+	status := navigationStatus{
+		ID:           id,
+		CanGoBack:    n.canGoBack,
+		CanGoForward: n.canGoForward,
+		UpdatedAt:    updatedAt,
+		PageState:    n.pageState,
+		PageError:    n.pageError,
+		PageAttempts: n.pageAttempts,
 	}
 	payload, err := json.Marshal(status)
 	if err != nil {
@@ -338,7 +378,40 @@ func (n *navigationController) writeStatus(status navigationStatus) error {
 	if err := writeNavigationStatusAtomic(n.filePath(navigationStatusFileName), payload); err != nil {
 		return err
 	}
-	n.lastWritten = status.ID
+	n.lastWritten = id
+	return nil
+}
+
+func (n *navigationController) setPageStatus(state, pageError string, attempts int, updatedAt int64) error {
+	if n == nil {
+		return nil
+	}
+	id := n.appliedID()
+	n.writeMu.Lock()
+	defer n.writeMu.Unlock()
+	if id < n.lastWritten {
+		id = n.lastWritten
+	}
+	n.pageState = state
+	n.pageError = pageError
+	n.pageAttempts = attempts
+	status := navigationStatus{
+		ID:           id,
+		CanGoBack:    n.canGoBack,
+		CanGoForward: n.canGoForward,
+		UpdatedAt:    updatedAt,
+		PageState:    n.pageState,
+		PageError:    n.pageError,
+		PageAttempts: n.pageAttempts,
+	}
+	payload, err := json.Marshal(status)
+	if err != nil {
+		return err
+	}
+	if err := writeNavigationStatusAtomic(n.filePath(navigationStatusFileName), payload); err != nil {
+		return err
+	}
+	n.lastWritten = id
 	return nil
 }
 

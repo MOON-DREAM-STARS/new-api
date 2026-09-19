@@ -23,6 +23,7 @@ if [ -z "$WW_START_URL" ]; then
     esac
 fi
 
+export WW_START_URL
 if [ -z "${WW_PROXY_SERVER:-}" ]; then
     log "WW_PROXY_SERVER is required and must be the egress proxy as http(s)://host[:port]"
     exit 1

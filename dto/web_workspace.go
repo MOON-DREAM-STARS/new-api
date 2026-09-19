@@ -91,6 +91,14 @@ type WebWorkspaceRestartRequest struct {
 	ScreenHeight int    `json:"screen_height"`
 }
 
+// WebWorkspacePageDto is the URL-free health state of the remote page.
+type WebWorkspacePageDto struct {
+	State     string `json:"state"`
+	Error     string `json:"error"`
+	Attempts  int    `json:"attempts"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
 // WebWorkspaceSessionDto is the control-plane view of one browser session.
 // Runtime ids, container addresses and ports never leave the control plane.
 type WebWorkspaceSessionDto struct {
@@ -103,6 +111,7 @@ type WebWorkspaceSessionDto struct {
 	StreamBytesOut int64                      `json:"stream_bytes_out"`
 	StreamBytesIn  int64                      `json:"stream_bytes_in"`
 	Navigation     *WebWorkspaceNavigationDto `json:"navigation"`
+	Page           *WebWorkspacePageDto       `json:"page"`
 }
 
 // WebWorkspaceStreamTicketDto carries the one-time ticket for a stream attach.

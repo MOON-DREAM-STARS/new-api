@@ -1821,3 +1821,27 @@ remote Chrome credential holder
 - 结论：`-deferupdate 30` 及其组合在可控同条件测量下**没有可复现的带宽收益**；此前记录的空闲下降约 95% 采用「容器 eth0 计数 + 真实 UI 客户端」口径，与本次客户端/页面状态不同，**未能复现**，因此不再作为保留该 flag 的依据。
 - 处置：回退 `browser-agent/runtime/entrypoint.sh` 的 x11vnc 参数（恢复 `-noxdamage`，移除 `-deferupdate 30`），同步 `browser-agent/runtime/README.md`；**保留**本阶段新增的字节计量（`stream_bytes_out/in`）与隐藏标签页暂停 / 保活（两者独立生效，已被真实流量验证）。
 - 提交（本地，未 push）：`revert(web-workspace): drop the unproven x11vnc update flag`。
+
+## 后续变更（2026-09-19）：远程页面健康态 + 有界自动重试 + 前端错误态
+
+- 状态：**PASS（本机真实运行验收）**；未闭合项见本节末尾 `NOT RUN`。
+- 背景：远程浏览器有时停在 Chrome 自身错误页（例如用户截图里的 `ERR_TUNNEL_CONNECTION_FAILED`）：工作区仍显示 "Connected"，用户既看不到真实原因，也没有重试入口，且不会自行恢复。
+- 契约（全程 URL-free）：
+  - Guard → Agent 文件桥 `navigation.json` 新增三个可选字段：`page_state`（`"" | READY | RETRYING | FAILED`）、`page_error`（`ERR_*` 或空）、`page_attempts`（整数，自上次成功加载以来已发出的自动重试次数）。
+  - Agent 快照与 New API session DTO 暴露 `page: {state, error, attempts, updated_at}`，未知时为 `null`；**不含 URL、端口、容器 id 或路径**。
+- 实现：
+  - **Guard**（新增 `internal/guard/page_health.go`，接线 `guard.go` / `navigation.go`）：仍只用既有单一 CDP consumer 观察主 frame 文档（`Page.frameNavigated` 到 `chrome-error://`、`Network.requestWillBeSent/loadingFailed/loadingFinished`），由单个后台 goroutine 按 **5s / 15s / 30s** 有界重试（`Page.navigate` 到 `WW_START_URL`）；3 次后进入 `FAILED` 并停止自动重试；成功加载 http(s) 文档 → `READY` 且 attempts 归零；错误页收到既有 `reload` 命令时改为导航到起始 URL 并重置预算；**页面失败绝不终止 guard**（只有 CDP / 策略失败才 fail closed）。状态与既有导航字段在同一次原子写中落盘。
+  - **入口脚本**：新增 `export WW_START_URL`；`cmd/workspace-guard` 读取并传入 `guard.Config.StartURL`。
+  - **Agent**（`internal/manager/manager.go`、`navigation.go`）：解析可选字段并严格校验（缺失/非法 state、负 attempts、非 `ERR_*` 错误码 → `page:null`），快照输出 `page`。
+  - **New API**（`dto/web_workspace.go`、`service/webworkspace/agent_client.go`、`session.go`、`controller/web_workspace.go`）：新增 `WebWorkspacePageDto`、归一化与最小映射，随 `GET /api/web-workspace/session` 返回。
+  - **前端**（`web/src/features/web-workspace/**`）：`RETRYING` → 左下轻量状态条「远程页面加载失败，正在重试…」+「已重试 N 次 · ERR_*」；`FAILED` → 「远程页面加载失败」+ 错误码 + 「重新加载」按钮（复用既有 `POST /session/:id/navigation {"action":"reload"}`，命令进行中禁用）；`READY` / `null` 不渲染任何 overlay。zh/en i18n 同步补齐。
+- 实测（2026-09-19，Asia/Singapore；本机 acceptance：`newapi-acceptance` / `ws-agent` / runtime 1、2 均已重建为新候选二进制与镜像）：
+  - **正常路径**：runtime 2（workspace 2，LOCKED，1687×1015）重启后 `navigation.json` 为 `page_state:READY / page_error:"" / page_attempts:0`，agent 快照 `page` 同步；ChatGPT 仍为登录态（无 Log in / Sign up、存在 Chat history 导航与 profile 按钮、`ready=complete`）。
+  - **失败 → 自动恢复（真实网络故障）**：`docker pause ws-agent` 期间在 runtime 内触发 `location.reload()`，页面落到 Chrome 错误页；实测观测到 `RETRYING / ERR_ABORTED / attempts 1→2`；解除暂停后守卫的下一次自动重试成功，状态回到 `READY`，页面恢复为已登录 ChatGPT，**全程无需用户操作**。
+  - **UI 实测（host Chrome 打开的真实工作区）**：在 runtime 1 触发被策略拒绝的导航（`location.href=https://example.com/`）→ `GET /api/web-workspace/session` 返回 `page:{state:RETRYING,error:ERR_ACCESS_DENIED,attempts:0}`；同一时刻工作区左下出现「远程页面加载失败，正在重试… 已重试 0 次 · ERR_ACCESS_DENIED」，工具栏为 `Reconnecting`；约 6s 后守卫自动重试到起始 URL 成功，`page.state=READY`，overlay 自动消失。截图：`C:\Users\admin\.codex\visualizations\2026\09\19\web-workspace-page-health\2026-09-19-web-workspace-page-retrying.png`。
+  - **命令与结果**：browser-agent `gofmt -l .`（空）、`go vet ./...`（无输出）、`go test ./... -count=1`（全绿，guard 21.9s）；New API `gofmt -l dto service/webworkspace controller`（改动文件空）、`go vet`（无输出）、`go test ./service/webworkspace/... ./controller/... -count=1`（绿）；前端 `npm run typecheck`（0 error）、`npx vitest run src/features/web-workspace`（12 files / 79 tests 全绿）、`npx oxlint`（0 error）、`npm run build`（OK）。
+- 提交（本地，未 push）：`feat(web-workspace): surface the remote page health and retry a failed load`。
+- NOT RUN / 未闭合（如实记录）：
+  - **自动重试预算耗尽的 `FAILED` 终态与「重新加载」按钮 live 未跑满**：live 只观测到 `RETRYING`（attempts 1→2），3 次耗尽路径由 Guard 单测覆盖；错误码在两次 live 注入中分别为 `ERR_ABORTED`（reload 中断）与 `ERR_ACCESS_DENIED`（策略拒绝），**未**在 live 复现 `ERR_TUNNEL_CONNECTION_FAILED` 本身。
+  - **一次未复现的 runtime 自退**：2026-09-19 16:59 前后 workspace 1 的 runtime 在连续 3 次被拒导航之后被 agent 记为 `runtime container is exited`（FAILED）；随后 9 分钟 soak 与同类注入未再复现，未定位根因，列为开放风险。
+  - 云端部署与云端验收、隐藏标签页 >10 分钟稳定性、跨用户真实攻击复测、>3840 宽画幅、KasmVNC / H.264 备用显示后端、全量 CI。

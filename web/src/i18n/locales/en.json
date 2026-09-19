@@ -5715,6 +5715,11 @@
     "Refresh page": "Refresh page",
     "Login mode": "Login mode",
     "Finish sign-in and lock": "Finish sign-in and lock",
-    "Session {{state}} · stream {{stream}} · sent {{bytes}}": "Session {{state}} · stream {{stream}} · sent {{bytes}}"
+    "Session {{state}} · stream {{stream}} · sent {{bytes}}": "Session {{state}} · stream {{stream}} · sent {{bytes}}",
+    "The remote page failed to load. Retrying...": "The remote page failed to load. Retrying...",
+    "Retried {{attempts}} times · {{error}}": "Retried {{attempts}} times · {{error}}",
+    "The remote page failed to load": "The remote page failed to load",
+    "Error code: {{error}}": "Error code: {{error}}",
+    "Reload": "Reload"
   }
 }

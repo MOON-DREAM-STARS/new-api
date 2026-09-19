@@ -151,6 +151,17 @@ func (a *fakeAgentServer) setState(workspaceId int, state string) {
 	a.runtimes[workspaceId] = runtime
 }
 
+func (a *fakeAgentServer) setPage(workspaceId int, page *AgentPageStatus) {
+	a.mutex.Lock()
+	defer a.mutex.Unlock()
+	runtime, ok := a.runtimes[workspaceId]
+	if !ok {
+		return
+	}
+	runtime.Page = page
+	a.runtimes[workspaceId] = runtime
+}
+
 func (a *fakeAgentServer) removeRuntime(workspaceId int) {
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
@@ -256,6 +267,69 @@ func TestWebWorkspaceSessionLifecycle(t *testing.T) {
 	assert.ErrorIs(t, err, ErrSessionNotFound)
 	_, stopCalls := agent.counts()
 	assert.Equal(t, 1, stopCalls)
+}
+
+func TestWebWorkspaceSessionNormalizesPageHealth(t *testing.T) {
+	db := setupWebWorkspaceSessionTest(t)
+	agent := newFakeAgentServer(t)
+	system_setting.GetWebWorkspaceSettings().AgentBaseURL = agent.url()
+	user := firstSessionUser(t, db)
+
+	ctx := context.Background()
+	session, err := StartSession(ctx, user.Id, 0, 0)
+	require.NoError(t, err)
+	assert.Nil(t, session.Page)
+
+	cases := []struct {
+		name string
+		page *AgentPageStatus
+		want *AgentPageStatus
+	}{
+		{
+			name: "valid retrying state",
+			page: &AgentPageStatus{
+				State:     "RETRYING",
+				Error:     "ERR_TUNNEL_CONNECTION_FAILED",
+				Attempts:  2,
+				UpdatedAt: 1789800000,
+			},
+			want: &AgentPageStatus{
+				State:     "RETRYING",
+				Error:     "ERR_TUNNEL_CONNECTION_FAILED",
+				Attempts:  2,
+				UpdatedAt: 1789800000,
+			},
+		},
+		{
+			name: "missing page",
+			page: nil,
+			want: nil,
+		},
+		{
+			name: "invalid state",
+			page: &AgentPageStatus{State: "BUSY", Attempts: 1, UpdatedAt: 1789800000},
+			want: nil,
+		},
+		{
+			name: "negative attempts",
+			page: &AgentPageStatus{State: "RETRYING", Error: "ERR_FAILED", Attempts: -1, UpdatedAt: 1789800000},
+			want: nil,
+		},
+		{
+			name: "URL-like error",
+			page: &AgentPageStatus{State: "FAILED", Error: "https://provider.example/private", Attempts: 1, UpdatedAt: 1789800000},
+			want: nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			agent.setPage(session.WorkspaceId, tc.page)
+			refreshed, err := RefreshSession(ctx, user.Id, session.Id)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, refreshed.Page)
+		})
+	}
 }
 
 func TestWebWorkspaceSessionProposesRemoteScreenSize(t *testing.T) {

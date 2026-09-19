@@ -27,6 +27,7 @@ import { cn } from '@/lib/utils'
 import type { RemoteSurfaceController } from '../hooks/use-remote-surface'
 import { computePresentation } from '../lib/presentation'
 import { isLiveSessionState } from '../lib/session'
+import type { WebWorkspacePage } from '../types'
 
 type RemoteBrowserViewportProps = {
   provider: string | null
@@ -40,7 +41,10 @@ type RemoteBrowserViewportProps = {
   /** True when the account really has no project: no placeholder is invented. */
   projectsEmpty: boolean
   surface: RemoteSurfaceController
+  page: WebWorkspacePage | null
+  isReloadPending: boolean
   onStart: () => void
+  onReload: () => void
   onExitImmersive: () => void
 }
 
@@ -236,6 +240,52 @@ export function RemoteBrowserViewport(props: RemoteBrowserViewportProps) {
               <RefreshCw aria-hidden='true' />
               {t('Reconnect now')}
             </Button>
+          </div>
+        ) : null}
+
+        {props.page && props.page.state !== 'READY' ? (
+          <div
+            role={props.page.state === 'FAILED' ? 'alert' : 'status'}
+            aria-live='polite'
+            className='bg-background/90 absolute bottom-3 left-3 z-20 flex max-w-[calc(100%-6rem)] items-center gap-3 rounded-lg border px-3 py-2 text-left shadow-sm backdrop-blur-sm'
+          >
+            <span
+              aria-hidden='true'
+              className='text-muted-foreground flex size-8 shrink-0 items-center justify-center'
+            >
+              {props.page.state === 'RETRYING' ? (
+                <Spinner className='size-4 motion-reduce:animate-none' />
+              ) : (
+                <AlertCircle className='size-4' />
+              )}
+            </span>
+            <div className='min-w-0 flex-1'>
+              <p className='text-sm font-medium'>
+                {props.page.state === 'RETRYING'
+                  ? t('The remote page failed to load. Retrying...')
+                  : t('The remote page failed to load')}
+              </p>
+              <p className='text-muted-foreground truncate font-mono text-[11px]'>
+                {props.page.state === 'RETRYING'
+                  ? t('Retried {{attempts}} times · {{error}}', {
+                      attempts: props.page.attempts,
+                      error: props.page.error,
+                    })
+                  : t('Error code: {{error}}', { error: props.page.error })}
+              </p>
+            </div>
+            {props.page.state === 'FAILED' ? (
+              <Button
+                type='button'
+                size='sm'
+                variant='outline'
+                disabled={props.isReloadPending}
+                onClick={props.onReload}
+              >
+                <RefreshCw aria-hidden='true' />
+                {t('Reload')}
+              </Button>
+            ) : null}
           </div>
         ) : null}
 

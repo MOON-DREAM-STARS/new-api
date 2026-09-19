@@ -310,9 +310,12 @@ export function WebWorkspace() {
             }
             immersive={immersive.immersive}
             surface={surface}
+            page={session?.page ?? null}
+            isReloadPending={navigationMutation.isPending}
             frameRef={frameRef}
             frameSize={frameSize}
             onStart={startSession}
+            onReload={() => navigate('reload')}
             onExitImmersive={immersive.exit}
           />
 
