@@ -68,7 +68,7 @@ guard 与 CDP 断连、命令通道出错、启动 15s 预算内无法连接、�
 
 1. 校验 `WW_PROXY_SERVER` 与 `WW_GUARD_MODE`，非法即退出 1；
 2. 启动 Xvfb，并等待对应 X11 socket 就绪；
-3. 启动 `x11vnc`（`-rfbport "$WW_VNC_PORT" -forever -shared -nopw -nolookup -noxdamage -quiet -bg`，不带 `-clip`，VNC 剪贴板保持关闭），并等待该端口就绪；
+3. 启动 `x11vnc`（`-rfbport "$WW_VNC_PORT" -forever -shared -nopw -nolookup -deferupdate 30 -quiet -bg`，不带 `-clip`，VNC 剪贴板保持关闭；使用 X DAMAGE 而非轮询，并把合并窗口放宽到 30ms 以降低空闲重绘带宽），并等待该端口就绪；
 4. 启动 Chromium 应用窗口（后台，`--user-data-dir=$WW_WORKSPACE_DIR/profile`，起始 URL 为 `$WW_START_URL`）；
 5. 启动 `workspace-guard`（后台），随后 watchdog 同时监视两者：guard 退出 → 清理并以 1 退出；Chromium 退出 → 按 Chromium 的退出码清理并退出。
 

@@ -33,6 +33,9 @@ type Connector interface {
 	AttachStream(workspaceID int64, conn io.Closer) (<-chan struct{}, func())
 	// Touch records stream activity for the workspace runtime.
 	Touch(workspaceID int64)
+	// CountStream adds the transferred framebuffer and input bytes of a
+	// display stream to the runtime counters.
+	CountStream(workspaceID int64, outBytes int64, inBytes int64)
 }
 
 type contextKey struct{}
@@ -115,6 +118,7 @@ func (h *Handler) proxy(workspaceID int64, conn *websocket.Conn, display io.Read
 	}()
 
 	activity := newActivityTracker(h.connector, workspaceID, h.touchEvery, h.now)
+	defer activity.flush()
 
 	var upstream sync.WaitGroup
 	upstream.Add(1)
@@ -129,7 +133,7 @@ func (h *Handler) proxy(workspaceID int64, conn *websocket.Conn, display io.Read
 				if writeErr := conn.WriteMessage(websocket.BinaryMessage, buffer[:read]); writeErr != nil {
 					return
 				}
-				activity.note()
+				activity.note(read, 0)
 			}
 			if err != nil {
 				return
@@ -158,7 +162,7 @@ func (h *Handler) proxy(workspaceID int64, conn *websocket.Conn, display io.Read
 			if _, err := display.Write(payload); err != nil {
 				break
 			}
-			activity.note()
+			activity.note(0, len(payload))
 		}
 	}
 
@@ -177,8 +181,10 @@ type activityTracker struct {
 	interval    time.Duration
 	now         func() time.Time
 
-	mu   sync.Mutex
-	last time.Time
+	mu         sync.Mutex
+	last       time.Time
+	pendingOut int64
+	pendingIn  int64
 }
 
 func newActivityTracker(connector Connector, workspaceID int64, interval time.Duration, now func() time.Time) *activityTracker {
@@ -190,18 +196,41 @@ func newActivityTracker(connector Connector, workspaceID int64, interval time.Du
 	}
 }
 
-// note records activity at most once per interval so that byte flow does not
-// take the manager lock for every packet.
-func (t *activityTracker) note() {
+// note records activity and transferred bytes at most once per interval so that
+// byte flow does not take the manager lock for every packet.
+func (t *activityTracker) note(outBytes int, inBytes int) {
 	t.mu.Lock()
+	t.pendingOut += int64(outBytes)
+	t.pendingIn += int64(inBytes)
 	now := t.now()
 	if now.Sub(t.last) < t.interval {
 		t.mu.Unlock()
 		return
 	}
-	t.last = now
+	out, in := t.takeLocked(now)
 	t.mu.Unlock()
 	t.connector.Touch(t.workspaceID)
+	t.connector.CountStream(t.workspaceID, out, in)
+}
+
+// flush records the bytes of a stream that ended inside the throttle window, so a
+// short session is still accounted for.
+func (t *activityTracker) flush() {
+	t.mu.Lock()
+	out, in := t.takeLocked(t.now())
+	t.mu.Unlock()
+	if out == 0 && in == 0 {
+		return
+	}
+	t.connector.CountStream(t.workspaceID, out, in)
+}
+
+// takeLocked returns the pending counters and starts a new interval.
+func (t *activityTracker) takeLocked(now time.Time) (int64, int64) {
+	out, in := t.pendingOut, t.pendingIn
+	t.pendingOut, t.pendingIn = 0, 0
+	t.last = now
+	return out, in
 }
 
 type errorEnvelope struct {

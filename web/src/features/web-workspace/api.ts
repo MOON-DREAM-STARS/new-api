@@ -107,6 +107,18 @@ export async function restartWebWorkspaceSession(
   return res.data.data
 }
 
+/**
+ * Keeps the caller's live session alive without attaching a display stream. A
+ * hidden tab calls this instead of holding the framebuffer stream open.
+ */
+export async function touchWebWorkspaceSession(
+  sessionId: string
+): Promise<WebWorkspaceSession> {
+  const res = await api.post<ApiEnvelope<WebWorkspaceSession>>(
+    `${BASE_PATH}/session/${encodeURIComponent(sessionId)}/activity`
+  )
+  return res.data.data
+}
 export async function navigateWebWorkspaceSession(
   sessionId: string,
   action: WebWorkspaceNavigationAction

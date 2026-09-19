@@ -7359,6 +7359,7 @@
     "Browser forward": "Browser forward",
     "Browser back": "Browser back",
     "Finish sign-in and lock": "Finish sign-in and lock",
-    "Login mode": "Login mode"
+    "Login mode": "Login mode",
+    "Session {{state}} · stream {{stream}} · sent {{bytes}}": "Session {{state}} · stream {{stream}} · sent {{bytes}}"
   }
 }

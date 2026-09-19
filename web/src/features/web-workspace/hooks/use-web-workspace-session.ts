@@ -24,6 +24,7 @@ import {
   restartWebWorkspaceSession,
   startWebWorkspaceSession,
   stopWebWorkspaceSession,
+  touchWebWorkspaceSession,
   type WebWorkspaceScreenSize,
 } from '../api'
 import {
@@ -100,6 +101,17 @@ export function useRestartWebWorkspaceSession() {
         screenSize: input.screenSize,
       }),
     onSuccess: syncSessionCache,
+  })
+}
+
+/** Keeps a hidden tab's session alive without a display stream. */
+export function useWebWorkspaceActivity() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: touchWebWorkspaceSession,
+    onSuccess: (session) => {
+      queryClient.setQueryData(WEB_WORKSPACE_SESSION_QUERY_KEY, session)
+    },
   })
 }
 

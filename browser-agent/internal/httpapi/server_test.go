@@ -326,7 +326,8 @@ func TestRuntimeResponsesDoNotLeakInternals(t *testing.T) {
 	var raw map[string]any
 	require.NoError(t, json.Unmarshal(body, &raw))
 	assert.ElementsMatch(t, []string{
-		"runtime_id", "workspace_id", "state", "mode", "created_at", "last_activity_at", "idle_deadline_at", "navigation",
+		"runtime_id", "workspace_id", "state", "mode", "created_at", "last_activity_at", "idle_deadline_at",
+		"navigation", "stream_bytes_out", "stream_bytes_in",
 	}, mapKeys(raw))
 }
 

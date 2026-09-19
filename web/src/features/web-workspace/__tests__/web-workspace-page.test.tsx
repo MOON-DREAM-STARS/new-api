@@ -74,16 +74,25 @@ const remoteSurfaceState = vi.hoisted(() => ({
     | 'failed',
 }))
 
+const surfaceOptions = vi.hoisted(() => ({ enabled: true, sessionId: '' }))
+
 vi.mock('../hooks/use-remote-surface', () => ({
-  useRemoteSurface: (): RemoteSurfaceController => ({
-    containerRef: { current: null } as RefObject<HTMLDivElement | null>,
-    screen: { width: 1280, height: 720 },
-    status: remoteSurfaceState.status,
-    attempt: 0,
-    maxAttempts: 5,
-    errorMessageKey: null,
-    reconnect,
-  }),
+  useRemoteSurface: (options: {
+    sessionId: string
+    enabled: boolean
+  }): RemoteSurfaceController => {
+    surfaceOptions.enabled = options.enabled
+    surfaceOptions.sessionId = options.sessionId
+    return {
+      containerRef: { current: null } as RefObject<HTMLDivElement | null>,
+      screen: { width: 1280, height: 720 },
+      status: remoteSurfaceState.status,
+      attempt: 0,
+      maxAttempts: 5,
+      errorMessageKey: null,
+      reconnect,
+    }
+  },
 }))
 
 type ApiMethod = (url: string, data?: unknown) => Promise<{ data: unknown }>
@@ -122,6 +131,12 @@ afterEach(() => {
   apiClient.delete = originalDelete
   reconnect.mockReset()
   remoteSurfaceState.status = 'connected'
+  surfaceOptions.enabled = true
+  surfaceOptions.sessionId = ''
+  Object.defineProperty(Document.prototype, 'hidden', {
+    configurable: true,
+    get: () => false,
+  })
 })
 
 function renderPage(ui: ReactNode) {
@@ -158,6 +173,8 @@ const runningSession = {
   created_at: 1,
   last_seen_at: 1,
   idle_deadline_at: 600,
+  stream_bytes_out: 2020000,
+  stream_bytes_in: 1000000,
   navigation: {
     can_go_back: true,
     can_go_forward: true,
@@ -345,6 +362,59 @@ describe('WebWorkspace page', () => {
     })
   })
 
+  test('detaches the display stream while the tab is hidden', async () => {
+    mockWorkspaceGets(runningSession)
+
+    renderPage(<WebWorkspace />)
+
+    await waitFor(() => {
+      expect(surfaceOptions.sessionId).toBe(runningSession.session_id)
+      expect(surfaceOptions.enabled).toBe(true)
+    })
+
+    Object.defineProperty(Document.prototype, 'hidden', {
+      configurable: true,
+      get: () => true,
+    })
+    document.dispatchEvent(new Event('visibilitychange'))
+
+    await waitFor(() => {
+      expect(surfaceOptions.enabled).toBe(false)
+    })
+  })
+  test('opens the overflow menu and locks a signed-in runtime', async () => {
+    mockWorkspaceGets({ ...runningSession, mode: 'LOGIN' })
+    const restartPosts: Array<{ url: string; data: unknown }> = []
+    apiClient.post = async (url, data) => {
+      if (url === `${SESSION_PATH}/${runningSession.session_id}/restart`) {
+        restartPosts.push({ url, data })
+        return ok({ ...runningSession, mode: 'LOCKED' })
+      }
+      throw new Error(`unexpected post ${url}`)
+    }
+
+    renderPage(<WebWorkspace />)
+
+    const menuButton = await screen.findByRole('button', {
+      name: 'More workspace actions',
+    })
+    menuButton.click()
+
+    const lockItem = await screen.findByRole('menuitem', {
+      name: 'Finish sign-in and lock',
+    })
+    lockItem.click()
+
+    await waitFor(() => {
+      expect(restartPosts[0]?.url).toBe(
+        `${SESSION_PATH}/${runningSession.session_id}/restart`
+      )
+      const posted = restartPosts[0]
+      expect(posted).toBeDefined()
+      if (!posted) return
+      expect((posted.data as { mode?: string }).mode).toBe('LOCKED')
+    })
+  })
   test('proposes the measured remote screen size when starting', async () => {
     const posts: Array<{ url: string; data: unknown }> = []
     apiClient.get = async (url) => {

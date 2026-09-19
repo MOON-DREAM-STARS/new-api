@@ -31,6 +31,7 @@ import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -230,32 +231,36 @@ export function WorkspaceToolbar(props: WorkspaceToolbarProps) {
           <Ellipsis aria-hidden='true' />
         </DropdownMenuTrigger>
         <DropdownMenuContent align='end' className='w-56'>
-          <DropdownMenuLabel>{t('Browser session')}</DropdownMenuLabel>
-          <DropdownMenuItem
-            disabled={!props.isLive || props.isBusy}
-            onSelect={props.onRestart}
-          >
-            {t('Restart session')}
-          </DropdownMenuItem>
-          {props.sessionMode === 'LOGIN' ? (
+          <DropdownMenuGroup>
+            <DropdownMenuLabel>{t('Browser session')}</DropdownMenuLabel>
             <DropdownMenuItem
               disabled={!props.isLive || props.isBusy}
-              onSelect={props.onLockSession}
+              onSelect={props.onRestart}
             >
-              {t('Finish sign-in and lock')}
+              {t('Restart session')}
             </DropdownMenuItem>
-          ) : null}
-          <DropdownMenuItem
-            disabled={!props.isLive || props.isBusy}
-            onSelect={props.onStop}
-          >
-            {t('Stop session')}
-          </DropdownMenuItem>
+            {props.sessionMode === 'LOGIN' ? (
+              <DropdownMenuItem
+                disabled={!props.isLive || props.isBusy}
+                onSelect={props.onLockSession}
+              >
+                {t('Finish sign-in and lock')}
+              </DropdownMenuItem>
+            ) : null}
+            <DropdownMenuItem
+              disabled={!props.isLive || props.isBusy}
+              onSelect={props.onStop}
+            >
+              {t('Stop session')}
+            </DropdownMenuItem>
+          </DropdownMenuGroup>
           <DropdownMenuSeparator />
-          <DropdownMenuLabel>{t('Connection details')}</DropdownMenuLabel>
-          <p className='text-muted-foreground px-2 pb-1.5 text-xs'>
-            {props.connectionDetail}
-          </p>
+          <DropdownMenuGroup>
+            <DropdownMenuLabel>{t('Connection details')}</DropdownMenuLabel>
+            <p className='text-muted-foreground px-2 pb-1.5 text-xs'>
+              {props.connectionDetail}
+            </p>
+          </DropdownMenuGroup>
         </DropdownMenuContent>
       </DropdownMenu>
     </div>

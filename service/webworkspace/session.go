@@ -35,6 +35,8 @@ type Session struct {
 	CreatedAt      int64
 	LastSeenAt     int64
 	IdleDeadlineAt int64
+	StreamBytesOut int64
+	StreamBytesIn  int64
 	Navigation     *AgentNavigation
 }
 
@@ -129,6 +131,8 @@ func (s *sessionStore) applyRuntime(sessionId string, runtime *AgentRuntime) (Se
 	session.State = runtime.State
 	session.Mode = runtime.Mode
 	session.IdleDeadlineAt = runtime.IdleDeadlineAt
+	session.StreamBytesOut = runtime.StreamBytesOut
+	session.StreamBytesIn = runtime.StreamBytesIn
 	session.Navigation = runtime.Navigation
 	if runtime.LastActivityAt > session.LastSeenAt {
 		session.LastSeenAt = runtime.LastActivityAt
@@ -221,6 +225,8 @@ func StartSession(ctx context.Context, userId int, screenWidth int, screenHeight
 		CreatedAt:      now,
 		LastSeenAt:     now,
 		IdleDeadlineAt: runtime.IdleDeadlineAt,
+		StreamBytesOut: runtime.StreamBytesOut,
+		StreamBytesIn:  runtime.StreamBytesIn,
 		Navigation:     runtime.Navigation,
 	}
 	sessions.put(session)
@@ -315,6 +321,34 @@ func NavigateSession(ctx context.Context, userId int, sessionId string, action s
 		return nil, ErrSessionNotFound
 	}
 	return &updated, nil
+}
+
+// TouchRuntimeActivity keeps a live session alive without attaching a stream. A
+// hidden tab uses it instead of holding the display stream open.
+func TouchRuntimeActivity(ctx context.Context, userId int, sessionId string) (*Session, error) {
+	session, err := GetSession(userId, sessionId)
+	if err != nil {
+		return nil, err
+	}
+	client, err := newAgentClient()
+	if err != nil {
+		return nil, err
+	}
+	runtime, err := client.TouchRuntime(ctx, session.WorkspaceId)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := sessions.applyRuntime(sessionId, runtime); !ok {
+		return nil, ErrSessionNotFound
+	}
+	if _, touched := sessions.touch(sessionId, time.Now().Unix()); !touched {
+		return nil, ErrSessionNotFound
+	}
+	current, ok := sessions.get(sessionId)
+	if !ok {
+		return nil, ErrSessionNotFound
+	}
+	return &current, nil
 }
 
 // RefreshSession re-reads the runtime state from the agent so a runtime that the

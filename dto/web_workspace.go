@@ -100,6 +100,8 @@ type WebWorkspaceSessionDto struct {
 	CreatedAt      int64                      `json:"created_at"`
 	LastSeenAt     int64                      `json:"last_seen_at"`
 	IdleDeadlineAt int64                      `json:"idle_deadline_at"`
+	StreamBytesOut int64                      `json:"stream_bytes_out"`
+	StreamBytesIn  int64                      `json:"stream_bytes_in"`
 	Navigation     *WebWorkspaceNavigationDto `json:"navigation"`
 }
 

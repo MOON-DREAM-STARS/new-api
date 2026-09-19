@@ -143,7 +143,7 @@ done
 log "Xvfb ready at $display_socket"
 
 log "starting x11vnc"
-x11vnc -display "$WW_DISPLAY" -rfbport "$WW_VNC_PORT" -forever -shared -nopw -nolookup -noxdamage -quiet -bg -o /tmp/x11vnc.log
+x11vnc -display "$WW_DISPLAY" -rfbport "$WW_VNC_PORT" -forever -shared -nopw -nolookup -deferupdate 30 -quiet -bg -o /tmp/x11vnc.log
 
 i=0
 while [ -z "$X11VNC_PID" ]; do

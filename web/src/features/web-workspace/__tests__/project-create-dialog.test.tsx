@@ -96,6 +96,8 @@ describe('ProjectCreateDialog', () => {
           created_at: 1,
           last_seen_at: 1,
           idle_deadline_at: futureExpiry(600),
+          stream_bytes_out: 0,
+          stream_bytes_in: 0,
           navigation: null,
         })
       }
