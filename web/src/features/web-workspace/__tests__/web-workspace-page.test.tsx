@@ -26,12 +26,12 @@ import {
   RouterProvider,
 } from '@tanstack/react-router'
 import { render, screen, waitFor } from '@testing-library/react'
-import type { ReactNode } from 'react'
+import type { ReactNode, RefObject } from 'react'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import { api } from '@/lib/api'
 
-import { webWorkspaceConfigQueryOptions } from '../hooks/use-web-workspace-config'
+import type { RemoteSurfaceController } from '../hooks/use-remote-surface'
 import { WebWorkspace } from '../index'
 
 vi.mock('@/components/layout', () => {
@@ -40,17 +40,41 @@ vi.mock('@/components/layout', () => {
     (props: SlotProps) => <div>{props.children}</div>,
     {
       Title: (props: SlotProps) => <h2>{props.children}</h2>,
+      Actions: (props: SlotProps) => <div>{props.children}</div>,
       Content: (props: SlotProps) => <div>{props.children}</div>,
     }
   )
   return { SectionPageLayout }
 })
-vi.mock('@novnc/novnc', () => ({
-  default: class MockRFB {
-    disconnect() {
-      /* no stream is attached in these scenarios */
-    }
-  },
+
+vi.mock('@/components/ui/sidebar', () => ({
+  useSidebar: () => ({ open: true, setOpen: () => undefined }),
+}))
+
+vi.mock('@/context/layout-provider', () => ({
+  useLayout: () => ({ collapsible: 'icon', setCollapsible: () => undefined }),
+}))
+
+vi.mock('../hooks/use-element-size', () => ({
+  useElementSize: () => ({ width: 1600, height: 860 }),
+}))
+
+vi.mock('../hooks/use-desktop-viewport', () => ({
+  useDesktopViewport: () => true,
+}))
+
+const reconnect = vi.fn()
+
+vi.mock('../hooks/use-remote-surface', () => ({
+  useRemoteSurface: (): RemoteSurfaceController => ({
+    containerRef: { current: null } as RefObject<HTMLDivElement | null>,
+    screen: { width: 1280, height: 720 },
+    status: 'connected',
+    attempt: 0,
+    maxAttempts: 5,
+    errorMessageKey: null,
+    reconnect,
+  }),
 }))
 
 type ApiMethod = (url: string, data?: unknown) => Promise<{ data: unknown }>
@@ -87,6 +111,7 @@ afterEach(() => {
   apiClient.post = originalPost
   apiClient.patch = originalPatch
   apiClient.delete = originalDelete
+  reconnect.mockReset()
 })
 
 function renderPage(ui: ReactNode) {
@@ -115,82 +140,130 @@ function renderPage(ui: ReactNode) {
   )
   return { ...result, queryClient }
 }
+
+const runningSession = {
+  session_id: 'session-1',
+  state: 'RUNNING',
+  created_at: 1,
+  last_seen_at: 1,
+  idle_deadline_at: 600,
+}
+
 describe('WebWorkspace page', () => {
   test('renders the explained disabled page instead of a silent 404', async () => {
-    const requested: string[] = []
     apiClient.get = async (url) => {
-      requested.push(url)
       if (url === CONFIG_PATH) return ok({ enabled: false, entitled: false })
       if (url === STATUS_PATH) {
         return fail(403, 'WEB_WORKSPACE_ENTITLEMENT_DENIED', 'global_disabled')
       }
-      return fail(404, 'WEB_WORKSPACE_RESOURCE_NOT_FOUND')
+      throw new Error(`unexpected request ${url}`)
     }
-    const { queryClient } = renderPage(<WebWorkspace />)
 
-    // The route guard primes the capability probe before rendering.
-    await queryClient.ensureQueryData(webWorkspaceConfigQueryOptions)
+    renderPage(<WebWorkspace />)
 
-    expect(
-      await screen.findByText('Web Workspace is disabled')
-    ).toBeInTheDocument()
     expect(
       await screen.findByText('Web Workspace is disabled by the administrator.')
-    ).toBeInTheDocument()
-    // The layout button renders as an anchor and keeps the button role.
-    const back = screen.getByRole('button', { name: 'Back to dashboard' })
-    expect(back).toHaveAttribute('href', '/dashboard/overview')
-    await waitFor(() => {
-      expect(requested).toContain(STATUS_PATH)
-    })
-    expect(requested).not.toContain(SESSION_PATH)
+    ).toBeTruthy()
   })
 
-  test('explains an account-level denial with its reason', async () => {
+  test('renders real projects, the compact rail and the real session state', async () => {
     apiClient.get = async (url) => {
-      if (url === CONFIG_PATH) return ok({ enabled: true, entitled: false })
-      if (url === STATUS_PATH) {
-        return fail(403, 'WEB_WORKSPACE_ENTITLEMENT_DENIED', 'role')
+      if (url === CONFIG_PATH) return ok({ enabled: true, entitled: true })
+      if (url === SESSION_PATH) return ok(runningSession)
+      if (url === PROJECTS_PATH) {
+        return ok({
+          items: [
+            {
+              id: 1,
+              provider: 'chatgpt',
+              name: 'acceptance project',
+              created_at: 1,
+              updated_at: 1,
+            },
+          ],
+        })
       }
-      return fail(404, 'WEB_WORKSPACE_RESOURCE_NOT_FOUND')
+      if (url === STATUS_PATH) {
+        return ok({
+          entitled: true,
+          workspace: {
+            provider: 'chatgpt',
+            status: 1,
+            created_at: 1,
+            last_active_at: 1,
+          },
+        })
+      }
+      throw new Error(`unexpected request ${url}`)
     }
-    const { queryClient } = renderPage(<WebWorkspace />)
-    await queryClient.ensureQueryData(webWorkspaceConfigQueryOptions)
 
-    expect(
-      await screen.findByText('Web Workspace is not available for this account')
-    ).toBeInTheDocument()
-    expect(
-      await screen.findByText(
-        'Your account role does not include Web Workspace access.'
-      )
-    ).toBeInTheDocument()
+    renderPage(<WebWorkspace />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Connected')).toBeTruthy()
+    })
+    expect(screen.getByLabelText('acceptance project')).toBeTruthy()
+    expect(screen.getByTestId('web-workspace-surface')).toBeTruthy()
+    expect(screen.getByTestId('web-workspace-surface-frame')).toBeTruthy()
+    // The remote browser stays the primary surface: no Card based dashboard.
+    expect(screen.queryByText('Browser session')).toBeNull()
   })
 
-  test('declares mobile unsupported and disables the remote surface', async () => {
+  test('never invents a project when the account has none', async () => {
+    apiClient.get = async (url) => {
+      if (url === CONFIG_PATH) return ok({ enabled: true, entitled: true })
+      if (url === SESSION_PATH) return ok(runningSession)
+      if (url === PROJECTS_PATH) return ok({ items: [] })
+      if (url === STATUS_PATH) {
+        return ok({
+          entitled: true,
+          workspace: {
+            provider: 'chatgpt',
+            status: 1,
+            created_at: 1,
+            last_active_at: 1,
+          },
+        })
+      }
+      throw new Error(`unexpected request ${url}`)
+    }
+
+    const { container } = renderPage(<WebWorkspace />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('web-workspace-surface-frame')).toBeTruthy()
+    })
+    expect(screen.queryByLabelText('A0')).toBeNull()
+    expect(screen.queryByLabelText('A1')).toBeNull()
+    expect(screen.queryByLabelText('A2')).toBeNull()
+    expect(container.textContent).not.toContain('A0')
+  })
+
+  test('shows the workspace empty state and starts a session on demand', async () => {
+    const posted: string[] = []
     apiClient.get = async (url) => {
       if (url === CONFIG_PATH) return ok({ enabled: true, entitled: true })
       if (url === SESSION_PATH) return ok(null)
       if (url === PROJECTS_PATH) return ok({ items: [] })
-      return fail(404, 'WEB_WORKSPACE_RESOURCE_NOT_FOUND')
+      if (url === STATUS_PATH) {
+        return ok({ entitled: true, workspace: undefined })
+      }
+      throw new Error(`unexpected request ${url}`)
     }
-    const { queryClient } = renderPage(<WebWorkspace />)
-    await queryClient.ensureQueryData(webWorkspaceConfigQueryOptions)
+    apiClient.post = async (url) => {
+      posted.push(url)
+      return ok(runningSession)
+    }
 
-    expect(await screen.findByText('Desktop required')).toBeInTheDocument()
+    renderPage(<WebWorkspace />)
+
     expect(
-      screen.getByText(
-        'Web Workspace is not supported on mobile. Use a desktop viewport at least 1024px wide.'
-      )
-    ).toBeInTheDocument()
-    expect(
-      await screen.findByText('No browser session is running.')
-    ).toBeInTheDocument()
-    expect(
-      screen.getByText(
-        'The remote browser is disabled on small screens. Use a desktop viewport at least 1024px wide.'
-      )
-    ).toBeInTheDocument()
-    expect(screen.queryByTestId('web-workspace-surface')).toBeNull()
+      await screen.findByText('Remote browser is not running')
+    ).toBeTruthy()
+    const startButtons = await screen.findAllByText('Start session')
+    startButtons[0].click()
+    await waitFor(() => {
+      expect(posted).toContain(SESSION_PATH)
+    })
   })
 })

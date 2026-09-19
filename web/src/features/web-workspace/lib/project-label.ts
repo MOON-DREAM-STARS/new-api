@@ -16,25 +16,18 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { SidebarTrigger } from '@/components/ui/sidebar'
-import { cn } from '@/lib/utils'
-
-type HeaderProps = React.HTMLAttributes<HTMLElement>
-
-export function Header({ className, children, ...props }: HeaderProps) {
-  return (
-    <header
-      data-app-header=''
-      className={cn(
-        'sticky top-0 z-40 h-[var(--app-header-height,3rem)] w-full shrink-0 bg-transparent',
-        className
-      )}
-      {...props}
-    >
-      <div className='flex h-full items-center gap-1.5 px-2 sm:gap-2 sm:px-3'>
-        <SidebarTrigger variant='ghost' className='size-8' />
-        {children}
-      </div>
-    </header>
-  )
+/**
+ * Abbreviates a project name for the 64px project rail. The full name stays
+ * available through the tooltip and the accessible name, so nothing is lost.
+ */
+export function projectAbbreviation(name: string): string {
+  const trimmed = name.trim()
+  if (!trimmed) return '?'
+  const words = trimmed.split(/[\s_-]+/u).filter(Boolean)
+  const first = words[0]
+  const second = words[1]
+  if (first && second) {
+    return (first[0] + second[0]).toUpperCase()
+  }
+  return [...trimmed].slice(0, 2).join('').toUpperCase()
 }

@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { SectionPageLayout } from '@/components/layout'
@@ -23,20 +24,51 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 
-import { ProjectPanel } from './components/project-panel'
-import { RemoteSurface } from './components/remote-surface'
-import { SessionPanel } from './components/session-panel'
+import { ProjectCreateDialog } from './components/project-create-dialog'
+import { ProjectDeleteDialog } from './components/project-delete-dialog'
+import { ProjectDrawer } from './components/project-drawer'
+import { ProjectRail } from './components/project-rail'
+import { ProjectRenameDialog } from './components/project-rename-dialog'
+import { RemoteBrowserViewport } from './components/remote-browser-viewport'
 import { WebWorkspaceDisabled } from './components/web-workspace-disabled'
+import { WorkspaceToolbar } from './components/workspace-toolbar'
+import { useCompactSidebar } from './hooks/use-compact-sidebar'
 import { useDesktopViewport } from './hooks/use-desktop-viewport'
+import { useImmersiveMode } from './hooks/use-immersive-mode'
+import { useProjectRemovalNotice } from './hooks/use-project-removal-notice'
+import { useRemoteSurface } from './hooks/use-remote-surface'
 import { useWebWorkspaceConfig } from './hooks/use-web-workspace-config'
-import { useWebWorkspaceSession } from './hooks/use-web-workspace-session'
+import { useWebWorkspaceProjects } from './hooks/use-web-workspace-projects'
+import { useWebWorkspaceProvider } from './hooks/use-web-workspace-provider'
+import {
+  useRestartWebWorkspaceSession,
+  useStartWebWorkspaceSession,
+  useStopWebWorkspaceSession,
+  useWebWorkspaceSession,
+} from './hooks/use-web-workspace-session'
 import { resolveWebWorkspaceAccess } from './lib/access'
+import { resolveConnection } from './lib/connection'
 import { classifyWebWorkspaceError } from './lib/errors'
+import { isLiveSessionState } from './lib/session'
+import type { WebProject } from './types'
 
 /**
- * Web Workspace page. The route guard already primed the capability probe, so
- * a disabled or unentitled account renders an explained state page instead of
- * a silent 404.
+ * Remount key for the per-project dialogs so each dialog starts from the
+ * selected project instead of the previous one.
+ */
+function projectDialogKey(prefix: string, project: WebProject | null): string {
+  return [prefix, project ? String(project.id) : 'none'].join('-')
+}
+
+/**
+ * Web Workspace page.
+ *
+ * The workspace is the remote browser: the global New API navigation stays,
+ * but it is compacted to an icon rail, the project rail is the only project
+ * navigation and the toolbar keeps the low-frequency session controls out of
+ * the main surface. Every value shown here comes from the real control plane
+ * and the real remote stream; there is no placeholder project, no simulated
+ * ChatGPT markup and no faked connection state.
  */
 export function WebWorkspace() {
   const { t } = useTranslation()
@@ -45,8 +77,49 @@ export function WebWorkspace() {
   const access = configQuery.data
     ? resolveWebWorkspaceAccess(configQuery.data)
     : null
-  const sessionQuery = useWebWorkspaceSession({ enabled: access === 'ready' })
+  const ready = access === 'ready'
+  const immersive = useImmersiveMode()
+  useCompactSidebar(ready, immersive.immersive)
+
+  const sessionQuery = useWebWorkspaceSession({ enabled: ready })
+  const projectsQuery = useWebWorkspaceProjects(ready)
+  const provider = useWebWorkspaceProvider(ready)
+  const startMutation = useStartWebWorkspaceSession()
+  const stopMutation = useStopWebWorkspaceSession()
+  const restartMutation = useRestartWebWorkspaceSession()
+  const removal = useProjectRemovalNotice(projectsQuery.data)
+
+  const [selectedProjectId, setSelectedProjectId] = useState<number | null>(
+    null
+  )
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [renameTarget, setRenameTarget] = useState<WebProject | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<WebProject | null>(null)
+
   const session = sessionQuery.data ?? null
+  const isLive = isLiveSessionState(session?.state)
+  const projects = projectsQuery.data ?? []
+  const selectedProject =
+    projects.find((project) => project.id === selectedProjectId) ?? null
+  const isBusy =
+    startMutation.isPending ||
+    stopMutation.isPending ||
+    restartMutation.isPending
+
+  const surface = useRemoteSurface({
+    sessionId: session?.session_id ?? '',
+    enabled: isDesktop && isLive,
+  })
+  const connection = resolveConnection({
+    sessionState: session?.state,
+    surfaceStatus: surface.status,
+    surfaceEnabled: isDesktop && isLive && Boolean(session?.session_id),
+  })
+
+  const projectsError = projectsQuery.isError
+    ? classifyWebWorkspaceError(projectsQuery.error)
+    : null
 
   if (configQuery.isPending) {
     return (
@@ -100,30 +173,95 @@ export function WebWorkspace() {
   return (
     <SectionPageLayout fixedContent>
       <SectionPageLayout.Title>{t('Web Workspace')}</SectionPageLayout.Title>
+      <SectionPageLayout.Actions>
+        <WorkspaceToolbar
+          connection={connection}
+          connectionDetail={t('Session {{state}} · stream {{stream}}', {
+            state: session?.state ?? t('Not started'),
+            stream: surface.status,
+          })}
+          currentProjectName={selectedProject?.name ?? null}
+          isLive={isLive}
+          isBusy={isBusy}
+          immersive={immersive.immersive}
+          onStart={() => startMutation.mutate()}
+          onReconnect={surface.reconnect}
+          onRestart={() => {
+            if (session) restartMutation.mutate(session.session_id)
+          }}
+          onStop={() => {
+            if (session) stopMutation.mutate(session.session_id)
+          }}
+          onToggleImmersive={immersive.toggle}
+        />
+      </SectionPageLayout.Actions>
       <SectionPageLayout.Content>
-        <div className='grid h-full min-h-0 gap-4 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]'>
-          <div className='flex min-h-0 flex-col gap-4 overflow-auto pr-1'>
-            {isDesktop ? null : (
-              <Alert variant='destructive' role='alert'>
-                <AlertTitle>{t('Desktop required')}</AlertTitle>
-                <AlertDescription>
-                  {t(
-                    'Web Workspace is not supported on mobile. Use a desktop viewport at least 1024px wide.'
-                  )}
-                </AlertDescription>
-              </Alert>
-            )}
-            <SessionPanel />
-            <ProjectPanel />
-          </div>
-          <div className='min-h-0'>
-            <RemoteSurface
-              sessionId={session?.session_id ?? null}
-              sessionState={session?.state}
-              enabled={isDesktop}
-            />
-          </div>
+        <div className='flex h-full min-h-0 gap-3'>
+          <ProjectRail
+            projects={projects}
+            selectedProjectId={selectedProjectId}
+            isLoading={projectsQuery.isPending}
+            isError={projectsQuery.isError}
+            connection={connection}
+            canCreate={isLive}
+            immersive={immersive.immersive}
+            onSelect={(project) => {
+              setSelectedProjectId(project.id)
+            }}
+            onCreate={() => setCreateOpen(true)}
+            onOpenManager={() => setDrawerOpen(true)}
+          />
+
+          <RemoteBrowserViewport
+            provider={provider}
+            sessionId={session?.session_id ?? null}
+            sessionState={session?.state}
+            enabled={isDesktop}
+            immersive={immersive.immersive}
+            surface={surface}
+            onStart={() => startMutation.mutate()}
+            onExitImmersive={immersive.exit}
+          />
         </div>
+
+        <ProjectDrawer
+          open={drawerOpen}
+          onOpenChange={setDrawerOpen}
+          projects={projects}
+          isLoading={projectsQuery.isPending}
+          errorMessageKey={projectsError?.messageKey ?? null}
+          selectedProjectId={selectedProjectId}
+          canCreate={isLive}
+          removalNames={removal.removedNames}
+          onDismissRemoval={removal.dismiss}
+          onRefetch={() => {
+            void projectsQuery.refetch()
+          }}
+          onSelect={(project) => {
+            setSelectedProjectId(project.id)
+          }}
+          onCreate={() => setCreateOpen(true)}
+          onRename={setRenameTarget}
+          onDelete={setDeleteTarget}
+        />
+
+        <ProjectCreateDialog open={createOpen} onOpenChange={setCreateOpen} />
+        <ProjectRenameDialog
+          key={projectDialogKey('rename', renameTarget)}
+          project={renameTarget}
+          onOpenChange={(open) => {
+            if (!open) setRenameTarget(null)
+          }}
+          onRemoved={removal.reportRemoved}
+        />
+        <ProjectDeleteDialog
+          key={projectDialogKey('delete', deleteTarget)}
+          project={deleteTarget}
+          onOpenChange={(open) => {
+            if (!open) setDeleteTarget(null)
+          }}
+          onDeleted={removal.markExpectedRemoval}
+        />
       </SectionPageLayout.Content>
     </SectionPageLayout>
   )
