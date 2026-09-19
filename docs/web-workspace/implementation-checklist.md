@@ -1786,8 +1786,38 @@ remote Chrome credential holder
   - 本机构建说明：验收环境无法访问 `proxy.golang.org`，因此 guard 二进制先用本机 Go 模块缓存编译、再以等价的本地 Dockerfile 打进 `newapi-web-workspace-runtime:local`（apk/Chromium 层复用缓存）；仓库内 `runtime/Dockerfile` 未改动，正常网络环境仍按原方式构建。
 - 提交（本地，未 push）：`feat(web-workspace): real remote navigation channel`（`5dd300cf`）、`feat(web-workspace): expose the runtime mode and lock after sign-in`（`944b442a`）、`feat(web-workspace): size the remote screen to the workspace frame`（`e5520a48`）、本次「stream bytes + hidden-tab pause + ⋯ 菜单修复 + 本小节」为第 4 个 commit。
 - NOT RUN / 未闭合（如实记录）：
-  - Provider live 登录：ChatGPT 目前仍未登录（页面显示 Log in / Sign up），因此「完成登录并锁定后 ChatGPT 仍为已登录态」未验证，需操作者手动登录后按同一流程复测。
-  - 活跃场景 A/B：未在同一刺激下复测调优前镜像，故「活跃出站下降 ≥10%」**未验证**；当前保留 DAMAGE + `-deferupdate 30`（依据：空闲出站下降约 95%、三视口截图无可见清晰度退化），云端阶段应补一次受控 A/B。
+  - Provider live 登录：**已由后续小节「Guard CDP 事件队列死锁修复 + Provider 登录 / 裁切复核」复测通过**（重启后仍为登录态）。
+  - 活跃场景 A/B：**已测且未达标，flag 已回退**，见「VNC 更新参数未达标 → 回退」小节。
   - 真实 popup 抢占主窗口场景：`window.open` 被 Chromium 弹窗拦截器阻止，无法在真实运行时复现第二个 page target，该路径仅有 fake CDP harness 单测覆盖。
-  - `cropLeft` 重新标定：本次仍为 260（1920×1080 下 1:1 裁切实测 stage transform `-260`），未重标定，也未出现需要更新的证据。
+  - `cropLeft` 重新标定：**已在登录态下复核，仍为 260**（见「Guard CDP 事件队列死锁修复 + Provider 登录 / 裁切复核」小节）。
   - 隐藏标签页保活的长时间（>10 分钟）稳定性、云端部署与云端验收、跨用户真实攻击复测、>3840 宽画幅、KasmVNC/H.264 备用显示后端、全量 CI。
+
+## 后续变更（2026-09-19）：Guard CDP 事件队列死锁修复 + Provider 登录 / 裁切复核
+
+- 状态：**PASS（本机真实运行验收）**，含 1 个真实缺陷修复；未闭合项见上方 `NOT RUN`。
+- 背景与触发：复测「重启会话后 ChatGPT 仍为已登录态」时发现，runtime 每次重启后约 45s 必然挂掉：容器进入 FAILED，日志为 `workspace guard stopped: continue request: Fetch.continueRequest command timed out`，入口脚本随即 fail closed 退出。修复前连续 3 次重启（15:01 / 15:04 / 15:05，Asia/Singapore）全部复现。
+- 根因（证据：对 workspace-guard 发送 SIGQUIT 得到 goroutine dump，容器日志留档）：
+  - `cdpClient.readLoop`（当时唯一负责投递命令响应的 goroutine）阻塞在 `cdp.go` 的事件发送 select 上（事件队列 cap=256 已满）；
+  - 同时 `eventLoop → handleEvent → onRequestPaused → cdpClient.call(Fetch.continueRequest)` 正在等待该命令响应；
+  - 两者互等：读循环停住 → 响应永远读不到 → 30s `commandTimeout` → guard 退出 → 容器 FAILED。
+  - 触发条件：provider 页面加载期间事件突发（`Fetch.requestPaused` + `Network.responseReceived` 等）填满队列，同时有命令在飞。
+- 修复（`browser-agent/internal/guard/cdp.go`）：事件队列改为**无界 FIFO**（mutex + cond，保序、不丢事件；丢弃 `Fetch.requestPaused` 会让该请求永久 pause），读循环永不阻塞；`fail()` 与 ctx cancel 关闭队列以唤醒事件循环；移除 `eventQueueSize`。
+- 回归测试（`browser-agent/internal/guard/cdp_test.go`，新增 `TestCDPClientDeliversResponsesWhileEventsFlood`）：真实 WebSocket + 4096 条事件洪泛，handler 同时阻塞等待命令响应。修复前：20s 失败（仅 1/4096 事件到达 handler，响应被卡死）；修复后：0.01s 通过，事件全部按序到达。
+- 实测（2026-09-19，Asia/Singapore，本机验收环境）：
+  - 重启复测（`POST /internal/v1/runtimes/2/restart`，mode LOCKED，1687×1015）：容器重建后 `WW_GUARD_MODE=LOCKED`、稳定 RUNNING（>70s 观察，期间同样出现 `cdn.auth0.com` policy_deny 突发，guard 未退出）。
+  - **Provider live 登录保持**：重启前（ts=1789801238）与重启后（ts=1789802798）两次只读 CDP 断言一致：`href=https://chatgpt.com/`、`loginCta=false`、`chatHistoryNav=true`、`newChat=true`、`profileButton=true`、侧栏宽度 260，页面 `ready=complete`、标题 `ChatGPT`，侧栏出现操作者真实项目列表（RelQuant / NTU / REALLY / cc-switch 等）。即「完成登录并锁定 → 重启」后 ChatGPT 仍为已登录态。
+  - 控制面链路复测：`POST /api/web-workspace/session/X5vIIUAKvleT58yzHeWUWQ/restart`（root / workspace 1，mode LOCKED，1996×934）→ 200 RUNNING；容器稳定运行，UI 自动重连，`stream_bytes_out=113615`、`stream_bytes_in=1794`（真实画面与输入流量）。
+  - **cropLeft 复核（登录态）**：只读 CDP 实测 `#stage-slideover-sidebar` `x=0, width=260, right=260`、`main.x=275`、`devicePixelRatio=1` → `CHATGPT_PRESENTATION_PROFILE.cropLeft=260` 在登录态下依然正确（整个原生侧栏被裁掉），本次无需改动该常量。
+- 命令与结果：browser-agent `gofmt -l .`（空）、`go vet ./...`（无输出）、`go test ./... -count=1`（全绿，其中 guard 19.85s）。
+- 提交（本地，未 push）：`fix(web-workspace): keep the browser guard event queue unbounded`。
+
+## 后续变更（2026-09-19）：VNC 更新参数未达标 → 回退
+
+- 状态：**未达标 → 已按计划回退（如实记录）**。
+- 方法：在同一个 runtime（workspace 2，1687×1015，已登录 ChatGPT 页面）内切换 `x11vnc` 参数，使用同一个自建 RFB 计数客户端（直接连 runtime loopback:5900，每 100ms 请求全屏增量更新）与同一段真实滚动刺激（页面内 200ms 正弦滚动侧栏 scrollport），各测 60s（测量前 5s settle 不计入）。
+- 结果（bytes / 60s）：
+  - 活跃（滚动）场景：`-deferupdate 30`（无 `-noxdamage`）= 116,439,912；`-noxdamage`（无 defer）= 115,218,988；DAMAGE 且无 defer = 115,904,580。三者差异 ≤1.1%，**未达到「活跃出站下降 ≥10%」**。
+  - 空闲（同客户端、同页面）：`-deferupdate 30` = 277,056；DAMAGE 无 defer = 281,200（差 1.5%）。
+- 结论：`-deferupdate 30` 及其组合在可控同条件测量下**没有可复现的带宽收益**；此前记录的空闲下降约 95% 采用「容器 eth0 计数 + 真实 UI 客户端」口径，与本次客户端/页面状态不同，**未能复现**，因此不再作为保留该 flag 的依据。
+- 处置：回退 `browser-agent/runtime/entrypoint.sh` 的 x11vnc 参数（恢复 `-noxdamage`，移除 `-deferupdate 30`），同步 `browser-agent/runtime/README.md`；**保留**本阶段新增的字节计量（`stream_bytes_out/in`）与隐藏标签页暂停 / 保活（两者独立生效，已被真实流量验证）。
+- 提交（本地，未 push）：`revert(web-workspace): drop the unproven x11vnc update flag`。
