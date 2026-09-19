@@ -16,7 +16,6 @@ const (
 	// connected but too busy to answer; the guard still fails closed.
 	commandTimeout = 30 * time.Second
 	writeTimeout   = 10 * time.Second
-	eventQueueSize = 256
 )
 
 // cdpError is the error object of one DevTools command response.
@@ -62,7 +61,7 @@ type cdpClient struct {
 	pending        map[int64]chan error
 	pendingResults map[int64]chan cdpResponse
 
-	events chan cdpMessage
+	events *eventQueue
 
 	done     chan struct{}
 	errOnce  sync.Once
@@ -75,16 +74,27 @@ func newCDPClient(conn *websocket.Conn, handler func(context.Context, string, st
 		handler:        handler,
 		pending:        make(map[int64]chan error),
 		pendingResults: make(map[int64]chan cdpResponse),
-		events:         make(chan cdpMessage, eventQueueSize),
+		events:         newEventQueue(),
 		done:           make(chan struct{}),
 	}
 }
 
-// start runs the read and event loops. Both stop when the channel fails or the
-// caller's context is done.
+// start runs the read, event and shutdown loops. All of them stop when the
+// channel fails or the caller's context is done.
 func (c *cdpClient) start(ctx context.Context) {
 	go c.readLoop(ctx)
 	go c.eventLoop(ctx)
+	go c.closeEventsOnCancel(ctx)
+}
+
+// closeEventsOnCancel releases the event loop when the caller's context ends,
+// so a cancelled guard never waits for another event.
+func (c *cdpClient) closeEventsOnCancel(ctx context.Context) {
+	select {
+	case <-ctx.Done():
+		c.events.close()
+	case <-c.done:
+	}
 }
 
 // call sends one DevTools command and waits for its response. sessionID is
@@ -236,11 +246,7 @@ func (c *cdpClient) readLoop(ctx context.Context) {
 		if msg.Method == "" {
 			continue
 		}
-		select {
-		case c.events <- msg:
-		case <-c.done:
-			return
-		case <-ctx.Done():
+		if !c.events.push(msg) {
 			return
 		}
 	}
@@ -270,18 +276,17 @@ func (c *cdpClient) deliver(msg cdpMessage) {
 	}
 }
 
+// eventLoop hands queued events to the handler on a single goroutine so events
+// keep their arrival order.
 func (c *cdpClient) eventLoop(ctx context.Context) {
 	for {
-		select {
-		case <-c.done:
+		msg, ok := c.events.pop()
+		if !ok {
 			return
-		case <-ctx.Done():
+		}
+		if err := c.handler(ctx, msg.SessionID, msg.Method, msg.Params); err != nil {
+			c.fail(err)
 			return
-		case msg := <-c.events:
-			if err := c.handler(ctx, msg.SessionID, msg.Method, msg.Params); err != nil {
-				c.fail(err)
-				return
-			}
 		}
 	}
 }
@@ -290,6 +295,7 @@ func (c *cdpClient) fail(err error) {
 	c.errOnce.Do(func() {
 		c.fatalErr = err
 		close(c.done)
+		c.events.close()
 	})
 }
 
@@ -300,4 +306,63 @@ func (c *cdpClient) fatalError() error {
 		return fmt.Errorf("cdp channel closed")
 	}
 	return c.fatalErr
+}
+
+// eventQueue is the unbounded FIFO queue between the read loop and the event
+// handler. The read loop is the only goroutine that can deliver a command
+// response, so it must never block on a queued event: a bounded queue that was
+// full while the handler waited for a command response deadlocked the client
+// until that command timed out, and the guard then stopped the runtime (fail
+// closed). Events are queued instead of dropped because a dropped
+// Fetch.requestPaused event would leave that request paused forever, and
+// arrival order is preserved for the single handler goroutine.
+type eventQueue struct {
+	mu     sync.Mutex
+	cond   *sync.Cond
+	items  []cdpMessage
+	closed bool
+}
+
+func newEventQueue() *eventQueue {
+	q := &eventQueue{}
+	q.cond = sync.NewCond(&q.mu)
+	return q
+}
+
+// push appends one event and reports whether the queue still accepts events. It
+// never blocks.
+func (q *eventQueue) push(msg cdpMessage) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.closed {
+		return false
+	}
+	q.items = append(q.items, msg)
+	q.cond.Signal()
+	return true
+}
+
+// pop returns the oldest queued event, waiting until one arrives. It reports
+// false once the queue is closed and drained.
+func (q *eventQueue) pop() (cdpMessage, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for len(q.items) == 0 && !q.closed {
+		q.cond.Wait()
+	}
+	if len(q.items) == 0 {
+		return cdpMessage{}, false
+	}
+	msg := q.items[0]
+	q.items[0] = cdpMessage{}
+	q.items = q.items[1:]
+	return msg, true
+}
+
+// close stops the queue. Events that are already queued stay readable.
+func (q *eventQueue) close() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.closed = true
+	q.cond.Broadcast()
 }
