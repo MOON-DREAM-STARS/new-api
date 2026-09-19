@@ -46,6 +46,20 @@ export type WebWorkspaceSessionState =
   | 'STOPPED'
   | 'FAILED'
 
+/** Commands accepted by the control plane for the remote browser history. */
+export type WebWorkspaceNavigationAction =
+  | 'back'
+  | 'forward'
+  | 'reload'
+  | 'state'
+
+/** Navigation capability reported by the control plane. No URL is exposed. */
+export type WebWorkspaceNavigation = {
+  can_go_back: boolean
+  can_go_forward: boolean
+  updated_at: number
+}
+
 /** Control-plane view of one browser session. Runtime ids never reach the client. */
 export type WebWorkspaceSession = {
   session_id: string
@@ -53,6 +67,7 @@ export type WebWorkspaceSession = {
   created_at: number
   last_seen_at: number
   idle_deadline_at: number
+  navigation: WebWorkspaceNavigation | null
 }
 
 export type WebWorkspaceStatus = {

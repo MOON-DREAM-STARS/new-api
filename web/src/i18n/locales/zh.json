@@ -5726,6 +5726,9 @@
     "Starting the remote browser...": "正在启动远程浏览器…",
     "The remote page layout is being re-adapted.": "远程页面布局发生变化，正在重新适配…",
     "The workspace view stays paused until the page layout can be mapped safely.": "在页面布局可安全映射之前，工作区视图保持暂停。",
-    "Waiting for the remote page to become ready.": "正在等待远程页面就绪。"
+    "Waiting for the remote page to become ready.": "正在等待远程页面就绪。",
+    "Browser back": "浏览器后退",
+    "Browser forward": "浏览器前进",
+    "Refresh page": "刷新页面"
   }
 }

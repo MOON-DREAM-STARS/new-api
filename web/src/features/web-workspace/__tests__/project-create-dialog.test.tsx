@@ -95,6 +95,7 @@ describe('ProjectCreateDialog', () => {
           created_at: 1,
           last_seen_at: 1,
           idle_deadline_at: futureExpiry(600),
+          navigation: null,
         })
       }
       if (sessionStarted) {

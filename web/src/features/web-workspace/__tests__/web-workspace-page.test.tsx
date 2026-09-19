@@ -25,7 +25,7 @@ import {
   Outlet,
   RouterProvider,
 } from '@tanstack/react-router'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import type { ReactNode, RefObject } from 'react'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
@@ -65,11 +65,19 @@ vi.mock('../hooks/use-desktop-viewport', () => ({
 
 const reconnect = vi.fn()
 
+const remoteSurfaceState = vi.hoisted(() => ({
+  status: 'connected' as
+    | 'connecting'
+    | 'connected'
+    | 'reconnecting'
+    | 'failed',
+}))
+
 vi.mock('../hooks/use-remote-surface', () => ({
   useRemoteSurface: (): RemoteSurfaceController => ({
     containerRef: { current: null } as RefObject<HTMLDivElement | null>,
     screen: { width: 1280, height: 720 },
-    status: 'connected',
+    status: remoteSurfaceState.status,
     attempt: 0,
     maxAttempts: 5,
     errorMessageKey: null,
@@ -112,6 +120,7 @@ afterEach(() => {
   apiClient.patch = originalPatch
   apiClient.delete = originalDelete
   reconnect.mockReset()
+  remoteSurfaceState.status = 'connected'
 })
 
 function renderPage(ui: ReactNode) {
@@ -147,6 +156,43 @@ const runningSession = {
   created_at: 1,
   last_seen_at: 1,
   idle_deadline_at: 600,
+  navigation: {
+    can_go_back: true,
+    can_go_forward: true,
+    updated_at: 1,
+  },
+}
+
+function mockWorkspaceGets(session: unknown) {
+  apiClient.get = async (url) => {
+    if (url === CONFIG_PATH) return ok({ enabled: true, entitled: true })
+    if (url === SESSION_PATH) return ok(session)
+    if (url === PROJECTS_PATH) {
+      return ok({
+        items: [
+          {
+            id: 1,
+            provider: 'chatgpt',
+            name: 'acceptance project',
+            created_at: 1,
+            updated_at: 1,
+          },
+        ],
+      })
+    }
+    if (url === STATUS_PATH) {
+      return ok({
+        entitled: true,
+        workspace: {
+          provider: 'chatgpt',
+          status: 1,
+          created_at: 1,
+          last_active_at: 1,
+        },
+      })
+    }
+    throw new Error(`unexpected request ${url}`)
+  }
 }
 
 describe('WebWorkspace page', () => {
@@ -295,5 +341,133 @@ describe('WebWorkspace page', () => {
     await waitFor(() => {
       expect(posted).toContain(SESSION_PATH)
     })
+  })
+
+  test('sends the selected navigation command through the real API', async () => {
+    mockWorkspaceGets(runningSession)
+    const navigationPosts: Array<{ url: string; data: unknown }> = []
+    apiClient.post = async (url, data) => {
+      navigationPosts.push({ url, data })
+      return ok({
+        ...runningSession,
+        navigation: {
+          can_go_back: false,
+          can_go_forward: false,
+          updated_at: 2,
+        },
+      })
+    }
+
+    renderPage(<WebWorkspace />)
+
+    const backButton = await screen.findByRole('button', {
+      name: 'Browser back',
+    })
+    const forwardButton = screen.getByRole('button', {
+      name: 'Browser forward',
+    })
+    const reloadButton = screen.getByRole('button', {
+      name: 'Refresh page',
+    })
+
+    await waitFor(() => {
+      expect((backButton as HTMLButtonElement).disabled).toBe(false)
+      expect((forwardButton as HTMLButtonElement).disabled).toBe(false)
+      expect((reloadButton as HTMLButtonElement).disabled).toBe(false)
+    })
+
+    backButton.click()
+    await waitFor(() => {
+      expect(navigationPosts[0]).toEqual({
+        url: `${SESSION_PATH}/${runningSession.session_id}/navigation`,
+        data: { action: 'back' },
+      })
+      expect((forwardButton as HTMLButtonElement).disabled).toBe(false)
+    })
+
+    forwardButton.click()
+    await waitFor(() => {
+      expect(navigationPosts[1]?.data).toEqual({ action: 'forward' })
+      expect((reloadButton as HTMLButtonElement).disabled).toBe(false)
+    })
+
+    reloadButton.click()
+    await waitFor(() => {
+      expect(navigationPosts[2]?.data).toEqual({ action: 'reload' })
+    })
+  })
+
+  test('disables navigation when the session is not live', async () => {
+    mockWorkspaceGets({ ...runningSession, state: 'STOPPED' })
+
+    renderPage(<WebWorkspace />)
+
+    const backButton = await screen.findByRole('button', {
+      name: 'Browser back',
+    })
+    expect((backButton as HTMLButtonElement).disabled).toBe(true)
+    expect(
+      (screen.getByRole('button', {
+        name: 'Browser forward',
+      }) as HTMLButtonElement).disabled
+    ).toBe(true)
+    expect(
+      (screen.getByRole('button', {
+        name: 'Refresh page',
+      }) as HTMLButtonElement).disabled
+    ).toBe(true)
+  })
+
+  test('disables navigation while the remote surface is not connected', async () => {
+    remoteSurfaceState.status = 'connecting'
+    mockWorkspaceGets(runningSession)
+
+    renderPage(<WebWorkspace />)
+
+    const backButton = await screen.findByRole('button', {
+      name: 'Browser back',
+    })
+    expect((backButton as HTMLButtonElement).disabled).toBe(true)
+    expect(
+      (screen.getByRole('button', {
+        name: 'Browser forward',
+      }) as HTMLButtonElement).disabled
+    ).toBe(true)
+    expect(
+      (screen.getByRole('button', {
+        name: 'Refresh page',
+      }) as HTMLButtonElement).disabled
+    ).toBe(true)
+  })
+
+  test('keeps navigation and an exit control in immersive mode', async () => {
+    mockWorkspaceGets(runningSession)
+
+    renderPage(<WebWorkspace />)
+
+    const immersiveButton = await screen.findByRole('button', {
+      name: 'Immersive mode',
+    })
+    immersiveButton.click()
+
+    const immersiveControls = await screen.findByTestId(
+      'web-workspace-immersive-controls'
+    )
+    expect(
+      within(immersiveControls).getByRole('button', { name: 'Browser back' })
+    ).toBeTruthy()
+    expect(
+      within(immersiveControls).getByRole('button', {
+        name: 'Browser forward',
+      })
+    ).toBeTruthy()
+    expect(
+      within(immersiveControls).getByRole('button', { name: 'Refresh page' })
+    ).toBeTruthy()
+    expect(
+      within(immersiveControls).getByRole('button', {
+        name: 'Exit immersive mode',
+      })
+    ).toBeTruthy()
   })
 })

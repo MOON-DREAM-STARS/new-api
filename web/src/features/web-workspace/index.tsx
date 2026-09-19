@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { Minimize2 } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -31,7 +32,10 @@ import { ProjectRail } from './components/project-rail'
 import { ProjectRenameDialog } from './components/project-rename-dialog'
 import { RemoteBrowserViewport } from './components/remote-browser-viewport'
 import { WebWorkspaceDisabled } from './components/web-workspace-disabled'
-import { WorkspaceToolbar } from './components/workspace-toolbar'
+import {
+  WorkspaceNavigationControls,
+  WorkspaceToolbar,
+} from './components/workspace-toolbar'
 import { useCompactSidebar } from './hooks/use-compact-sidebar'
 import { useDesktopViewport } from './hooks/use-desktop-viewport'
 import { useImmersiveMode } from './hooks/use-immersive-mode'
@@ -41,6 +45,7 @@ import { useWebWorkspaceConfig } from './hooks/use-web-workspace-config'
 import { useWebWorkspaceProjects } from './hooks/use-web-workspace-projects'
 import { useWebWorkspaceProvider } from './hooks/use-web-workspace-provider'
 import {
+  useNavigateWebWorkspaceSession,
   useRestartWebWorkspaceSession,
   useStartWebWorkspaceSession,
   useStopWebWorkspaceSession,
@@ -50,7 +55,10 @@ import { resolveWebWorkspaceAccess } from './lib/access'
 import { resolveConnection } from './lib/connection'
 import { classifyWebWorkspaceError } from './lib/errors'
 import { isLiveSessionState } from './lib/session'
-import type { WebProject } from './types'
+import type {
+  WebProject,
+  WebWorkspaceNavigationAction,
+} from './types'
 
 /**
  * Remount key for the per-project dialogs so each dialog starts from the
@@ -87,6 +95,7 @@ export function WebWorkspace() {
   const startMutation = useStartWebWorkspaceSession()
   const stopMutation = useStopWebWorkspaceSession()
   const restartMutation = useRestartWebWorkspaceSession()
+  const navigationMutation = useNavigateWebWorkspaceSession()
   const removal = useProjectRemovalNotice(projectsQuery.data)
 
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(
@@ -99,13 +108,15 @@ export function WebWorkspace() {
 
   const session = sessionQuery.data ?? null
   const isLive = isLiveSessionState(session?.state)
+  const navigation = session?.navigation ?? null
   const projects = projectsQuery.data ?? []
   const selectedProject =
     projects.find((project) => project.id === selectedProjectId) ?? null
   const isBusy =
     startMutation.isPending ||
     stopMutation.isPending ||
-    restartMutation.isPending
+    restartMutation.isPending ||
+    navigationMutation.isPending
 
   const surface = useRemoteSurface({
     sessionId: session?.session_id ?? '',
@@ -120,6 +131,13 @@ export function WebWorkspace() {
   const projectsError = projectsQuery.isError
     ? classifyWebWorkspaceError(projectsQuery.error)
     : null
+  const isNavigationAvailable =
+    isLive && Boolean(session) && surface.status === 'connected'
+
+  function navigate(action: WebWorkspaceNavigationAction) {
+    if (!session) return
+    navigationMutation.mutate({ sessionId: session.session_id, action })
+  }
 
   if (configQuery.isPending) {
     return (
@@ -183,6 +201,9 @@ export function WebWorkspace() {
           currentProjectName={selectedProject?.name ?? null}
           isLive={isLive}
           isBusy={isBusy}
+          navigation={navigation}
+          isNavigationAvailable={isNavigationAvailable}
+          isNavigationPending={isBusy}
           immersive={immersive.immersive}
           onStart={() => startMutation.mutate()}
           onReconnect={surface.reconnect}
@@ -192,11 +213,14 @@ export function WebWorkspace() {
           onStop={() => {
             if (session) stopMutation.mutate(session.session_id)
           }}
+          onNavigateBack={() => navigate('back')}
+          onNavigateForward={() => navigate('forward')}
+          onNavigateReload={() => navigate('reload')}
           onToggleImmersive={immersive.toggle}
         />
       </SectionPageLayout.Actions>
       <SectionPageLayout.Content>
-        <div className='flex h-full min-h-0 gap-3'>
+        <div className='relative flex h-full min-h-0 gap-3'>
           <ProjectRail
             projects={projects}
             selectedProjectId={selectedProjectId}
@@ -227,6 +251,31 @@ export function WebWorkspace() {
             onStart={() => startMutation.mutate()}
             onExitImmersive={immersive.exit}
           />
+
+          {immersive.immersive ? (
+            <div
+              data-testid='web-workspace-immersive-controls'
+              className='bg-background/85 absolute top-3 right-3 z-20 flex items-center gap-2 rounded-full border p-1 shadow-sm backdrop-blur-sm'
+            >
+              <WorkspaceNavigationControls
+                navigation={navigation}
+                isAvailable={isNavigationAvailable}
+                isPending={isBusy}
+                onBack={() => navigate('back')}
+                onForward={() => navigate('forward')}
+                onReload={() => navigate('reload')}
+              />
+              <Button
+                type='button'
+                size='icon-sm'
+                variant='ghost'
+                aria-label={t('Exit immersive mode')}
+                onClick={immersive.exit}
+              >
+                <Minimize2 aria-hidden='true' />
+              </Button>
+            </div>
+          ) : null}
         </div>
 
         <ProjectDrawer

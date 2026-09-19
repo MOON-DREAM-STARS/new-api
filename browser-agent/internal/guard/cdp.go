@@ -44,6 +44,11 @@ type cdpMessage struct {
 // every command response with its request id, hands events to a single handler
 // in arrival order and reports every transport failure as fatal. A guard that
 // can no longer see the browser must not let that browser keep running.
+type cdpResponse struct {
+	result json.RawMessage
+	err    error
+}
+
 type cdpClient struct {
 	conn    *websocket.Conn
 	handler func(ctx context.Context, sessionID, method string, params json.RawMessage) error
@@ -53,8 +58,9 @@ type cdpClient struct {
 	idMu   sync.Mutex
 	nextID int64
 
-	pendingMu sync.Mutex
-	pending   map[int64]chan error
+	pendingMu      sync.Mutex
+	pending        map[int64]chan error
+	pendingResults map[int64]chan cdpResponse
 
 	events chan cdpMessage
 
@@ -65,11 +71,12 @@ type cdpClient struct {
 
 func newCDPClient(conn *websocket.Conn, handler func(context.Context, string, string, json.RawMessage) error) *cdpClient {
 	return &cdpClient{
-		conn:    conn,
-		handler: handler,
-		pending: make(map[int64]chan error),
-		events:  make(chan cdpMessage, eventQueueSize),
-		done:    make(chan struct{}),
+		conn:           conn,
+		handler:        handler,
+		pending:        make(map[int64]chan error),
+		pendingResults: make(map[int64]chan cdpResponse),
+		events:         make(chan cdpMessage, eventQueueSize),
+		done:           make(chan struct{}),
 	}
 }
 
@@ -131,6 +138,57 @@ func (c *cdpClient) call(ctx context.Context, sessionID, method string, params a
 	}
 }
 
+// callResult is the result-bearing form of call. It uses the same websocket as
+// every other command, so navigation state stays on the single existing CDP
+// consumer.
+func (c *cdpClient) callResult(ctx context.Context, sessionID, method string, params any) (json.RawMessage, error) {
+	payload := struct {
+		ID        int64           `json:"id"`
+		Method    string          `json:"method"`
+		Params    json.RawMessage `json:"params,omitempty"`
+		SessionID string          `json:"sessionId,omitempty"`
+	}{Method: method, SessionID: sessionID}
+	if params != nil {
+		raw, err := json.Marshal(params)
+		if err != nil {
+			return nil, fmt.Errorf("encode %s params: %w", method, err)
+		}
+		payload.Params = raw
+	}
+	id := c.newID()
+	payload.ID = id
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("encode %s command: %w", method, err)
+	}
+
+	reply := make(chan cdpResponse, 1)
+	c.pendingMu.Lock()
+	c.pendingResults[id] = reply
+	c.pendingMu.Unlock()
+
+	if err := c.write(data); err != nil {
+		c.removePendingResult(id)
+		c.fail(fmt.Errorf("send %s command: %w", method, err))
+		return nil, fmt.Errorf("send %s command: %w", method, err)
+	}
+
+	timer := time.NewTimer(commandTimeout)
+	defer timer.Stop()
+	select {
+	case response := <-reply:
+		return response.result, response.err
+	case <-timer.C:
+		c.removePendingResult(id)
+		return nil, fmt.Errorf("%s command timed out", method)
+	case <-ctx.Done():
+		c.removePendingResult(id)
+		return nil, ctx.Err()
+	case <-c.done:
+		return nil, c.fatalError()
+	}
+}
+
 func (c *cdpClient) newID() int64 {
 	c.idMu.Lock()
 	defer c.idMu.Unlock()
@@ -150,6 +208,12 @@ func (c *cdpClient) write(data []byte) error {
 func (c *cdpClient) removePending(id int64) {
 	c.pendingMu.Lock()
 	delete(c.pending, id)
+	c.pendingMu.Unlock()
+}
+
+func (c *cdpClient) removePendingResult(id int64) {
+	c.pendingMu.Lock()
+	delete(c.pendingResults, id)
 	c.pendingMu.Unlock()
 }
 
@@ -186,15 +250,24 @@ func (c *cdpClient) deliver(msg cdpMessage) {
 	c.pendingMu.Lock()
 	reply := c.pending[msg.ID]
 	delete(c.pending, msg.ID)
+	resultReply := c.pendingResults[msg.ID]
+	delete(c.pendingResults, msg.ID)
 	c.pendingMu.Unlock()
-	if reply == nil {
-		return
+
+	if reply != nil {
+		if msg.Error != nil {
+			reply <- error(msg.Error)
+		} else {
+			reply <- nil
+		}
 	}
-	if msg.Error != nil {
-		reply <- error(msg.Error)
-		return
+	if resultReply != nil {
+		response := cdpResponse{result: msg.Result}
+		if msg.Error != nil {
+			response.err = error(msg.Error)
+		}
+		resultReply <- response
 	}
-	reply <- nil
 }
 
 func (c *cdpClient) eventLoop(ctx context.Context) {

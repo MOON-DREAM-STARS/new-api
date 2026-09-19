@@ -20,6 +20,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import {
   fetchWebWorkspaceSession,
+  navigateWebWorkspaceSession,
   restartWebWorkspaceSession,
   startWebWorkspaceSession,
   stopWebWorkspaceSession,
@@ -28,6 +29,7 @@ import {
   WEB_WORKSPACE_SESSION_POLL_INTERVAL_MS,
   WEB_WORKSPACE_SESSION_QUERY_KEY,
 } from '../constants'
+import type { WebWorkspaceNavigationAction } from '../types'
 import { useDocumentVisibility } from './use-document-visibility'
 
 export type UseWebWorkspaceSessionOptions = {
@@ -82,5 +84,25 @@ export function useRestartWebWorkspaceSession() {
   return useMutation({
     mutationFn: restartWebWorkspaceSession,
     onSuccess: syncSessionCache,
+  })
+}
+
+export type NavigateWebWorkspaceSessionInput = {
+  sessionId: string
+  action: WebWorkspaceNavigationAction
+}
+
+/** Executes a real remote-browser command and syncs the returned session DTO. */
+export function useNavigateWebWorkspaceSession() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: NavigateWebWorkspaceSessionInput) =>
+      navigateWebWorkspaceSession(input.sessionId, input.action),
+    onSuccess: (session) => {
+      queryClient.setQueryData(WEB_WORKSPACE_SESSION_QUERY_KEY, session)
+      void queryClient.invalidateQueries({
+        queryKey: WEB_WORKSPACE_SESSION_QUERY_KEY,
+      })
+    },
   })
 }

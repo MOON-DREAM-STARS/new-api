@@ -23,6 +23,7 @@ import type {
   WebProject,
   WebProjectPermit,
   WebWorkspaceConfig,
+  WebWorkspaceNavigationAction,
   WebWorkspaceSession,
   WebWorkspaceStatus,
   WebWorkspaceStreamTicket,
@@ -74,6 +75,17 @@ export async function restartWebWorkspaceSession(
 ): Promise<WebWorkspaceSession> {
   const res = await api.post<ApiEnvelope<WebWorkspaceSession>>(
     `${BASE_PATH}/session/${encodeURIComponent(sessionId)}/restart`
+  )
+  return res.data.data
+}
+
+export async function navigateWebWorkspaceSession(
+  sessionId: string,
+  action: WebWorkspaceNavigationAction
+): Promise<WebWorkspaceSession> {
+  const res = await api.post<ApiEnvelope<WebWorkspaceSession>>(
+    `${BASE_PATH}/session/${encodeURIComponent(sessionId)}/navigation`,
+    { action }
   )
   return res.data.data
 }

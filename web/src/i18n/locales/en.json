@@ -5709,6 +5709,9 @@
     "Keyboard and mouse input are sent to the remote browser.": "Keyboard and mouse input are sent to the remote browser.",
     "The remote browser is unavailable while the session is not running.": "The remote browser is unavailable while the session is not running.",
     "The remote browser is disabled on small screens. Use a desktop viewport at least 1024px wide.": "The remote browser is disabled on small screens. Use a desktop viewport at least 1024px wide.",
-    "Dismiss": "Dismiss"
+    "Dismiss": "Dismiss",
+    "Browser back": "Browser back",
+    "Browser forward": "Browser forward",
+    "Refresh page": "Refresh page"
   }
 }
