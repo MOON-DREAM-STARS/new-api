@@ -75,6 +75,10 @@ type Config struct {
 	StateDir string
 	// retryDelays is test-only injection for the bounded retry schedule.
 	retryDelays []time.Duration
+	// contentProbeDelays/contentProbeTimeout are test-only injection for the
+	// visible-content readiness probe.
+	contentProbeDelays  []time.Duration
+	contentProbeTimeout time.Duration
 }
 
 // Run connects to Chromium, installs the browser guard and blocks until the CDP
@@ -105,7 +109,7 @@ func Run(ctx context.Context, cfg Config) error {
 	client := newCDPClient(conn, g.handleEvent)
 	g.client = client
 	g.navigation = newNavigationController(stateDir, client, logger)
-	g.pageHealth = newPageHealthController(client, g.navigation, cfg.StartURL, cfg.retryDelays, logger)
+	g.pageHealth = newPageHealthController(client, g.navigation, cfg.StartURL, cfg.retryDelays, cfg.contentProbeDelays, cfg.contentProbeTimeout, logger)
 	g.navigation.onReload = g.pageHealth.reload
 	defer func() {
 		cancelRun()
@@ -331,6 +335,9 @@ func (g *guard) handleEvent(ctx context.Context, sessionID, method string, param
 		return nil
 	case "Page.navigatedWithinDocument":
 		g.refreshNavigation(ctx, sessionID)
+		return nil
+	case "Page.loadEventFired":
+		g.pageHealth.observeLoadEvent(ctx, sessionID)
 		return nil
 	case "Target.detachedFromTarget":
 		g.navigation.clearFromEvent(params)
