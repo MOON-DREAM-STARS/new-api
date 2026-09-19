@@ -149,14 +149,13 @@ export function useRemoteSurface(
           return
         }
         socketRef.current = socket
-        const rfb = new RFB(container, socket, {
-          scaleViewport: true,
-          // The runtime desktop is fixed at the session screen size; a remote
-          // resize would move the framebuffer under the presentation crop.
-          resizeSession: false,
-          viewOnly: false,
-          focusOnClick: true,
-        })
+        // noVNC 1.7 ignores the presentation options passed to the
+        // constructor, so the viewport scaling has to be applied on the
+        // instance. Scaling maps the real framebuffer onto the presentation
+        // stage; the remote desktop keeps its own size because a remote resize
+        // would move the framebuffer under the presentation crop.
+        const rfb = new RFB(container, socket)
+        rfb.scaleViewport = true
         rfbRef.current = rfb
         rfb.addEventListener('connect', () => {
           if (generationRef.current !== generation) return
