@@ -359,7 +359,11 @@ func StartWebWorkspaceSession(c *gin.Context) {
 	common.ApiSuccess(c, toWebWorkspaceSessionDto(session))
 }
 
-// GetWebWorkspaceSession returns the caller's current session, or null.
+// GetWebWorkspaceSession returns the caller's current session, or null. A live
+// session is re-read from the agent first, so the client sees the real runtime
+// state, the real navigation capability and the real transferred bytes instead
+// of a stale cache. A refresh that cannot reach the agent keeps the cached view
+// instead of turning the poll into an error.
 func GetWebWorkspaceSession(c *gin.Context) {
 	user := requireWebWorkspaceEntitlement(c)
 	if user == nil {
@@ -369,6 +373,17 @@ func GetWebWorkspaceSession(c *gin.Context) {
 	if !ok {
 		common.ApiSuccess(c, nil)
 		return
+	}
+	if webworkspace.LiveRuntimeState(session.State) {
+		refreshed, err := webworkspace.RefreshSession(c.Request.Context(), user.Id, session.Id)
+		if err == nil {
+			session = refreshed
+		} else if !errors.Is(err, webworkspace.ErrAgentUnavailable) &&
+			!errors.Is(err, webworkspace.ErrAgentRejected) &&
+			!errors.Is(err, webworkspace.ErrSessionNotFound) {
+			writeWebWorkspaceSessionError(c, err)
+			return
+		}
 	}
 	common.ApiSuccess(c, toWebWorkspaceSessionDto(session))
 }
@@ -469,6 +484,27 @@ func webWorkspaceScreenSize(width int, height int) (int, int, bool) {
 		return 0, 0, false
 	}
 	return width, height, true
+}
+
+// TouchWebWorkspaceActivity keeps a live session alive without attaching a
+// display stream. A hidden tab uses it so the runtime is not reclaimed while the
+// user is away; it never touches the provider page itself.
+func TouchWebWorkspaceActivity(c *gin.Context) {
+	user := requireWebWorkspaceEntitlement(c)
+	if user == nil {
+		return
+	}
+	sessionId := c.Param("id")
+	if sessionId == "" {
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid session id", "")
+		return
+	}
+	session, err := webworkspace.TouchRuntimeActivity(c.Request.Context(), user.Id, sessionId)
+	if err != nil {
+		writeWebWorkspaceSessionError(c, err)
+		return
+	}
+	common.ApiSuccess(c, toWebWorkspaceSessionDto(session))
 }
 
 // CreateWebWorkspaceStreamTicket issues a single-use ticket that the client
@@ -639,6 +675,8 @@ func toWebWorkspaceSessionDto(session *webworkspace.Session) dto.WebWorkspaceSes
 		CreatedAt:      session.CreatedAt,
 		LastSeenAt:     session.LastSeenAt,
 		IdleDeadlineAt: session.IdleDeadlineAt,
+		StreamBytesOut: session.StreamBytesOut,
+		StreamBytesIn:  session.StreamBytesIn,
 	}
 	if session.Navigation != nil {
 		result.Navigation = &dto.WebWorkspaceNavigationDto{

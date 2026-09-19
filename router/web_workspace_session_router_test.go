@@ -49,6 +49,7 @@ type routerFakeAgent struct {
 	navigationCalls []routerNavigationCall
 	restartModes    []string
 	createdSizes    [][2]int
+	activityCalls   int
 	restartSizes    [][2]int
 	failPermits     bool
 	navigationFail  string
@@ -181,6 +182,16 @@ func newRouterFakeAgent(t *testing.T) *routerFakeAgent {
 			runtime.State = webworkspace.AgentStateRunning
 			runtime.LastActivityAt = time.Now().Unix()
 			runtime.IdleDeadlineAt = time.Now().Unix() + 600
+			agent.runtimes[workspaceId] = runtime
+			agent.mutex.Unlock()
+			writeRouterAgentJSON(t, w, runtime)
+		case suffix == "activity" && r.Method == http.MethodPost:
+			agent.mutex.Lock()
+			agent.activityCalls++
+			runtime.LastActivityAt = time.Now().Unix()
+			runtime.IdleDeadlineAt = time.Now().Unix() + 600
+			runtime.StreamBytesOut = 4096
+			runtime.StreamBytesIn = 128
 			agent.runtimes[workspaceId] = runtime
 			agent.mutex.Unlock()
 			writeRouterAgentJSON(t, w, runtime)
@@ -742,6 +753,51 @@ func TestWebWorkspaceRouterScreenSizeProposal(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, rejected.Code, body)
 		assert.Equal(t, "WEB_WORKSPACE_INVALID_REQUEST", decodeWebWorkspaceError(t, rejected).Code)
 	}
+}
+func TestWebWorkspaceRouterActivityKeepAlive(t *testing.T) {
+	agent := newRouterFakeAgent(t)
+	fixture := setupWebWorkspaceSessionRouterTest(t, agent.server.URL)
+	tokenA := webWorkspaceBearer(t, fixture.userA)
+	tokenB := webWorkspaceBearer(t, fixture.userB)
+	sessionId := startWebWorkspaceRouterSession(t, fixture, tokenA)
+	path := "/api/web-workspace/session/" + sessionId + "/activity"
+
+	kept := doWebWorkspaceRequest(fixture.engine, http.MethodPost, path, tokenA, "")
+	require.Equal(t, http.StatusOK, kept.Code, kept.Body.String())
+	assert.Contains(t, kept.Body.String(), `"stream_bytes_out":4096`)
+	assert.Contains(t, kept.Body.String(), `"stream_bytes_in":128`)
+
+	foreign := doWebWorkspaceRequest(fixture.engine, http.MethodPost, path, tokenB, "")
+	assert.Equal(t, http.StatusNotFound, foreign.Code)
+	assert.Equal(t, "WEB_WORKSPACE_SESSION_NOT_FOUND", decodeWebWorkspaceError(t, foreign).Code)
+
+	agent.mutex.Lock()
+	calls := agent.activityCalls
+	agent.mutex.Unlock()
+	assert.Equal(t, 1, calls, "a foreign session must not reach the agent")
+}
+func TestWebWorkspaceRouterSessionPollRefreshesFromAgent(t *testing.T) {
+	agent := newRouterFakeAgent(t)
+	fixture := setupWebWorkspaceSessionRouterTest(t, agent.server.URL)
+	token := webWorkspaceBearer(t, fixture.userA)
+	_ = startWebWorkspaceRouterSession(t, fixture, token)
+
+	// The runtime moved on: the poll must report the agent's real state, not the
+	// state captured when the session was created.
+	agent.mutex.Lock()
+	for id, runtime := range agent.runtimes {
+		runtime.Navigation = &webworkspace.AgentNavigation{CanGoBack: true, CanGoForward: false, UpdatedAt: 42}
+		runtime.StreamBytesOut = 123456
+		runtime.StreamBytesIn = 789
+		agent.runtimes[id] = runtime
+	}
+	agent.mutex.Unlock()
+
+	current := doWebWorkspaceRequest(fixture.engine, http.MethodGet, "/api/web-workspace/session", token, "")
+	require.Equal(t, http.StatusOK, current.Code, current.Body.String())
+	assert.Contains(t, current.Body.String(), `"can_go_back":true`)
+	assert.Contains(t, current.Body.String(), `"stream_bytes_out":123456`)
+	assert.Contains(t, current.Body.String(), `"stream_bytes_in":789`)
 }
 func TestWebWorkspaceRouterStreamGateway(t *testing.T) {
 	agent := newRouterFakeAgent(t)

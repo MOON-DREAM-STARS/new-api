@@ -43,6 +43,12 @@ export const WEB_WORKSPACE_CONFIG_STALE_TIME_MS = 5 * 60 * 1000
 /** Session polling interval while the page is visible. */
 export const WEB_WORKSPACE_SESSION_POLL_INTERVAL_MS = 5000
 
+/**
+ * Keep-alive interval while the tab is hidden: the display stream is detached,
+ * so the control plane has to keep the idle runtime alive on its own.
+ */
+export const WEB_WORKSPACE_HIDDEN_ACTIVITY_INTERVAL_MS = 60000
+
 /** Below this viewport width the remote surface is explicitly unsupported. */
 export const WEB_WORKSPACE_DESKTOP_MIN_WIDTH_PX = 1024
 

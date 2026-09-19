@@ -131,6 +131,29 @@ func TestNavigateReturnsUnavailableWhenCommandCannotBeWritten(t *testing.T) {
 	require.ErrorIs(t, err, ErrNavigationUnavailable)
 }
 
+func TestCountStreamAccumulatesSnapshotBytes(t *testing.T) {
+	h := newHarness(t)
+	_, err := h.mgr.Start(context.Background(), 9, StartOptions{Provider: "chatgpt"})
+	require.NoError(t, err)
+
+	h.mgr.CountStream(9, 2048, 64)
+	h.mgr.CountStream(9, 1024, 0)
+	h.mgr.CountStream(0, 10, 10)
+	h.mgr.CountStream(404, 10, 10)
+
+	snapshot, found := h.mgr.Get(9)
+	require.True(t, found)
+	assert.EqualValues(t, 3072, snapshot.StreamBytesOut)
+	assert.EqualValues(t, 64, snapshot.StreamBytesIn)
+
+	// A restart starts a new runtime, so its counters start from zero again.
+	_, err = h.mgr.Restart(context.Background(), 9, StartOptions{Provider: "chatgpt"})
+	require.NoError(t, err)
+	snapshot, found = h.mgr.Get(9)
+	require.True(t, found)
+	assert.Zero(t, snapshot.StreamBytesOut)
+	assert.Zero(t, snapshot.StreamBytesIn)
+}
 func TestSnapshotRefreshesNavigationReceipt(t *testing.T) {
 	h := newHarness(t)
 	workspaceID := int64(75)

@@ -5714,6 +5714,7 @@
     "Browser forward": "Browser forward",
     "Refresh page": "Refresh page",
     "Login mode": "Login mode",
-    "Finish sign-in and lock": "Finish sign-in and lock"
+    "Finish sign-in and lock": "Finish sign-in and lock",
+    "Session {{state}} · stream {{stream}} · sent {{bytes}}": "Session {{state}} · stream {{stream}} · sent {{bytes}}"
   }
 }

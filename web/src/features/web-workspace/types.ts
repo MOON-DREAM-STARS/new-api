@@ -71,6 +71,8 @@ export type WebWorkspaceSession = {
   created_at: number
   last_seen_at: number
   idle_deadline_at: number
+  stream_bytes_out: number
+  stream_bytes_in: number
   navigation: WebWorkspaceNavigation | null
 }
 

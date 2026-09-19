@@ -100,6 +100,8 @@ type Snapshot struct {
 	CreatedAt      int64             `json:"created_at"`
 	LastActivityAt int64             `json:"last_activity_at"`
 	IdleDeadlineAt int64             `json:"idle_deadline_at"`
+	StreamBytesOut int64             `json:"stream_bytes_out"`
+	StreamBytesIn  int64             `json:"stream_bytes_in"`
 	Navigation     *NavigationStatus `json:"navigation"`
 }
 
@@ -159,18 +161,20 @@ type ObservationPage struct {
 }
 
 type runtimeState struct {
-	state        State
-	provider     string
-	width        int
-	height       int
-	mode         policy.Mode
-	containerID  string
-	ip           string
-	createdAt    time.Time
-	lastActivity time.Time
-	idleDeadline time.Time
-	navCommandID int64
-	navigation   *NavigationStatus
+	state          State
+	provider       string
+	width          int
+	height         int
+	mode           policy.Mode
+	containerID    string
+	ip             string
+	createdAt      time.Time
+	lastActivity   time.Time
+	idleDeadline   time.Time
+	navCommandID   int64
+	navigation     *NavigationStatus
+	streamBytesOut int64
+	streamBytesIn  int64
 }
 
 func (rt *runtimeState) snapshot(workspaceID int64) Snapshot {
@@ -185,6 +189,8 @@ func (rt *runtimeState) snapshot(workspaceID int64) Snapshot {
 	if !rt.idleDeadline.IsZero() {
 		snapshot.IdleDeadlineAt = rt.idleDeadline.Unix()
 	}
+	snapshot.StreamBytesOut = rt.streamBytesOut
+	snapshot.StreamBytesIn = rt.streamBytesIn
 	if rt.navigation != nil {
 		navigation := *rt.navigation
 		snapshot.Navigation = &navigation
@@ -403,6 +409,26 @@ func (m *Manager) Touch(workspaceID int64) {
 		return
 	}
 	m.touchRuntime(rt, m.now())
+}
+
+// CountStream adds the transferred framebuffer and input bytes of a display
+// stream to the runtime counters.
+func (m *Manager) CountStream(workspaceID int64, outBytes int64, inBytes int64) {
+	if workspaceID <= 0 || (outBytes <= 0 && inBytes <= 0) {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rt := m.runtimes[workspaceID]
+	if rt == nil {
+		return
+	}
+	if outBytes > 0 {
+		rt.streamBytesOut += outBytes
+	}
+	if inBytes > 0 {
+		rt.streamBytesIn += inBytes
+	}
 }
 
 // PutOwnership atomically replaces the guard ownership snapshot of a workspace.

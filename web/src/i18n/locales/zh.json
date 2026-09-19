@@ -5731,6 +5731,7 @@
     "Browser forward": "浏览器前进",
     "Refresh page": "刷新页面",
     "Login mode": "登录模式",
-    "Finish sign-in and lock": "完成登录并锁定"
+    "Finish sign-in and lock": "完成登录并锁定",
+    "Session {{state}} · stream {{stream}} · sent {{bytes}}": "会话 {{state}} · 画面流 {{stream}} · 已传画面 {{bytes}}"
   }
 }

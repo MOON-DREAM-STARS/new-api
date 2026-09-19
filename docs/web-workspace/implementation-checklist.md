@@ -1764,3 +1764,30 @@ remote Chrome credential holder
   - 已知观察（如实记录）：guard 对 `openaiassets.blob.core.windows.net`（页面图像资源）报 `policy_deny`；页面主体渲染不受影响，该主机不在白名单内，本次不扩大 allowlist。
 - 影响与失效说明：Phase 5 验收中"渲染真实远端 Chromium（可见 about:blank 标签与 `--no-sandbox` infobar）"为改造前历史观察，原文保留，已被本节取代；前端三视口验收目标不变。
 - NOT RUN：云端环境尚未部署 Web Workspace，故该窗口变更未在云端重建/验证；未运行全量 CI。
+
+## 后续变更（2026-09-19）：远程导航控制 + 登录回落 + 画面自适应 + 带宽计量
+
+- 状态：**PASS（本机验收；含 1 个真实缺陷修复）**，未闭合项见末尾 `NOT RUN`。
+- 背景：操作者要求 ①工具栏提供真实的浏览器后退/前进/刷新，链路为「工具栏 → New API（鉴权 + 所有权校验）→ Agent 内部 API → Guard(CDP)」；②LOGIN 模式可显式回落到 LOCKED；③远端画面按窗口自适应（高度上限 1440p）并修复主窗口未居中铺满；④在**保持 RFB over 同源 WSS 架构不变**的前提下做轻量带宽优化与计量。架构、端口与安全边界均未变更。
+- 实现：
+  - **Guard**（`browser-agent/internal/guard/navigation.go`、`guard.go`、`cdp.go`）：300ms 轮询 `.guard/command.json`，在既有唯一 page session 上执行 `Page.getNavigationHistory` / `Page.navigateToHistoryEntry` / `Page.reload`，原子写 `navigation.json` 回执；`id` 非递增一律忽略（幂等）；app window 优先（最早 attach 的 page session），popup 不抢占主窗口；导航仍走既有 Fetch + ownership 策略，未新增 CDP 连接或 consumer。`cdp.go` 仅新增复用同一 WebSocket 的 `callResult`。
+  - **Agent**（`internal/manager/navigation.go`、`manager.go`、`httpapi/server.go`、`internal/stream/proxy.go`）：`Navigate` 原子写命令并在 2s 内等待匹配回执（超时 504 `navigation_timeout` / 写入失败 409 `navigation_unavailable` / 未运行 409 `runtime_not_running`）；`Snapshot` 新增 `mode`、`navigation`、`stream_bytes_out/in`；RFB 代理按秒节流累计双向字节并在流结束时 flush。
+  - **New API**（`controller/web_workspace.go`、`service/webworkspace/*`、`dto/web_workspace.go`、`router/web-workspace-router.go`）：新增 `POST /api/web-workspace/session/:id/navigation` 与 `POST /session/:id/activity`；start/restart 支持可选 `screen_width/screen_height`（Agent 与 New API 双侧同范围校验 640..3840 / 360..2160），restart 另支持 `mode`（**对外只接受 `LOCKED`**，进入 LOGIN 仍是运维动作）；session DTO 新增 `mode`/`navigation`/`stream_bytes_out/in`，**不含远端 URL**；`GET /session` 对 live session 先从 Agent 取真实快照再返回，使导航能力与计量不是陈旧缓存。
+  - **前端**（`web/src/features/web-workspace/*`）：工具栏三键（`浏览器后退/浏览器前进/刷新页面`，启用状态全部来自真实 `navigation` + `surface.status`，命令进行中禁用），沉浸模式保留三键 + 退出沉浸的极简浮动控件组；frame 测量上提到 `index.tsx`，启动/重启下发 `remoteScreenSizeForFrame` 计算出的远端尺寸；`computePresentation.cropX` 改为主区域内居中（永不小于 `cropLeft`）；⋯ 菜单在 LOGIN 模式显示「完成登录并锁定」；连接详情显示真实已传画面字节；标签页隐藏时断开 RFB 并每 60s 调 `activity` 保活。
+  - **运行镜像**（`browser-agent/runtime/entrypoint.sh`，同步更新 `runtime/README.md`）：x11vnc 去掉 `-noxdamage`（改用 X DAMAGE），新增 `-deferupdate 30`，其余参数不变。
+- 验收中发现并修复的真实缺陷：workspace 工具栏 ⋯ 菜单把 `DropdownMenuLabel` 直接放在 `DropdownMenuContent` 内（Base UI 需要 `Menu.Group` 上下文），**在浏览器中打开该菜单会抛错并把整页切到 500 错误页**（`docs` 之外的真实功能缺陷）。已按仓库既有约定包裹 `DropdownMenuGroup`，并补回此前被迫跳过的 jsdom 回归用例。
+- 本机验收环境：`newapi-acceptance`（127.0.0.1:3000）、`ws-agent`、runtime `newapi-ws-runtime-1`（workspace 1，远端屏幕 1996×934），验收账号 `root`。
+- 实测（2026-09-19，Asia/Singapore）：
+  - **导航**（真实 UI + 运行中的真实 ChatGPT 页面）：远端 `location.hash` 变化后 5s 内工具栏「后退」变为可用；点击后退 → 远端 URL 由 `https://chatgpt.com/#ww-ui-nav` 回到 `https://chatgpt.com/` 且「前进」随即可用；点击前进 → 回到 `#ww-ui-nav`；点击刷新 → 远端 `performance.timeOrigin` 1789798047643 → 1789798083732（真实 reload），URL/title 保持、`document.readyState=complete`。
+  - **画面自适应**：会话启动时下发 1996×934（对应启动瞬间 1736×934 的 frame，agent 侧无 clamp 触发）；容器 `WW_SCREEN_WIDTH/HEIGHT=1996/934`；三视口 + 沉浸截图位于 `C:\Users\admin\.codex\visualizations\2026\09\19\web-workspace-redesign\2026-09-19-web-workspace-nav-*.png`，实测 frame/canvas：1280×720 → 1096×574 / 1260×590；1920×1080 → 1736×934 / 1996×934（1:1，stage transform `matrix(1, 0, 0, 1, -260, 0)`）；2560×1440 → 2376×1294 / 2765×1294；沉浸 1920×1080 → 1872×982 / 2152×1007；四组均 `overflowX=0`、canvas 完全覆盖 frame 内容盒（frame 自身 1px 边框除外）、console error 0。
+  - **登录回落**：运维把 runtime 置为 LOGIN 后，工具栏 6s 内显示「登录模式」，⋯ 菜单出现「完成登录并锁定」，连接详情显示 `会话 RUNNING · 画面流 connected · 已传画面 190.2 KB`（真实 runtime 计量）；点击后容器重建为 `WW_GUARD_MODE=LOCKED`（画幅保持 1996×934），「登录模式」标记消失。
+  - **带宽 / 计量**（runtime 容器 eth0 计数）：空闲 120s 出站 +4.0 KB、入站 +3.4 KB（≈33 B/s，≈0.11 MB/小时），对比调优前基线 +86.5 KB/120s（≈721 B/s）下降约 95%；标签页隐藏 150s：canvas 消失（RFB 已断开）、运行时保持 IDLE 且 `idle_deadline_at` 每 60s 推进（1789799416 → 1789799477 → 1789799537）、`stream_bytes_out` 停止增长、出站 +3.3 KB（≈0.075 MB/小时，低于 0.2 MB/小时要求）；恢复可见后 12s 内 canvas 与 connected 自动恢复、运行时回到 RUNNING。活跃滚动 60s（219 次滚轮事件）：出站 +42.8 KB（≈2.51 MB/小时），但该刺激只产生 748 B 新画面（未登录落地页几乎不滚动），不足以证明「活跃场景出站下降 ≥10%」。
+  - **命令与结果**：browser-agent `gofmt -l .`（空）+ `go test ./... -count=1`（全绿，含新增 guard/manager/httpapi 用例）；New API `gofmt -l`（改动文件空）+ `go test ./service/webworkspace/... ./router/... -count=1`（绿）+ `go build ./...`（OK）；前端 `npm run typecheck`（0 error）、`npx vitest run src/features/web-workspace`（12 files / 75 tests 全绿）、`npx oxlint -c .oxlintrc.json src/features/web-workspace`（0 error）、`npm run build`（OK）。
+  - 本机构建说明：验收环境无法访问 `proxy.golang.org`，因此 guard 二进制先用本机 Go 模块缓存编译、再以等价的本地 Dockerfile 打进 `newapi-web-workspace-runtime:local`（apk/Chromium 层复用缓存）；仓库内 `runtime/Dockerfile` 未改动，正常网络环境仍按原方式构建。
+- 提交（本地，未 push）：`feat(web-workspace): real remote navigation channel`（`5dd300cf`）、`feat(web-workspace): expose the runtime mode and lock after sign-in`（`944b442a`）、`feat(web-workspace): size the remote screen to the workspace frame`（`e5520a48`）、本次「stream bytes + hidden-tab pause + ⋯ 菜单修复 + 本小节」为第 4 个 commit。
+- NOT RUN / 未闭合（如实记录）：
+  - Provider live 登录：ChatGPT 目前仍未登录（页面显示 Log in / Sign up），因此「完成登录并锁定后 ChatGPT 仍为已登录态」未验证，需操作者手动登录后按同一流程复测。
+  - 活跃场景 A/B：未在同一刺激下复测调优前镜像，故「活跃出站下降 ≥10%」**未验证**；当前保留 DAMAGE + `-deferupdate 30`（依据：空闲出站下降约 95%、三视口截图无可见清晰度退化），云端阶段应补一次受控 A/B。
+  - 真实 popup 抢占主窗口场景：`window.open` 被 Chromium 弹窗拦截器阻止，无法在真实运行时复现第二个 page target，该路径仅有 fake CDP harness 单测覆盖。
+  - `cropLeft` 重新标定：本次仍为 260（1920×1080 下 1:1 裁切实测 stage transform `-260`），未重标定，也未出现需要更新的证据。
+  - 隐藏标签页保活的长时间（>10 分钟）稳定性、云端部署与云端验收、跨用户真实攻击复测、>3840 宽画幅、KasmVNC/H.264 备用显示后端、全量 CI。

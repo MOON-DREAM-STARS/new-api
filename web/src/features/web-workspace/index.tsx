@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { Minimize2 } from 'lucide-react'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { SectionPageLayout } from '@/components/layout'
@@ -37,6 +37,7 @@ import {
   WorkspaceToolbar,
 } from './components/workspace-toolbar'
 import { useCompactSidebar } from './hooks/use-compact-sidebar'
+import { useDocumentVisibility } from './hooks/use-document-visibility'
 import { useDesktopViewport } from './hooks/use-desktop-viewport'
 import { useElementSize } from './hooks/use-element-size'
 import { useImmersiveMode } from './hooks/use-immersive-mode'
@@ -50,15 +51,18 @@ import {
   useRestartWebWorkspaceSession,
   useStartWebWorkspaceSession,
   useStopWebWorkspaceSession,
+  useWebWorkspaceActivity,
   useWebWorkspaceSession,
 } from './hooks/use-web-workspace-session'
 import { resolveWebWorkspaceAccess } from './lib/access'
 import { resolveConnection } from './lib/connection'
+import { formatByteSize } from './lib/bytes'
 import { classifyWebWorkspaceError } from './lib/errors'
 import {
   findPresentationProfile,
   remoteScreenSizeForFrame,
 } from './lib/presentation'
+import { WEB_WORKSPACE_HIDDEN_ACTIVITY_INTERVAL_MS } from './constants'
 import { isLiveSessionState } from './lib/session'
 import type {
   WebProject,
@@ -99,6 +103,8 @@ export function WebWorkspace() {
   const provider = useWebWorkspaceProvider(ready)
   const startMutation = useStartWebWorkspaceSession()
   const stopMutation = useStopWebWorkspaceSession()
+  const activityMutation = useWebWorkspaceActivity()
+  const isVisible = useDocumentVisibility()
   const restartMutation = useRestartWebWorkspaceSession()
   const navigationMutation = useNavigateWebWorkspaceSession()
   const removal = useProjectRemovalNotice(projectsQuery.data)
@@ -125,8 +131,25 @@ export function WebWorkspace() {
 
   const surface = useRemoteSurface({
     sessionId: session?.session_id ?? '',
-    enabled: isDesktop && isLive,
+    // A hidden tab detaches the display stream: no framebuffer is sent while
+    // the user cannot see it, and the runtime is kept alive by the activity
+    // keep-alive below instead.
+    enabled: isDesktop && isLive && isVisible,
   })
+
+  const keepAlive = useRef<() => void>(() => undefined)
+  keepAlive.current = () => {
+    if (session) activityMutation.mutate(session.session_id)
+  }
+  useEffect(() => {
+    if (isVisible || !isLive) return undefined
+    const timer = window.setInterval(() => {
+      keepAlive.current()
+    }, WEB_WORKSPACE_HIDDEN_ACTIVITY_INTERVAL_MS)
+    return () => {
+      window.clearInterval(timer)
+    }
+  }, [isVisible, isLive])
 
   // The frame is measured here so the remote screen size proposal and the
   // presentation crop both derive from the same real element box.
@@ -229,10 +252,14 @@ export function WebWorkspace() {
       <SectionPageLayout.Actions>
         <WorkspaceToolbar
           connection={connection}
-          connectionDetail={t('Session {{state}} · stream {{stream}}', {
-            state: session?.state ?? t('Not started'),
-            stream: surface.status,
-          })}
+          connectionDetail={t(
+            'Session {{state}} · stream {{stream}} · sent {{bytes}}',
+            {
+              state: session?.state ?? t('Not started'),
+              stream: surface.status,
+              bytes: formatByteSize(session?.stream_bytes_out ?? 0),
+            }
+          )}
           currentProjectName={selectedProject?.name ?? null}
           sessionMode={session?.mode ?? null}
           isLive={isLive}

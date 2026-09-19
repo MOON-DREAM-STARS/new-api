@@ -61,6 +61,8 @@ type AgentRuntime struct {
 	CreatedAt      int64            `json:"created_at"`
 	LastActivityAt int64            `json:"last_activity_at"`
 	IdleDeadlineAt int64            `json:"idle_deadline_at"`
+	StreamBytesOut int64            `json:"stream_bytes_out"`
+	StreamBytesIn  int64            `json:"stream_bytes_in"`
 	Navigation     *AgentNavigation `json:"navigation"`
 }
 
@@ -293,6 +295,17 @@ func (c *AgentClient) NavigateRuntime(ctx context.Context, workspaceId int, acti
 		return nil, fmt.Errorf("%w: navigation response is missing navigation", ErrAgentUnavailable)
 	}
 	return result.Navigation, nil
+}
+
+// TouchRuntime refreshes the idle deadline of a workspace runtime and returns
+// its updated snapshot.
+func (c *AgentClient) TouchRuntime(ctx context.Context, workspaceId int) (*AgentRuntime, error) {
+	var runtime AgentRuntime
+	path := fmt.Sprintf("/internal/v1/runtimes/%d/activity", workspaceId)
+	if err := c.do(ctx, http.MethodPost, path, nil, &runtime); err != nil {
+		return nil, err
+	}
+	return &runtime, nil
 }
 
 // PutOwnership publishes the workspace ownership document the guard enforces.

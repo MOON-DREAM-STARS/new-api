@@ -28,6 +28,7 @@ func SetWebWorkspaceRouter(apiRouter *gin.RouterGroup) {
 		webWorkspaceRoute.DELETE("/session/:id", controller.StopWebWorkspaceSession)
 		webWorkspaceRoute.POST("/session/:id/restart", controller.RestartWebWorkspaceSession)
 		webWorkspaceRoute.POST("/session/:id/navigation", controller.NavigateWebWorkspaceSession)
+		webWorkspaceRoute.POST("/session/:id/activity", controller.TouchWebWorkspaceActivity)
 		webWorkspaceRoute.POST("/session/:id/stream-ticket", controller.CreateWebWorkspaceStreamTicket)
 	}
 
