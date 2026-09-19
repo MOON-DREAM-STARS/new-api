@@ -111,3 +111,9 @@ docker run --rm -v "$PWD/..:/src" -w /src/browser-agent golang:1.26.1-alpine \
   sh -c "gofmt -l . ; GOWORK=off go vet ./... && GOWORK=off go test ./... -count=1"
 GOWORK=off go build ./cmd/browser-agent
 ```
+
+容器构建（构建上下文为 browser-agent/）：
+
+```sh
+docker build -t <tag> .
+```
