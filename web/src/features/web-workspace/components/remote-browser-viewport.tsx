@@ -35,6 +35,7 @@ type RemoteBrowserViewportProps = {
   sessionState: string | undefined
   enabled: boolean
   immersive: boolean
+  revealProviderChrome: boolean
   /** Frame element and its measured box, owned by the page. */
   frameRef: RefObject<HTMLDivElement | null>
   frameSize: { width: number; height: number } | null
@@ -108,6 +109,7 @@ export function RemoteBrowserViewport(props: RemoteBrowserViewportProps) {
     provider: props.provider,
     screen: props.surface.screen,
     frame: props.frameSize,
+    revealProviderChrome: props.revealProviderChrome,
   })
   const presentationReady = presentation.status === 'ready'
   const surfaceConnected =
@@ -176,6 +178,16 @@ export function RemoteBrowserViewport(props: RemoteBrowserViewportProps) {
 
   return (
     <div className='relative flex min-h-0 flex-1 flex-col'>
+      {props.revealProviderChrome ? (
+        <div
+          role='status'
+          className='bg-destructive/5 text-destructive mb-3 rounded-lg border px-3 py-2 text-sm'
+        >
+          {t(
+            'Automatic creation failed. Create the project in the side panel of the full remote browser; cropping is restored automatically once the guard observes it.'
+          )}
+        </div>
+      ) : null}
       <div
         ref={props.frameRef}
         data-testid='web-workspace-surface-frame'

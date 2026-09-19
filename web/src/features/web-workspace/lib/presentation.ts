@@ -116,6 +116,7 @@ export type PresentationInput = {
   provider: string | null | undefined
   screen: RemoteScreenSize | null | undefined
   frame: FrameSize | null | undefined
+  revealProviderChrome?: boolean | null
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -154,7 +155,8 @@ export function computePresentation(
   const screen = input.screen as RemoteScreenSize
   const frame = input.frame as FrameSize
   const maxCropLeft = Math.max(0, screen.width - profile.minVisibleWidth)
-  const cropLeft = clamp(Math.round(profile.cropLeft), 0, maxCropLeft)
+  const baseCropLeft = input.revealProviderChrome ? 0 : profile.cropLeft
+  const cropLeft = clamp(Math.round(baseCropLeft), 0, maxCropLeft)
   const visibleWidth = screen.width - cropLeft
   const visibleHeight = screen.height
   if (visibleWidth <= 0 || visibleHeight <= 0) {

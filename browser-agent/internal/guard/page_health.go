@@ -468,6 +468,17 @@ func (p *pageHealthController) reload(ctx context.Context, sessionID string) (bo
 	return true, nil
 }
 
+// snapshot is the latest published page state. Callers that only observe the
+// page (the creation controller) must not touch the retry schedule.
+func (p *pageHealthController) snapshot() pageHealthSnapshot {
+	if p == nil {
+		return pageHealthSnapshot{}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.statusLocked()
+}
+
 func (p *pageHealthController) statusLocked() pageHealthSnapshot {
 	return pageHealthSnapshot{
 		state:     p.state,

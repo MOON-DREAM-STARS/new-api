@@ -21,6 +21,7 @@ import { WEB_WORKSPACE_ERROR_CODES } from '../constants'
 export type WebWorkspaceErrorKind =
   | 'session_required'
   | 'project_limit'
+  | 'project_creation_in_progress'
   | 'agent_unavailable'
   | 'resource_removed'
   | 'forbidden'
@@ -51,6 +52,8 @@ export const WEB_WORKSPACE_ERROR_MESSAGE_KEYS: Record<
   session_required: 'Start a browser session before creating a project.',
   project_limit:
     'You have reached the project limit. Remove an existing project first.',
+  project_creation_in_progress:
+    'A project creation is already running. Finish it or wait for it to fail before starting another.',
   agent_unavailable:
     'The browser agent is unavailable right now. Try again in a moment.',
   resource_removed: 'This resource is unavailable or has been removed.',
@@ -92,6 +95,8 @@ function classifyKind(
       return 'session_required'
     case WEB_WORKSPACE_ERROR_CODES.projectLimit:
       return 'project_limit'
+    case WEB_WORKSPACE_ERROR_CODES.projectCreationInProgress:
+      return 'project_creation_in_progress'
     case WEB_WORKSPACE_ERROR_CODES.agentUnavailable:
     case 'WEB_WORKSPACE_NAVIGATION_TIMEOUT':
     case 'WEB_WORKSPACE_NAVIGATION_UNAVAILABLE':

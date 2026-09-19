@@ -1845,3 +1845,31 @@ remote Chrome credential holder
   - **自动重试预算耗尽的 `FAILED` 终态与「重新加载」按钮 live 未跑满**：live 只观测到 `RETRYING`（attempts 1→2），3 次耗尽路径由 Guard 单测覆盖；错误码在两次 live 注入中分别为 `ERR_ABORTED`（reload 中断）与 `ERR_ACCESS_DENIED`（策略拒绝），**未**在 live 复现 `ERR_TUNNEL_CONNECTION_FAILED` 本身。
   - **一次未复现的 runtime 自退**：2026-09-19 16:59 前后 workspace 1 的 runtime 在连续 3 次被拒导航之后被 agent 记为 `runtime container is exited`（FAILED）；随后 9 分钟 soak 与同类注入未再复现，未定位根因，列为开放风险。
   - 云端部署与云端验收、隐藏标签页 >10 分钟稳定性、跨用户真实攻击复测、>3840 宽画幅、KasmVNC / H.264 备用显示后端、全量 CI。
+
+## 后续变更（2026-09-19）：项目自动创建（Guard 驱动真实 Provider UI）+ 居中项目管理窗口
+
+- 状态：**代码与聚焦 diagnostic PASS**；真实 Provider 自动创建验收见本节 `NOT RUN`（改为随云端受控部署一并验收）。
+- 背景：旧流程要求操作者在被裁掉的远程 ChatGPT 侧边栏里手动创建项目，但该侧栏属于「不可暴露的原生 Shell」，用户根本看不到，流程自相矛盾；同时项目管理面板是右侧 Sheet，不是居中窗口。
+- 契约（全程 URL-free，新增字段均可空）：
+  - `POST /api/web-workspace/projects` 请求体改为 `{"name":"..."}`：trim 后 1–64 Unicode 字符；非法 → `400 WEB_WORKSPACE_INVALID_REQUEST`。
+  - 已有创建仍在运行时再次签发 → `409 WEB_WORKSPACE_PROJECT_CREATION_IN_PROGRESS`（`FAILED` 允许重试签发新 permit）。
+  - Agent `permit.json` 新增 `display_name`（空 = 旧的手动流程，保持兼容）。
+  - Guard 新增 `project-creation.json = {permit_id, state, error, updated_at}`，`state ∈ RUNNING|CREATED|FAILED`，`error ∈ ""|ERR_*`。
+  - Agent 快照 / New API session DTO / 前端 `WebWorkspaceSession` 新增可空 `project_creation`。
+  - 稳定失败码：`ERR_PROVIDER_LOGIN_REQUIRED`、`ERR_PROJECT_UI_NOT_FOUND`、`ERR_PROJECT_NAME_REJECTED`、`ERR_PROJECT_CREATE_TIMEOUT`。
+- 实现：
+  - **Guard**（新增 `internal/guard/project_creation.go`，接线 `guard.go`）：新增 300ms 轮询的创建控制器，复用既有**唯一 CDP consumer**（不新增连接、不新增事件消费者）。步骤：页面 `READY` 且探测到 role/accessible name 匹配 `New project` 的控件 → 用真实 `Input.dispatchMouseEvent` 点击 → 探测名称 `textbox`（必须 accessible name/placeholder 命中 `project|name`，否则 fail closed，绝不误填聊天输入框）→ 点击聚焦 + `Input.insertText` 写入 permit 的名字 → 命中显式提交按钮则点击，否则 `Input.dispatchKeyEvent` 回车 → 等待真实导航。**控制器从不消费 permit、从不写 observation**：仍由 ownership 阶段在真实导航到 `/g/g-p-...` 时消费并写 `project_created`，控制器只把 `permit.consumed` 反射成 `CREATED`（因此「失败后手动完成」也会自动转为 `CREATED`）。失败只写 `FAILED` 且**不消费 permit**，同 permit 不自动重试。
+  - **失败判定**：探测不到创建入口且页面出现登录/注册控件 → `ERR_PROVIDER_LOGIN_REQUIRED`；探测不到且无登录控件（超过 15s UI grace）→ `ERR_PROJECT_UI_NOT_FOUND`；提交后出现真实校验错误 → `ERR_PROJECT_NAME_REJECTED`；整轮超过 90s → `ERR_PROJECT_CREATE_TIMEOUT`（远小于 300s permit TTL，留出手动兜底时间）。页面进入 `FAILED` 健康态同样 fail closed。
+  - **Agent**（`internal/manager/{filesystem,manager,navigation,project_creation}.go`、`internal/httpapi/server.go`）：permit 透传并校验 `display_name`（>64 rune 拒绝）；从 `project-creation.json` 解析并严格校验（缺字段/未知 state/负时间戳/非 `ERR_*` → `null`），并入快照。
+  - **New API**（`dto/web_workspace.go`、`service/webworkspace/{sync,session,agent_client}.go`、`controller/web_workspace.go`）：名称校验与归一化、`display_name` 透传、进行中 409（best-effort 读取运行时创建态；guard 保持最终裁决）、session DTO 映射。
+  - **前端**（`web/src/features/web-workspace/**`）：`ProjectCreateDialog` 改为名称表单 → 自动创建（进行中 spinner；每 2s 轮询真实 session/项目列表；`CREATED` 自动关闭并刷新）；`FAILED` 显示兜底提示 + 真实错误码 + 重试；`ProjectDrawer` 由右侧 Sheet 改为**居中 Dialog**；`presentation` 新增 `revealProviderChrome`（为 true 时 `cropLeft=0`，坐标换算仍走同一 transform），`index.tsx` 仅在 `project_creation.state==='FAILED'` 时置真并在 viewport 顶部显示提示条。zh/en i18n 同步。
+- 聚焦 diagnostic（2026-09-19，Asia/Singapore；Docker `golang:1.26.1-alpine` + 本机 `node_modules/.bin`）：
+  - browser-agent：`gofmt -l .`（空）、`go vet ./...`（无输出）、`go test ./... -count=1`（全绿，guard 23.6s；新增 7 个创建控制器用例：自动创建全链路真实 CDP 命令、登出 → `ERR_PROVIDER_LOGIN_REQUIRED` 且不消费 permit、UI 缺失、名称被拒、超时且 permit 仍可用、旧 permit（无 `display_name`）零交互、失败后手动完成 → `CREATED`）。
+  - New API：`gofmt -l`（改动文件空）、`go build ./...`（OK）、`go test ./service/webworkspace/... ./controller/... ./router/... -count=1`（全绿；新增名称校验 / 进行中 409 / `display_name` 透传 / session `project_creation` 用例）。
+  - runtime 镜像：`docker build -f runtime/Dockerfile`（多阶段 Guard 构建）**OK**。
+  - 前端：`tsgo -b`（0 error）、`vitest run src/features/web-workspace`（13 files / 87 tests 全绿）、`oxlint src/features/web-workspace src/i18n`（0 error）。
+- 提交（本地）：`feat(web-workspace): create projects from the workspace without the provider sidebar`。
+- NOT RUN / 未闭合（如实记录）：
+  - **真实 Provider 自动创建 / 登出 fallback 的本地 live 验收未执行**：需要一个运行新代码的本地 New API + agent + runtime 与操作者真实 ChatGPT 登录态；本机当前只运行旧候选的 acceptance 栈，未重建。该验收改随云端受控部署以真实登录态执行（见运维日期记录）。
+  - `npm run format:check`（仓库脚本依赖 PATH 上的全局 `oxfmt`，本机未安装；用 `node_modules/.bin/oxfmt` 走等价配置检查时，仓库**既存**的 37 个未涉及文件（含 `src/features/web-workspace/lib/bytes.ts` 等已提交文件）同样报格式差异，属既有 formatter 版本漂移，未按本次范围重排无关文件）。
+  - 云端部署与云端验收、跨用户真实攻击复测、>3840 画幅、KasmVNC / H.264 备份显示后端、全量 CI。

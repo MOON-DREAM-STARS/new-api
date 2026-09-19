@@ -22,12 +22,12 @@ import { useTranslation } from 'react-i18next'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from '@/components/ui/sheet'
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { Spinner } from '@/components/ui/spinner'
 import { cn } from '@/lib/utils'
 
@@ -53,7 +53,7 @@ type ProjectDrawerProps = {
 /**
  * Full project management, opened on demand. It overlays the remote browser
  * instead of permanently narrowing it: the rail stays 64px wide and this
- * drawer carries the complete names and the real create/rename/delete flows.
+ * dialog carries the complete names and the real create/rename/delete flows.
  */
 export function ProjectDrawer(props: ProjectDrawerProps) {
   const { t } = useTranslation()
@@ -135,19 +135,16 @@ export function ProjectDrawer(props: ProjectDrawerProps) {
   }
 
   return (
-    <Sheet open={props.open} onOpenChange={props.onOpenChange}>
-      <SheetContent
-        side='right'
-        className='flex w-full flex-col gap-3 sm:max-w-sm'
-      >
-        <SheetHeader>
-          <SheetTitle>{t('Projects')}</SheetTitle>
-          <SheetDescription>
+    <Dialog open={props.open} onOpenChange={props.onOpenChange}>
+      <DialogContent className='sm:max-w-lg'>
+        <DialogHeader>
+          <DialogTitle>{t('Projects')}</DialogTitle>
+          <DialogDescription>
             {t(
               'Projects are registered by the browser guard when they are created inside the remote browser.'
             )}
-          </SheetDescription>
-        </SheetHeader>
+          </DialogDescription>
+        </DialogHeader>
 
         <div className='flex items-center gap-2'>
           <Button
@@ -197,8 +194,8 @@ export function ProjectDrawer(props: ProjectDrawerProps) {
           </Alert>
         ) : null}
 
-        <div className='min-h-0 flex-1 overflow-y-auto'>{renderList()}</div>
-      </SheetContent>
-    </Sheet>
+        <div className='max-h-[60vh] overflow-y-auto'>{renderList()}</div>
+      </DialogContent>
+    </Dialog>
   )
 }

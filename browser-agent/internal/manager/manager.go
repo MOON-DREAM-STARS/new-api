@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/browser-agent/internal/policy"
 	"github.com/QuantumNous/new-api/browser-agent/internal/runtime"
@@ -73,6 +74,10 @@ const (
 	maxPermitIDLength       = 64
 	minPermitTTLSeconds     = 1
 	maxPermitTTLSeconds     = 3600
+
+	// projectDisplayNameMaxRunes matches the control plane limit: the guard
+	// types the name into the real provider UI, so the bound is frozen here too.
+	projectDisplayNameMaxRunes = 64
 )
 
 var (
@@ -93,17 +98,18 @@ var (
 // Snapshot is the runtime JSON shape exposed by the HTTP API. It never contains
 // container addresses, ports, Docker identifiers or file system paths.
 type Snapshot struct {
-	RuntimeID      string            `json:"runtime_id"`
-	WorkspaceID    int64             `json:"workspace_id"`
-	State          State             `json:"state"`
-	Mode           policy.Mode       `json:"mode"`
-	CreatedAt      int64             `json:"created_at"`
-	LastActivityAt int64             `json:"last_activity_at"`
-	IdleDeadlineAt int64             `json:"idle_deadline_at"`
-	StreamBytesOut int64             `json:"stream_bytes_out"`
-	StreamBytesIn  int64             `json:"stream_bytes_in"`
-	Navigation     *NavigationStatus `json:"navigation"`
-	Page           *PageStatus       `json:"page"`
+	RuntimeID       string            `json:"runtime_id"`
+	WorkspaceID     int64             `json:"workspace_id"`
+	State           State             `json:"state"`
+	Mode            policy.Mode       `json:"mode"`
+	CreatedAt       int64             `json:"created_at"`
+	LastActivityAt  int64             `json:"last_activity_at"`
+	IdleDeadlineAt  int64             `json:"idle_deadline_at"`
+	StreamBytesOut  int64             `json:"stream_bytes_out"`
+	StreamBytesIn   int64             `json:"stream_bytes_in"`
+	Navigation      *NavigationStatus `json:"navigation"`
+	Page            *PageStatus       `json:"page"`
+	ProjectCreation *ProjectCreation  `json:"project_creation"`
 }
 
 // StartOptions carries the request parameters of a runtime start.
@@ -162,21 +168,22 @@ type ObservationPage struct {
 }
 
 type runtimeState struct {
-	state          State
-	provider       string
-	width          int
-	height         int
-	mode           policy.Mode
-	containerID    string
-	ip             string
-	createdAt      time.Time
-	lastActivity   time.Time
-	idleDeadline   time.Time
-	navCommandID   int64
-	navigation     *NavigationStatus
-	page           *PageStatus
-	streamBytesOut int64
-	streamBytesIn  int64
+	state           State
+	provider        string
+	width           int
+	height          int
+	mode            policy.Mode
+	containerID     string
+	ip              string
+	createdAt       time.Time
+	lastActivity    time.Time
+	idleDeadline    time.Time
+	navCommandID    int64
+	navigation      *NavigationStatus
+	page            *PageStatus
+	projectCreation *ProjectCreation
+	streamBytesOut  int64
+	streamBytesIn   int64
 }
 
 func (rt *runtimeState) snapshot(workspaceID int64) Snapshot {
@@ -200,6 +207,10 @@ func (rt *runtimeState) snapshot(workspaceID int64) Snapshot {
 	if rt.page != nil {
 		page := *rt.page
 		snapshot.Page = &page
+	}
+	if rt.projectCreation != nil {
+		creation := *rt.projectCreation
+		snapshot.ProjectCreation = &creation
 	}
 	return snapshot
 }
@@ -483,9 +494,11 @@ func (m *Manager) PutOwnership(workspaceID int64, update Ownership) (OwnershipCo
 // IssuePermit writes a short-lived single-use creation permit for the runtime of
 // a workspace and drops the consumed marker of the previous permit, so the guard
 // only treats the new permit as spendable.
-func (m *Manager) IssuePermit(workspaceID int64, permitID string, kind string, ttlSeconds int) (IssuedPermit, error) {
+func (m *Manager) IssuePermit(workspaceID int64, permitID string, kind string, ttlSeconds int, displayName string) (IssuedPermit, error) {
+	name := strings.TrimSpace(displayName)
 	if workspaceID <= 0 || len(permitID) < minPermitIDLength || len(permitID) > maxPermitIDLength ||
-		kind != permitKindProjectCreate || ttlSeconds < minPermitTTLSeconds || ttlSeconds > maxPermitTTLSeconds {
+		kind != permitKindProjectCreate || ttlSeconds < minPermitTTLSeconds || ttlSeconds > maxPermitTTLSeconds ||
+		utf8.RuneCountInString(name) > projectDisplayNameMaxRunes {
 		return IssuedPermit{}, fmt.Errorf("%w: permit request is invalid", ErrInvalidRequest)
 	}
 
@@ -516,10 +529,11 @@ func (m *Manager) IssuePermit(workspaceID int64, permitID string, kind string, t
 	defer guardRoot.Close()
 	now := m.now()
 	permit := guardPermit{
-		PermitID:  permitID,
-		Kind:      permitKindProjectCreate,
-		IssuedAt:  now.Unix(),
-		ExpiresAt: now.Add(time.Duration(ttlSeconds) * time.Second).Unix(),
+		PermitID:    permitID,
+		Kind:        permitKindProjectCreate,
+		IssuedAt:    now.Unix(),
+		ExpiresAt:   now.Add(time.Duration(ttlSeconds) * time.Second).Unix(),
+		DisplayName: name,
 	}
 	payload, err := json.Marshal(permit)
 	if err != nil {

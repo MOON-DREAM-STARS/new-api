@@ -101,20 +101,59 @@ func validAgentPageError(value string) bool {
 	return true
 }
 
+// Project creation states reported by the guard creation controller.
+const (
+	ProjectCreationStateRunning = "RUNNING"
+	ProjectCreationStateCreated = "CREATED"
+	ProjectCreationStateFailed  = "FAILED"
+)
+
+// AgentProjectCreation is the URL-free project creation state the guard
+// publishes. It never contains a provider identifier, address or credential.
+type AgentProjectCreation struct {
+	PermitId  string `json:"permit_id"`
+	State     string `json:"state"`
+	Error     string `json:"error"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
+// normalized rejects a creation state the control plane must not publish.
+// A missing, malformed or unknown state is reported as absent instead.
+func (creation *AgentProjectCreation) normalized() *AgentProjectCreation {
+	if creation == nil {
+		return nil
+	}
+	switch creation.State {
+	case ProjectCreationStateRunning, ProjectCreationStateCreated, ProjectCreationStateFailed:
+	default:
+		return nil
+	}
+	if creation.UpdatedAt < 0 || !validAgentPageError(creation.Error) {
+		return nil
+	}
+	return &AgentProjectCreation{
+		PermitId:  creation.PermitId,
+		State:     creation.State,
+		Error:     creation.Error,
+		UpdatedAt: creation.UpdatedAt,
+	}
+}
+
 // AgentRuntime is the metadata the agent exposes about one workspace runtime.
 // It never contains container addresses, ports or file system paths.
 type AgentRuntime struct {
-	RuntimeId      string           `json:"runtime_id"`
-	WorkspaceId    int              `json:"workspace_id"`
-	State          string           `json:"state"`
-	Mode           string           `json:"mode"`
-	CreatedAt      int64            `json:"created_at"`
-	LastActivityAt int64            `json:"last_activity_at"`
-	IdleDeadlineAt int64            `json:"idle_deadline_at"`
-	StreamBytesOut int64            `json:"stream_bytes_out"`
-	StreamBytesIn  int64            `json:"stream_bytes_in"`
-	Navigation     *AgentNavigation `json:"navigation"`
-	Page           *AgentPageStatus `json:"page"`
+	RuntimeId       string                `json:"runtime_id"`
+	WorkspaceId     int                   `json:"workspace_id"`
+	State           string                `json:"state"`
+	Mode            string                `json:"mode"`
+	CreatedAt       int64                 `json:"created_at"`
+	LastActivityAt  int64                 `json:"last_activity_at"`
+	IdleDeadlineAt  int64                 `json:"idle_deadline_at"`
+	StreamBytesOut  int64                 `json:"stream_bytes_out"`
+	StreamBytesIn   int64                 `json:"stream_bytes_in"`
+	Navigation      *AgentNavigation      `json:"navigation"`
+	Page            *AgentPageStatus      `json:"page"`
+	ProjectCreation *AgentProjectCreation `json:"project_creation"`
 }
 
 type agentRestartRuntimeRequest struct {
@@ -146,9 +185,10 @@ type agentOwnershipResult struct {
 }
 
 type agentPermitRequest struct {
-	PermitId   string `json:"permit_id"`
-	Kind       string `json:"kind"`
-	TtlSeconds int    `json:"ttl_seconds"`
+	PermitId    string `json:"permit_id"`
+	Kind        string `json:"kind"`
+	TtlSeconds  int    `json:"ttl_seconds"`
+	DisplayName string `json:"display_name,omitempty"`
 }
 
 type agentPermitResult struct {
@@ -376,8 +416,8 @@ func (c *AgentClient) PutOwnership(ctx context.Context, workspaceId int, generat
 
 // IssueProjectPermit asks the agent for one short-lived project creation
 // permit and returns the expiry the guard will enforce.
-func (c *AgentClient) IssueProjectPermit(ctx context.Context, workspaceId int, permitId string, ttlSeconds int) (int64, error) {
-	payload := agentPermitRequest{PermitId: permitId, Kind: ProjectPermitKind, TtlSeconds: ttlSeconds}
+func (c *AgentClient) IssueProjectPermit(ctx context.Context, workspaceId int, permitId string, ttlSeconds int, displayName string) (int64, error) {
+	payload := agentPermitRequest{PermitId: permitId, Kind: ProjectPermitKind, TtlSeconds: ttlSeconds, DisplayName: displayName}
 	path := fmt.Sprintf("/internal/v1/runtimes/%d/permits", workspaceId)
 	var result agentPermitResult
 	if err := c.do(ctx, http.MethodPost, path, payload, &result); err != nil {

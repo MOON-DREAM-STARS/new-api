@@ -250,6 +250,9 @@ type permitRequest struct {
 	PermitID   string `json:"permit_id"`
 	Kind       string `json:"kind"`
 	TTLSeconds int    `json:"ttl_seconds"`
+	// DisplayName is the operator-facing project name of an automatic creation.
+	// It stays empty for the legacy manual flow.
+	DisplayName string `json:"display_name"`
 }
 
 func (s *Server) handleIssuePermit(w http.ResponseWriter, r *http.Request) {
@@ -263,7 +266,7 @@ func (s *Server) handleIssuePermit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errorInvalidRequest)
 		return
 	}
-	permit, err := s.mgr.IssuePermit(workspaceID, request.PermitID, request.Kind, request.TTLSeconds)
+	permit, err := s.mgr.IssuePermit(workspaceID, request.PermitID, request.Kind, request.TTLSeconds, request.DisplayName)
 	if err != nil {
 		s.writeManagerError(w, workspaceID, err)
 		return

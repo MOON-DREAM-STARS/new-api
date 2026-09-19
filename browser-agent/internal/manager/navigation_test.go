@@ -26,6 +26,13 @@ func writeNavigationReceipt(t *testing.T, dir string, id int64, back bool, forwa
 	require.NoError(t, os.WriteFile(filepath.Join(dir, navigationReceiptFileName), payload, 0o644))
 }
 
+func writeProjectCreation(t *testing.T, dir string, creation map[string]any) {
+	t.Helper()
+	data, err := json.Marshal(creation)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, projectCreationName), data, 0o644))
+}
+
 func writePageNavigationReceipt(t *testing.T, dir string, page map[string]any) {
 	t.Helper()
 	payload := map[string]any{
@@ -237,4 +244,61 @@ func TestSnapshotParsesPageHealthAndRejectsInvalidValues(t *testing.T) {
 			require.NotNil(t, snapshot.Navigation, "page validation must not invalidate navigation state")
 		})
 	}
+}
+
+func TestSnapshotParsesProjectCreationAndRejectsInvalidValues(t *testing.T) {
+	h := newHarness(t)
+	workspaceID := int64(77)
+	_, err := h.mgr.Start(context.Background(), workspaceID, StartOptions{Provider: "chatgpt"})
+	require.NoError(t, err)
+
+	dir := guardStateDir(WorkspaceDir(h.dataRoot, workspaceID))
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	writeProjectCreation(t, dir, map[string]any{
+		"permit_id":  "permit-0001",
+		"state":      ProjectCreationStateRunning,
+		"error":      "",
+		"updated_at": 4321,
+	})
+
+	snapshot, found := h.mgr.Get(workspaceID)
+	require.True(t, found)
+	require.NotNil(t, snapshot.ProjectCreation)
+	assert.Equal(t, "permit-0001", snapshot.ProjectCreation.PermitID)
+	assert.Equal(t, ProjectCreationStateRunning, snapshot.ProjectCreation.State)
+	assert.Empty(t, snapshot.ProjectCreation.Error)
+	assert.Equal(t, int64(4321), snapshot.ProjectCreation.UpdatedAt)
+
+	// A finished failure keeps its stable error code.
+	writeProjectCreation(t, dir, map[string]any{
+		"permit_id":  "permit-0001",
+		"state":      ProjectCreationStateFailed,
+		"error":      "ERR_PROJECT_UI_NOT_FOUND",
+		"updated_at": 4322,
+	})
+	failed, found := h.mgr.Get(workspaceID)
+	require.True(t, found)
+	require.NotNil(t, failed.ProjectCreation)
+	assert.Equal(t, ProjectCreationStateFailed, failed.ProjectCreation.State)
+	assert.Equal(t, "ERR_PROJECT_UI_NOT_FOUND", failed.ProjectCreation.Error)
+
+	for name, creation := range map[string]map[string]any{
+		"missing fields":   {"permit_id": "permit-0001", "state": ProjectCreationStateRunning, "updated_at": 1},
+		"unknown state":    {"permit_id": "permit-0001", "state": "BUSY", "error": "", "updated_at": 1},
+		"negative updated": {"permit_id": "permit-0001", "state": ProjectCreationStateFailed, "error": "", "updated_at": -1},
+		"url in error":     {"permit_id": "permit-0001", "state": ProjectCreationStateFailed, "error": "https://provider.example/private", "updated_at": 1},
+		"non-string state": {"permit_id": "permit-0001", "state": 1, "error": "", "updated_at": 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			writeProjectCreation(t, dir, creation)
+			snapshot, found := h.mgr.Get(workspaceID)
+			require.True(t, found)
+			assert.Nil(t, snapshot.ProjectCreation)
+		})
+	}
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, projectCreationName), []byte("corrupt"), 0o644))
+	corrupt, found := h.mgr.Get(workspaceID)
+	require.True(t, found)
+	assert.Nil(t, corrupt.ProjectCreation)
 }

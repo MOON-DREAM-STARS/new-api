@@ -79,6 +79,8 @@ type Config struct {
 	// visible-content readiness probe.
 	contentProbeDelays  []time.Duration
 	contentProbeTimeout time.Duration
+	// creationTimings is test-only injection for the project creation controller.
+	creationTimings creationOptions
 }
 
 // Run connects to Chromium, installs the browser guard and blocks until the CDP
@@ -111,6 +113,7 @@ func Run(ctx context.Context, cfg Config) error {
 	g.navigation = newNavigationController(stateDir, client, logger)
 	g.pageHealth = newPageHealthController(client, g.navigation, cfg.StartURL, cfg.retryDelays, cfg.contentProbeDelays, cfg.contentProbeTimeout, logger)
 	g.navigation.onReload = g.pageHealth.reload
+	g.projectCreation = newProjectCreationController(stateDir, cfg.Mode, client, g.navigation, g.pageHealth, logger, cfg.creationTimings)
 	defer func() {
 		cancelRun()
 		g.waitBackground()
@@ -122,6 +125,7 @@ func Run(ctx context.Context, cfg Config) error {
 	g.runBackground(func() { g.pollOwnershipState(runCtx) })
 	g.runBackground(func() { g.pollNavigationState(runCtx) })
 	g.runBackground(func() { g.pageHealth.run(runCtx) })
+	g.runBackground(func() { g.projectCreation.run(runCtx) })
 	logger.Info("browser guard active", "event", "guard_active", "component", "guard", "mode", string(cfg.Mode))
 
 	select {
@@ -261,12 +265,13 @@ func isLoopbackHost(host string) bool {
 // guard holds the policy view of one runtime and the CDP client it enforces
 // through.
 type guard struct {
-	mode       policy.Mode
-	logger     *slog.Logger
-	client     *cdpClient
-	state      *providerState
-	navigation *navigationController
-	pageHealth *pageHealthController
+	mode            policy.Mode
+	logger          *slog.Logger
+	client          *cdpClient
+	state           *providerState
+	navigation      *navigationController
+	pageHealth      *pageHealthController
+	projectCreation *projectCreationController
 
 	backgroundMu     sync.Mutex
 	backgroundWG     sync.WaitGroup

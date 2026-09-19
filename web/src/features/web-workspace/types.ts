@@ -71,6 +71,14 @@ export type WebWorkspacePage = {
   updated_at: number
 }
 
+/** URL-free state for the provider-side project creation operation. */
+export type WebWorkspaceProjectCreation = {
+  permit_id: string
+  state: 'RUNNING' | 'CREATED' | 'FAILED'
+  error: string
+  updated_at: number
+}
+
 /** Control-plane view of one browser session. Runtime ids never reach the client. */
 export type WebWorkspaceSession = {
   session_id: string
@@ -83,6 +91,7 @@ export type WebWorkspaceSession = {
   stream_bytes_in: number
   navigation: WebWorkspaceNavigation | null
   page: WebWorkspacePage | null
+  project_creation: WebWorkspaceProjectCreation | null
 }
 
 export type WebWorkspaceStatus = {

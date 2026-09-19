@@ -204,14 +204,25 @@ func CreateWebWorkspaceProject(c *gin.Context) {
 	if user == nil {
 		return
 	}
+	var request dto.WebProjectCreateRequest
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid request body", "")
+		return
+	}
 	settings := system_setting.GetWebWorkspaceSettings()
-	permit, err := webworkspace.IssueProjectPermit(c.Request.Context(), user.Id, settings.MaxProjects)
+	permit, err := webworkspace.IssueProjectPermit(c.Request.Context(), user.Id, settings.MaxProjects, request.Name)
 	switch {
 	case errors.Is(err, webworkspace.ErrSessionRequired):
 		writeWebWorkspaceError(c, http.StatusConflict, webWorkspaceCodeSessionRequired, "a running web workspace session is required", "")
 		return
 	case errors.Is(err, webworkspace.ErrProjectLimitReached):
 		writeWebWorkspaceError(c, http.StatusConflict, webWorkspaceCodeProjectLimit, "web workspace project limit reached", "")
+		return
+	case errors.Is(err, webworkspace.ErrInvalidProjectName):
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "name must be 1-64 characters", "")
+		return
+	case errors.Is(err, webworkspace.ErrProjectCreationInProgress):
+		writeWebWorkspaceError(c, http.StatusConflict, webWorkspaceCodeProjectCreationInProgress, "a project creation is already running", "")
 		return
 	case err != nil:
 		writeWebWorkspaceSessionError(c, err)
@@ -330,6 +341,10 @@ const (
 	webWorkspaceCodeTicketInvalid         = "WEB_WORKSPACE_TICKET_INVALID"
 	webWorkspaceCodeNavigationTimeout     = "WEB_WORKSPACE_NAVIGATION_TIMEOUT"
 	webWorkspaceCodeNavigationUnavailable = "WEB_WORKSPACE_NAVIGATION_UNAVAILABLE"
+
+	// webWorkspaceCodeProjectCreationInProgress refuses a second creation while
+	// the guard is still running one for the same workspace.
+	webWorkspaceCodeProjectCreationInProgress = "WEB_WORKSPACE_PROJECT_CREATION_IN_PROGRESS"
 )
 
 // StartWebWorkspaceSession starts (or reuses) the caller's browser runtime. The
@@ -691,6 +706,14 @@ func toWebWorkspaceSessionDto(session *webworkspace.Session) dto.WebWorkspaceSes
 			Error:     session.Page.Error,
 			Attempts:  session.Page.Attempts,
 			UpdatedAt: session.Page.UpdatedAt,
+		}
+	}
+	if session.ProjectCreation != nil {
+		result.ProjectCreation = &dto.WebWorkspaceProjectCreationDto{
+			PermitId:  session.ProjectCreation.PermitId,
+			State:     session.ProjectCreation.State,
+			Error:     session.ProjectCreation.Error,
+			UpdatedAt: session.ProjectCreation.UpdatedAt,
 		}
 	}
 	return result

@@ -328,7 +328,7 @@ func TestRuntimeResponsesDoNotLeakInternals(t *testing.T) {
 	require.NoError(t, json.Unmarshal(body, &raw))
 	assert.ElementsMatch(t, []string{
 		"runtime_id", "workspace_id", "state", "mode", "created_at", "last_activity_at", "idle_deadline_at",
-		"navigation", "page", "stream_bytes_out", "stream_bytes_in",
+		"navigation", "page", "project_creation", "stream_bytes_out", "stream_bytes_in",
 	}, mapKeys(raw))
 }
 
@@ -483,7 +483,7 @@ func TestPermitEndpointIssuesPermitAndClearsConsumedMarker(t *testing.T) {
 	require.NoError(t, os.WriteFile(consumedPath, []byte(`{"permit_id":"permit-old","consumed_at":1758192000}`), 0o644))
 
 	response, body := h.request(t, http.MethodPost, fmt.Sprintf("/internal/v1/runtimes/%d/permits", workspaceID), "Bearer "+testToken,
-		`{"permit_id":"permit-0002","kind":"project_create","ttl_seconds":300}`)
+		`{"permit_id":"permit-0002","kind":"project_create","ttl_seconds":300,"display_name":"Quarterly Review"}`)
 	require.Equal(t, http.StatusOK, response.StatusCode, string(body))
 
 	var raw map[string]any
@@ -497,16 +497,18 @@ func TestPermitEndpointIssuesPermitAndClearsConsumedMarker(t *testing.T) {
 	permitData, err := os.ReadFile(filepath.Join(manager.WorkspaceDir(h.dataRoot, workspaceID), ".guard", "permit.json"))
 	require.NoError(t, err)
 	var stored struct {
-		PermitID  string `json:"permit_id"`
-		Kind      string `json:"kind"`
-		IssuedAt  int64  `json:"issued_at"`
-		ExpiresAt int64  `json:"expires_at"`
+		PermitID    string `json:"permit_id"`
+		Kind        string `json:"kind"`
+		IssuedAt    int64  `json:"issued_at"`
+		ExpiresAt   int64  `json:"expires_at"`
+		DisplayName string `json:"display_name"`
 	}
 	require.NoError(t, json.Unmarshal(permitData, &stored))
 	assert.Equal(t, "permit-0002", stored.PermitID)
 	assert.Equal(t, "project_create", stored.Kind)
 	assert.NotZero(t, stored.IssuedAt)
 	assert.Equal(t, int64(raw["expires_at"].(float64)), stored.ExpiresAt)
+	assert.Equal(t, "Quarterly Review", stored.DisplayName)
 }
 
 func TestPermitEndpointRejectsInvalidRequest(t *testing.T) {
@@ -521,6 +523,7 @@ func TestPermitEndpointRejectsInvalidRequest(t *testing.T) {
 		`{"permit_id":"permit-0001","kind":"project_delete","ttl_seconds":300}`,
 		`{"permit_id":"permit-0001","kind":"project_create","ttl_seconds":0}`,
 		`{"permit_id":"permit-0001","kind":"project_create","ttl_seconds":3601}`,
+		fmt.Sprintf(`{"permit_id":"permit-0001","kind":"project_create","ttl_seconds":300,"display_name":"%s"}`, strings.Repeat("x", 65)),
 		`not-json`,
 	}
 	for _, payload := range cases {

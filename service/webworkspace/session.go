@@ -26,19 +26,20 @@ var ErrInvalidNavigationAction = errors.New("web workspace navigation action inv
 // are ephemeral: they live in memory and are re-derived from the agent on the
 // next start after a New API restart.
 type Session struct {
-	Id             string
-	UserId         int
-	WorkspaceId    int
-	RuntimeId      string
-	State          string
-	Mode           string
-	CreatedAt      int64
-	LastSeenAt     int64
-	IdleDeadlineAt int64
-	StreamBytesOut int64
-	StreamBytesIn  int64
-	Navigation     *AgentNavigation
-	Page           *AgentPageStatus
+	Id              string
+	UserId          int
+	WorkspaceId     int
+	RuntimeId       string
+	State           string
+	Mode            string
+	CreatedAt       int64
+	LastSeenAt      int64
+	IdleDeadlineAt  int64
+	StreamBytesOut  int64
+	StreamBytesIn   int64
+	Navigation      *AgentNavigation
+	Page            *AgentPageStatus
+	ProjectCreation *AgentProjectCreation
 }
 
 type sessionStore struct {
@@ -136,6 +137,7 @@ func (s *sessionStore) applyRuntime(sessionId string, runtime *AgentRuntime) (Se
 	session.StreamBytesIn = runtime.StreamBytesIn
 	session.Navigation = runtime.Navigation
 	session.Page = runtime.Page.normalized()
+	session.ProjectCreation = runtime.ProjectCreation.normalized()
 	if runtime.LastActivityAt > session.LastSeenAt {
 		session.LastSeenAt = runtime.LastActivityAt
 	}

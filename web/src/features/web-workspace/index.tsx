@@ -119,6 +119,8 @@ export function WebWorkspace() {
 
   const session = sessionQuery.data ?? null
   const isLive = isLiveSessionState(session?.state)
+  const revealProviderChrome =
+    session?.project_creation?.state === 'FAILED'
   const navigation = session?.navigation ?? null
   const projects = projectsQuery.data ?? []
   const selectedProject =
@@ -303,6 +305,7 @@ export function WebWorkspace() {
             sessionId={session?.session_id ?? null}
             sessionState={session?.state}
             enabled={isDesktop}
+            revealProviderChrome={revealProviderChrome}
             projectsEmpty={
               !projectsQuery.isPending &&
               !projectsQuery.isError &&

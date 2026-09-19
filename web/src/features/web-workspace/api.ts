@@ -145,9 +145,12 @@ export async function fetchWebWorkspaceProjects(): Promise<WebProject[]> {
  * Issues a permit only. The project row is created later from the guard's
  * `project_created` observation.
  */
-export async function createWebWorkspaceProjectPermit(): Promise<WebProjectPermit> {
+export async function createWebWorkspaceProjectPermit(
+  name: string
+): Promise<WebProjectPermit> {
   const res = await api.post<ApiEnvelope<WebProjectPermit>>(
-    `${BASE_PATH}/projects`
+    `${BASE_PATH}/projects`,
+    { name }
   )
   return res.data.data
 }
