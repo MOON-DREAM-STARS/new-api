@@ -24,6 +24,7 @@ import {
   restartWebWorkspaceSession,
   startWebWorkspaceSession,
   stopWebWorkspaceSession,
+  type WebWorkspaceScreenSize,
 } from '../api'
 import {
   WEB_WORKSPACE_SESSION_POLL_INTERVAL_MS,
@@ -63,10 +64,15 @@ function useSyncSessionCache() {
   }
 }
 
+export type StartWebWorkspaceSessionInput = {
+  screenSize?: WebWorkspaceScreenSize | null
+}
+
 export function useStartWebWorkspaceSession() {
   const syncSessionCache = useSyncSessionCache()
   return useMutation({
-    mutationFn: startWebWorkspaceSession,
+    mutationFn: (input?: StartWebWorkspaceSessionInput) =>
+      startWebWorkspaceSession(input?.screenSize),
     onSuccess: syncSessionCache,
   })
 }
@@ -82,13 +88,17 @@ export function useStopWebWorkspaceSession() {
 export type RestartWebWorkspaceSessionInput = {
   sessionId: string
   mode?: 'LOCKED'
+  screenSize?: WebWorkspaceScreenSize | null
 }
 
 export function useRestartWebWorkspaceSession() {
   const syncSessionCache = useSyncSessionCache()
   return useMutation({
     mutationFn: (input: RestartWebWorkspaceSessionInput) =>
-      restartWebWorkspaceSession(input.sessionId, { mode: input.mode }),
+      restartWebWorkspaceSession(input.sessionId, {
+        mode: input.mode,
+        screenSize: input.screenSize,
+      }),
     onSuccess: syncSessionCache,
   })
 }

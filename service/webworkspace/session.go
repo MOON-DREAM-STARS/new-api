@@ -165,7 +165,7 @@ func (s *sessionStore) setState(sessionId string, state string) (Session, bool) 
 // StartSession starts (or returns) the browser runtime for the user's
 // workspace. It is idempotent: an existing live runtime is reused, while a
 // stale session whose runtime disappeared is replaced.
-func StartSession(ctx context.Context, userId int) (*Session, error) {
+func StartSession(ctx context.Context, userId int, screenWidth int, screenHeight int) (*Session, error) {
 	if userId <= 0 {
 		return nil, ErrSessionNotFound
 	}
@@ -199,7 +199,7 @@ func StartSession(ctx context.Context, userId int) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	runtime, err := client.CreateRuntime(ctx, workspace.Id, workspace.Provider, 0, 0)
+	runtime, err := client.CreateRuntime(ctx, workspace.Id, workspace.Provider, screenWidth, screenHeight)
 	if err != nil {
 		return nil, err
 	}
@@ -270,7 +270,7 @@ func StopSession(ctx context.Context, userId int, sessionId string) error {
 	return nil
 }
 
-func RestartSession(ctx context.Context, userId int, sessionId string, mode string) (*Session, error) {
+func RestartSession(ctx context.Context, userId int, sessionId string, mode string, screenWidth int, screenHeight int) (*Session, error) {
 	session, err := GetSession(userId, sessionId)
 	if err != nil {
 		return nil, err
@@ -279,7 +279,7 @@ func RestartSession(ctx context.Context, userId int, sessionId string, mode stri
 	if err != nil {
 		return nil, err
 	}
-	runtime, err := client.RestartRuntime(ctx, session.WorkspaceId, mode)
+	runtime, err := client.RestartRuntime(ctx, session.WorkspaceId, mode, screenWidth, screenHeight)
 	if err != nil {
 		return nil, err
 	}

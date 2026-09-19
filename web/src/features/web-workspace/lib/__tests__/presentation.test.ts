@@ -22,6 +22,7 @@ import {
   CHATGPT_PRESENTATION_PROFILE,
   computePresentation,
   findPresentationProfile,
+  remoteScreenSizeForFrame,
   toRemotePoint,
 } from '../presentation'
 
@@ -116,6 +117,22 @@ describe('computePresentation', () => {
     expect(narrow.transform.offsetX).not.toBe(wide.transform.offsetX)
   })
 
+  it('centres a narrow crop between the rail and the right edge', () => {
+    const result = computePresentation({
+      provider: 'chatgpt',
+      screen,
+      frame: { width: 900, height: 640 },
+    })
+    expect(result.status).toBe('ready')
+    if (result.status !== 'ready') return
+    const { crop } = result.transform
+    const visibleWidth = screen.width - CHATGPT_PRESENTATION_PROFILE.cropLeft
+    expect(crop.x).toBe(264)
+    expect(crop.x + crop.width).toBeLessThanOrEqual(screen.width)
+    const leftMargin = crop.x - CHATGPT_PRESENTATION_PROFILE.cropLeft
+    const rightMargin = visibleWidth - leftMargin - crop.width
+    expect(Math.abs(leftMargin - rightMargin)).toBeLessThanOrEqual(1)
+  })
   it('caps an oversized profile so the page cannot be cropped away', () => {
     const result = computePresentation({
       provider: 'chatgpt',
@@ -130,6 +147,64 @@ describe('computePresentation', () => {
   })
 })
 
+describe('remoteScreenSizeForFrame', () => {
+  it('proposes the frame height and adds the cropped rail to the width', () => {
+    expect(
+      remoteScreenSizeForFrame(
+        { width: 1920, height: 900 },
+        CHATGPT_PRESENTATION_PROFILE
+      )
+    ).toEqual({ width: 2180, height: 900 })
+    expect(
+      remoteScreenSizeForFrame(
+        { width: 1280, height: 720 },
+        CHATGPT_PRESENTATION_PROFILE
+      )
+    ).toEqual({ width: 1540, height: 720 })
+  })
+
+  it('keeps the height inside 720p..1440p', () => {
+    expect(
+      remoteScreenSizeForFrame(
+        { width: 3840, height: 2160 },
+        CHATGPT_PRESENTATION_PROFILE
+      )
+    ).toEqual({ width: 2820, height: 1440 })
+    expect(
+      remoteScreenSizeForFrame(
+        { width: 300, height: 200 },
+        CHATGPT_PRESENTATION_PROFILE
+      )
+    ).toEqual({ width: 1340, height: 720 })
+  })
+
+  it('keeps the width inside 640..3840 for unusual aspect ratios', () => {
+    expect(
+      remoteScreenSizeForFrame(
+        { width: 600, height: 1600 },
+        CHATGPT_PRESENTATION_PROFILE
+      )
+    ).toEqual({ width: 800, height: 1440 })
+    expect(
+      remoteScreenSizeForFrame(
+        { width: 5000, height: 800 },
+        CHATGPT_PRESENTATION_PROFILE
+      )
+    ).toEqual({ width: 3840, height: 800 })
+  })
+
+  it('returns null when the frame cannot be measured', () => {
+    expect(
+      remoteScreenSizeForFrame(null, CHATGPT_PRESENTATION_PROFILE)
+    ).toBeNull()
+    expect(
+      remoteScreenSizeForFrame(
+        { width: 0, height: 720 },
+        CHATGPT_PRESENTATION_PROFILE
+      )
+    ).toBeNull()
+  })
+})
 describe('toRemotePoint', () => {
   it('maps frame coordinates through the active crop and scale', () => {
     const result = computePresentation({ provider: 'chatgpt', screen, frame })

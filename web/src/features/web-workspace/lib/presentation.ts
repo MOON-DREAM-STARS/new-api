@@ -67,6 +67,15 @@ export const CHATGPT_PRESENTATION_PROFILE: PresentationProfile = {
   minVisibleWidth: 480,
 }
 
+/**
+ * Bounds of the remote screen the workspace proposes to the runtime. The agent
+ * validates the same range, so an out-of-range proposal is refused instead of
+ * silently changing the remote display.
+ */
+export const REMOTE_SCREEN_MIN_WIDTH = 640
+export const REMOTE_SCREEN_MAX_WIDTH = 3840
+export const REMOTE_SCREEN_MIN_HEIGHT = 720
+export const REMOTE_SCREEN_MAX_HEIGHT = 1440
 export const PRESENTATION_PROFILES: Record<string, PresentationProfile> = {
   chatgpt: CHATGPT_PRESENTATION_PROFILE,
 }
@@ -162,7 +171,10 @@ export function computePresentation(
 
   const cropWidth = Math.min(visibleWidth, frame.width / scale)
   const cropHeight = Math.min(visibleHeight, frame.height / scale)
-  const cropX = cropLeft
+  // The presented region is centred inside the provider-free part of the
+  // framebuffer, so the native rail stays hidden and a crop that does not fill
+  // the visible width leaves the same margin on both sides.
+  const cropX = cropLeft + Math.round((visibleWidth - cropWidth) / 2)
   const cropY = clamp(
     Math.round((visibleHeight - cropHeight) / 2),
     0,
@@ -180,6 +192,34 @@ export function computePresentation(
       stageHeight: screen.height * scale,
     },
   }
+}
+/**
+ * Derives the remote screen size that fits the measured frame.
+ *
+ * The height follows the frame within 720p..1440p, and the width adds the
+ * cropped provider rail so that the presented region keeps the frame aspect
+ * ratio at 1:1 scale. Returns null when the frame cannot be measured, which
+ * keeps the agent default instead of proposing a guessed size.
+ */
+export function remoteScreenSizeForFrame(
+  frame: FrameSize | null | undefined,
+  profile: PresentationProfile
+): RemoteScreenSize | null {
+  if (!isUsableSize(frame)) return null
+  const measured = frame as FrameSize
+  const aspect = measured.width / measured.height
+  if (!Number.isFinite(aspect) || aspect <= 0) return null
+  const height = clamp(
+    Math.round(measured.height),
+    REMOTE_SCREEN_MIN_HEIGHT,
+    REMOTE_SCREEN_MAX_HEIGHT
+  )
+  const width = clamp(
+    Math.round(profile.cropLeft + height * aspect),
+    REMOTE_SCREEN_MIN_WIDTH,
+    REMOTE_SCREEN_MAX_WIDTH
+  )
+  return { width, height }
 }
 
 /**

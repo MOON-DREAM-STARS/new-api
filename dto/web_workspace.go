@@ -75,10 +75,20 @@ type WebWorkspaceNavigationRequest struct {
 	Action string `json:"action"`
 }
 
+// WebWorkspaceStartRequest carries the optional remote screen size proposal of
+// a start. Both dimensions zero mean the agent default.
+type WebWorkspaceStartRequest struct {
+	ScreenWidth  int `json:"screen_width"`
+	ScreenHeight int `json:"screen_height"`
+}
+
 // WebWorkspaceRestartRequest carries the optional restart overrides. An empty
-// mode keeps the runtime mode the running session already had.
+// mode keeps the runtime mode the running session already had, and a zero size
+// keeps the size the running runtime already has.
 type WebWorkspaceRestartRequest struct {
-	Mode string `json:"mode"`
+	Mode         string `json:"mode"`
+	ScreenWidth  int    `json:"screen_width"`
+	ScreenHeight int    `json:"screen_height"`
 }
 
 // WebWorkspaceSessionDto is the control-plane view of one browser session.

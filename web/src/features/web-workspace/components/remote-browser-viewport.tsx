@@ -17,14 +17,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { AlertCircle, Minimize2, RefreshCw } from 'lucide-react'
-import { useRef } from 'react'
+import type { RefObject } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { cn } from '@/lib/utils'
 
-import { useElementSize } from '../hooks/use-element-size'
 import type { RemoteSurfaceController } from '../hooks/use-remote-surface'
 import { computePresentation } from '../lib/presentation'
 import { isLiveSessionState } from '../lib/session'
@@ -35,6 +34,9 @@ type RemoteBrowserViewportProps = {
   sessionState: string | undefined
   enabled: boolean
   immersive: boolean
+  /** Frame element and its measured box, owned by the page. */
+  frameRef: RefObject<HTMLDivElement | null>
+  frameSize: { width: number; height: number } | null
   /** True when the account really has no project: no placeholder is invented. */
   projectsEmpty: boolean
   surface: RemoteSurfaceController
@@ -94,8 +96,6 @@ function ViewportStatus(props: ViewportStatusProps) {
  */
 export function RemoteBrowserViewport(props: RemoteBrowserViewportProps) {
   const { t } = useTranslation()
-  const frameRef = useRef<HTMLDivElement | null>(null)
-  const frameSize = useElementSize(frameRef)
 
   const isLive = isLiveSessionState(props.sessionState)
   const surfaceEnabled =
@@ -103,7 +103,7 @@ export function RemoteBrowserViewport(props: RemoteBrowserViewportProps) {
   const presentation = computePresentation({
     provider: props.provider,
     screen: props.surface.screen,
-    frame: frameSize,
+    frame: props.frameSize,
   })
   const presentationReady = presentation.status === 'ready'
   const surfaceConnected =
@@ -173,7 +173,7 @@ export function RemoteBrowserViewport(props: RemoteBrowserViewportProps) {
   return (
     <div className='relative flex min-h-0 flex-1 flex-col'>
       <div
-        ref={frameRef}
+        ref={props.frameRef}
         data-testid='web-workspace-surface-frame'
         className={cn(
           'relative min-h-0 flex-1 overflow-hidden rounded-xl border bg-black',
@@ -206,8 +206,8 @@ export function RemoteBrowserViewport(props: RemoteBrowserViewportProps) {
                       height: presentation.transform.stageHeight,
                     }
                   : {
-                      width: frameSize?.width ?? 1280,
-                      height: frameSize?.height ?? 720,
+                      width: props.frameSize?.width ?? 1280,
+                      height: props.frameSize?.height ?? 720,
                     }
               }
               className='relative'

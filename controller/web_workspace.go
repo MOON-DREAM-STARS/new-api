@@ -29,6 +29,14 @@ const (
 	// webWorkspaceModeLocked is the only runtime mode transition this API exposes:
 	// leaving the operator-opened sign-in window and locking the provider session.
 	webWorkspaceModeLocked = "LOCKED"
+
+	// Accepted range of the optional remote screen size proposal. The Browser
+	// Agent enforces the same range, so an out-of-range proposal is refused on
+	// both sides instead of silently changing the remote display.
+	webWorkspaceMinScreenWidth  = 640
+	webWorkspaceMaxScreenWidth  = 3840
+	webWorkspaceMinScreenHeight = 360
+	webWorkspaceMaxScreenHeight = 2160
 )
 
 // GetWebWorkspaceConfig is the capability probe. It answers whether the feature
@@ -332,7 +340,18 @@ func StartWebWorkspaceSession(c *gin.Context) {
 	if user == nil {
 		return
 	}
-	session, err := webworkspace.StartSession(c.Request.Context(), user.Id)
+	// The body is optional: a start without one keeps the agent default size.
+	var request dto.WebWorkspaceStartRequest
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil && !errors.Is(err, io.EOF) {
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid request body", "")
+		return
+	}
+	width, height, ok := webWorkspaceScreenSize(request.ScreenWidth, request.ScreenHeight)
+	if !ok {
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid screen size", "")
+		return
+	}
+	session, err := webworkspace.StartSession(c.Request.Context(), user.Id, width, height)
 	if err != nil {
 		writeWebWorkspaceSessionError(c, err)
 		return
@@ -397,7 +416,12 @@ func RestartWebWorkspaceSession(c *gin.Context) {
 		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid runtime mode", "")
 		return
 	}
-	session, err := webworkspace.RestartSession(c.Request.Context(), user.Id, sessionId, mode)
+	width, height, sizeOK := webWorkspaceScreenSize(request.ScreenWidth, request.ScreenHeight)
+	if !sizeOK {
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid screen size", "")
+		return
+	}
+	session, err := webworkspace.RestartSession(c.Request.Context(), user.Id, sessionId, mode, width, height)
 	if err != nil {
 		writeWebWorkspaceSessionError(c, err)
 		return
@@ -429,6 +453,22 @@ func NavigateWebWorkspaceSession(c *gin.Context) {
 		return
 	}
 	common.ApiSuccess(c, toWebWorkspaceSessionDto(session))
+}
+
+// webWorkspaceScreenSize validates the optional remote screen size proposal.
+// Both dimensions must be given together and inside the range the Browser Agent
+// accepts, or both omitted so the agent keeps its current or default size.
+func webWorkspaceScreenSize(width int, height int) (int, int, bool) {
+	if width == 0 && height == 0 {
+		return 0, 0, true
+	}
+	if width < webWorkspaceMinScreenWidth || width > webWorkspaceMaxScreenWidth {
+		return 0, 0, false
+	}
+	if height < webWorkspaceMinScreenHeight || height > webWorkspaceMaxScreenHeight {
+		return 0, 0, false
+	}
+	return width, height, true
 }
 
 // CreateWebWorkspaceStreamTicket issues a single-use ticket that the client

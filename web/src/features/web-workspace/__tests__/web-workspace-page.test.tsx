@@ -32,6 +32,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest'
 import { api } from '@/lib/api'
 
 import type { RemoteSurfaceController } from '../hooks/use-remote-surface'
+import { WEB_WORKSPACE_PROVIDER_QUERY_KEY } from '../hooks/use-web-workspace-provider'
 import { WebWorkspace } from '../index'
 
 vi.mock('@/components/layout', () => {
@@ -344,6 +345,44 @@ describe('WebWorkspace page', () => {
     })
   })
 
+  test('proposes the measured remote screen size when starting', async () => {
+    const posts: Array<{ url: string; data: unknown }> = []
+    apiClient.get = async (url) => {
+      if (url === CONFIG_PATH) return ok({ enabled: true, entitled: true })
+      if (url === SESSION_PATH) return ok(null)
+      if (url === PROJECTS_PATH) return ok({ items: [] })
+      if (url === STATUS_PATH) {
+        return ok({
+          entitled: true,
+          workspace: {
+            provider: 'chatgpt',
+            status: 1,
+            created_at: 1,
+            last_active_at: 1,
+          },
+        })
+      }
+      throw new Error(`unexpected request ${url}`)
+    }
+    apiClient.post = async (url, data) => {
+      posts.push({ url, data })
+      return ok(runningSession)
+    }
+
+    const view = renderPage(<WebWorkspace />)
+    // The provider query decides which calibrated profile the proposal uses.
+    view.queryClient.setQueryData(WEB_WORKSPACE_PROVIDER_QUERY_KEY, 'chatgpt')
+
+    const startButtons = await screen.findAllByText('Start session')
+    startButtons[0].click()
+
+    await waitFor(() => {
+      expect(posts[0]).toEqual({
+        url: SESSION_PATH,
+        data: { screen_width: 1860, screen_height: 860 },
+      })
+    })
+  })
   test('sends the selected navigation command through the real API', async () => {
     mockWorkspaceGets(runningSession)
     const navigationPosts: Array<{ url: string; data: unknown }> = []
