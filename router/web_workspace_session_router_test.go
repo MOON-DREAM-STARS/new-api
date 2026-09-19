@@ -60,6 +60,7 @@ type routerPermitCall struct {
 	PermitId    string
 	Kind        string
 	TtlSeconds  int
+	DisplayName string
 }
 
 type routerNavigationCall struct {
@@ -246,9 +247,10 @@ func newRouterFakeAgent(t *testing.T) *routerFakeAgent {
 			}{request.Generation, len(request.Projects), len(request.Conversations)})
 		case suffix == "permits" && r.Method == http.MethodPost:
 			var request struct {
-				PermitId   string `json:"permit_id"`
-				Kind       string `json:"kind"`
-				TtlSeconds int    `json:"ttl_seconds"`
+				PermitId    string `json:"permit_id"`
+				Kind        string `json:"kind"`
+				TtlSeconds  int    `json:"ttl_seconds"`
+				DisplayName string `json:"display_name"`
 			}
 			if err := common.Unmarshal(body, &request); err != nil {
 				w.WriteHeader(http.StatusBadRequest)
@@ -260,6 +262,7 @@ func newRouterFakeAgent(t *testing.T) *routerFakeAgent {
 				PermitId:    request.PermitId,
 				Kind:        request.Kind,
 				TtlSeconds:  request.TtlSeconds,
+				DisplayName: request.DisplayName,
 			})
 			fail := agent.failPermits
 			agent.mutex.Unlock()
@@ -876,7 +879,7 @@ func TestWebWorkspaceRouterProjectPermitFlow(t *testing.T) {
 	token := webWorkspaceBearer(t, fixture.userA)
 
 	// No live session: the permit is refused before the agent is contacted.
-	noSession := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/projects", token, "")
+	noSession := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/projects", token, `{"name":"Quarterly Review"}`)
 	require.Equal(t, http.StatusConflict, noSession.Code, noSession.Body.String())
 	assert.Equal(t, "WEB_WORKSPACE_SESSION_REQUIRED", decodeWebWorkspaceError(t, noSession).Code)
 
@@ -885,7 +888,7 @@ func TestWebWorkspaceRouterProjectPermitFlow(t *testing.T) {
 	var workspace model.WebWorkspace
 	require.NoError(t, model.DB.Where("user_id = ?", fixture.userA.Id).First(&workspace).Error)
 
-	permitRecorder := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/projects", token, "")
+	permitRecorder := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/projects", token, `{"name":"Quarterly Review"}`)
 	require.Equal(t, http.StatusOK, permitRecorder.Code, permitRecorder.Body.String())
 	var payload struct {
 		Data struct {
@@ -902,6 +905,7 @@ func TestWebWorkspaceRouterProjectPermitFlow(t *testing.T) {
 	assert.Equal(t, payload.Data.PermitId, calls[0].PermitId)
 	assert.Equal(t, "project_create", calls[0].Kind)
 	assert.Equal(t, 300, calls[0].TtlSeconds)
+	assert.Equal(t, "Quarterly Review", calls[0].DisplayName)
 
 	// Issuing a permit must not create a local project row.
 	var projectCount int64
@@ -926,7 +930,7 @@ func TestWebWorkspaceRouterProjectPermitEnforcesLimit(t *testing.T) {
 	}).Error)
 
 	system_setting.GetWebWorkspaceSettings().MaxProjects = 1
-	recorder := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/projects", token, "")
+	recorder := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/projects", token, `{"name":"Quarterly Review"}`)
 	require.Equal(t, http.StatusConflict, recorder.Code, recorder.Body.String())
 	assert.Equal(t, "WEB_WORKSPACE_PROJECT_LIMIT", decodeWebWorkspaceError(t, recorder).Code)
 	assert.Empty(t, agent.permitCallsFor(workspace.Id))
@@ -941,7 +945,7 @@ func TestWebWorkspaceRouterProjectPermitFailsClosedWhenAgentRejects(t *testing.T
 	require.Equal(t, http.StatusOK, start.Code, start.Body.String())
 	agent.setFailPermits(true)
 
-	recorder := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/projects", token, "")
+	recorder := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/projects", token, `{"name":"Quarterly Review"}`)
 	require.Equal(t, http.StatusServiceUnavailable, recorder.Code, recorder.Body.String())
 	assert.Equal(t, "WEB_WORKSPACE_AGENT_UNAVAILABLE", decodeWebWorkspaceError(t, recorder).Code)
 }

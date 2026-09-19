@@ -77,6 +77,20 @@ describe('computePresentation', () => {
     expect(result.transform.crop.height).toBeLessThanOrEqual(screen.height)
   })
 
+  it('centres the crop in the full framebuffer when chrome is revealed', () => {
+    const result = computePresentation({
+      provider: 'chatgpt',
+      screen,
+      frame,
+      revealProviderChrome: true,
+    })
+    expect(result.status).toBe('ready')
+    if (result.status !== 'ready') return
+    const { crop } = result.transform
+    expect(crop.x).toBeGreaterThanOrEqual(0)
+    expect(crop.x * 2 + crop.width).toBeCloseTo(screen.width, 0)
+  })
+
   it('fills the frame without dead space and stays inside the framebuffer', () => {
     const result = computePresentation({ provider: 'chatgpt', screen, frame })
     expect(result.status).toBe('ready')

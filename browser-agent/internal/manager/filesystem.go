@@ -22,6 +22,7 @@ const (
 	ownershipFileName      = "ownership.json"
 	permitFileName         = "permit.json"
 	permitConsumedFileName = "permit.consumed"
+	projectCreationName    = "project-creation.json"
 	observationsFileName   = "observations.jsonl"
 	observationsOffsetName = "observations.offset"
 )
@@ -35,11 +36,14 @@ type guardOwnership struct {
 }
 
 // guardPermit is the on-disk permit.json shape. The guard only reads it.
+// DisplayName is empty for the legacy manual flow, where the operator creates
+// the project inside the remote browser themselves.
 type guardPermit struct {
-	PermitID  string `json:"permit_id"`
-	Kind      string `json:"kind"`
-	IssuedAt  int64  `json:"issued_at"`
-	ExpiresAt int64  `json:"expires_at"`
+	PermitID    string `json:"permit_id"`
+	Kind        string `json:"kind"`
+	IssuedAt    int64  `json:"issued_at"`
+	ExpiresAt   int64  `json:"expires_at"`
+	DisplayName string `json:"display_name"`
 }
 
 // guardConsumedPermit is the permit.consumed shape the guard writes.

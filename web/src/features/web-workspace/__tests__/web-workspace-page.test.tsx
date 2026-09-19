@@ -180,6 +180,7 @@ const runningSession = {
     can_go_forward: true,
     updated_at: 1,
   },
+  project_creation: null,
 }
 
 function mockWorkspaceGets(session: unknown) {

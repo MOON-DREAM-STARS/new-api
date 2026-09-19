@@ -53,6 +53,13 @@ type WebProjectRenameRequest struct {
 	Name string `json:"name"`
 }
 
+// WebProjectCreateRequest carries the operator-facing name of one provider-side
+// project creation. The provider URL and the provider project id are never
+// accepted from the client: only the guard can observe them.
+type WebProjectCreateRequest struct {
+	Name string `json:"name"`
+}
+
 // WebWorkspaceProjectPermitDto carries the short-lived permit the client may
 // redeem for exactly one provider-side project creation. It never includes the
 // runtime address or workspace identity.
@@ -99,19 +106,29 @@ type WebWorkspacePageDto struct {
 	UpdatedAt int64  `json:"updated_at"`
 }
 
+// WebWorkspaceProjectCreationDto is the URL-free creation state of the guard.
+// It carries no provider identifier, address or credential.
+type WebWorkspaceProjectCreationDto struct {
+	PermitId  string `json:"permit_id"`
+	State     string `json:"state"`
+	Error     string `json:"error"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
 // WebWorkspaceSessionDto is the control-plane view of one browser session.
 // Runtime ids, container addresses and ports never leave the control plane.
 type WebWorkspaceSessionDto struct {
-	SessionId      string                     `json:"session_id"`
-	State          string                     `json:"state"`
-	Mode           string                     `json:"mode"`
-	CreatedAt      int64                      `json:"created_at"`
-	LastSeenAt     int64                      `json:"last_seen_at"`
-	IdleDeadlineAt int64                      `json:"idle_deadline_at"`
-	StreamBytesOut int64                      `json:"stream_bytes_out"`
-	StreamBytesIn  int64                      `json:"stream_bytes_in"`
-	Navigation     *WebWorkspaceNavigationDto `json:"navigation"`
-	Page           *WebWorkspacePageDto       `json:"page"`
+	SessionId       string                          `json:"session_id"`
+	State           string                          `json:"state"`
+	Mode            string                          `json:"mode"`
+	CreatedAt       int64                           `json:"created_at"`
+	LastSeenAt      int64                           `json:"last_seen_at"`
+	IdleDeadlineAt  int64                           `json:"idle_deadline_at"`
+	StreamBytesOut  int64                           `json:"stream_bytes_out"`
+	StreamBytesIn   int64                           `json:"stream_bytes_in"`
+	Navigation      *WebWorkspaceNavigationDto      `json:"navigation"`
+	Page            *WebWorkspacePageDto            `json:"page"`
+	ProjectCreation *WebWorkspaceProjectCreationDto `json:"project_creation"`
 }
 
 // WebWorkspaceStreamTicketDto carries the one-time ticket for a stream attach.

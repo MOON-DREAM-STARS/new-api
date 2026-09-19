@@ -274,19 +274,24 @@ func (m *Manager) refreshNavigationLocked(rt *runtimeState, workspaceID int64) {
 	if err != nil {
 		rt.navigation = nil
 		rt.page = nil
+		rt.projectCreation = nil
 		return
 	}
 	defer root.Close()
-	receipt, ok, err := readNavigationReceipt(root)
-	if err != nil || !ok {
+	if receipt, ok, err := readNavigationReceipt(root); err == nil && ok {
+		status := receipt.status()
+		rt.navigation = &status
+		rt.page = receipt.Page
+		if receipt.ID > rt.navCommandID {
+			rt.navCommandID = receipt.ID
+		}
+	} else {
 		rt.navigation = nil
 		rt.page = nil
-		return
 	}
-	status := receipt.status()
-	rt.navigation = &status
-	rt.page = receipt.Page
-	if receipt.ID > rt.navCommandID {
-		rt.navCommandID = receipt.ID
+	if creation, ok, err := readProjectCreation(root); err == nil && ok {
+		rt.projectCreation = &creation
+	} else {
+		rt.projectCreation = nil
 	}
 }

@@ -590,7 +590,7 @@ func TestPermitLifecycleIssuesConsumesAndReplaces(t *testing.T) {
 	require.NoError(t, err)
 
 	guardDir := guardStateDir(WorkspaceDir(h.dataRoot, workspaceID))
-	issued, err := h.mgr.IssuePermit(workspaceID, "permit-0001", "project_create", 300)
+	issued, err := h.mgr.IssuePermit(workspaceID, "permit-0001", "project_create", 300, "Quarterly Review")
 	require.NoError(t, err)
 	assert.Equal(t, "permit-0001", issued.PermitID)
 	assert.Equal(t, h.clock.Now().Add(300*time.Second).Unix(), issued.ExpiresAt)
@@ -600,10 +600,11 @@ func TestPermitLifecycleIssuesConsumesAndReplaces(t *testing.T) {
 	var stored guardPermit
 	require.NoError(t, json.Unmarshal(data, &stored))
 	assert.Equal(t, guardPermit{
-		PermitID:  "permit-0001",
-		Kind:      "project_create",
-		IssuedAt:  h.clock.Now().Unix(),
-		ExpiresAt: issued.ExpiresAt,
+		PermitID:    "permit-0001",
+		Kind:        "project_create",
+		IssuedAt:    h.clock.Now().Unix(),
+		ExpiresAt:   issued.ExpiresAt,
+		DisplayName: "Quarterly Review",
 	}, stored)
 
 	// The guard consumes the permit and records the consumed marker.
@@ -611,7 +612,7 @@ func TestPermitLifecycleIssuesConsumesAndReplaces(t *testing.T) {
 	require.NoError(t, os.WriteFile(consumedPath, []byte(`{"permit_id":"permit-0001","consumed_at":1758192000}`), 0o600))
 
 	h.clock.Advance(time.Minute)
-	reissued, err := h.mgr.IssuePermit(workspaceID, "permit-0002", "project_create", 60)
+	reissued, err := h.mgr.IssuePermit(workspaceID, "permit-0002", "project_create", 60, "")
 	require.NoError(t, err)
 	assert.Equal(t, h.clock.Now().Add(time.Minute).Unix(), reissued.ExpiresAt)
 	assert.NoFileExists(t, consumedPath)
@@ -621,6 +622,7 @@ func TestPermitLifecycleIssuesConsumesAndReplaces(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &stored))
 	assert.Equal(t, "permit-0002", stored.PermitID)
 	assert.Equal(t, h.clock.Now().Unix(), stored.IssuedAt)
+	assert.Empty(t, stored.DisplayName, "a permit without a display name stays the manual flow")
 }
 
 func TestIssuePermitKeepsConsumedMarkerOfTheNewPermit(t *testing.T) {
@@ -633,7 +635,7 @@ func TestIssuePermitKeepsConsumedMarkerOfTheNewPermit(t *testing.T) {
 	consumedPath := filepath.Join(guardDir, permitConsumedFileName)
 	require.NoError(t, os.WriteFile(consumedPath, []byte(`{"permit_id":"permit-0003","consumed_at":1758192000}`), 0o600))
 
-	_, err = h.mgr.IssuePermit(workspaceID, "permit-0003", "project_create", 60)
+	_, err = h.mgr.IssuePermit(workspaceID, "permit-0003", "project_create", 60, "")
 	require.NoError(t, err)
 
 	// The guard consumed the permit while the issue request was in flight;
@@ -644,7 +646,7 @@ func TestIssuePermitKeepsConsumedMarkerOfTheNewPermit(t *testing.T) {
 func TestIssuePermitRequiresRunningRuntime(t *testing.T) {
 	h := newHarness(t)
 
-	_, err := h.mgr.IssuePermit(404, "permit-0001", "project_create", 60)
+	_, err := h.mgr.IssuePermit(404, "permit-0001", "project_create", 60, "")
 	require.ErrorIs(t, err, ErrNotFound)
 
 	workspaceID := int64(66)
@@ -653,7 +655,7 @@ func TestIssuePermitRequiresRunningRuntime(t *testing.T) {
 	_, err = h.mgr.Stop(context.Background(), workspaceID)
 	require.NoError(t, err)
 
-	_, err = h.mgr.IssuePermit(workspaceID, "permit-0001", "project_create", 60)
+	_, err = h.mgr.IssuePermit(workspaceID, "permit-0001", "project_create", 60, "")
 	require.ErrorIs(t, err, runtime.ErrNotRunning)
 	assert.NoFileExists(t, filepath.Join(guardStateDir(WorkspaceDir(h.dataRoot, workspaceID)), permitFileName))
 }
@@ -665,20 +667,22 @@ func TestIssuePermitRejectsInvalidRequest(t *testing.T) {
 	require.NoError(t, err)
 
 	cases := []struct {
-		name     string
-		permitID string
-		kind     string
-		ttl      int
+		name        string
+		permitID    string
+		kind        string
+		ttl         int
+		displayName string
 	}{
 		{name: "permit id too short", permitID: "short", kind: "project_create", ttl: 60},
 		{name: "permit id too long", permitID: strings.Repeat("p", 65), kind: "project_create", ttl: 60},
 		{name: "unknown kind", permitID: "permit-0001", kind: "project_delete", ttl: 60},
 		{name: "ttl zero", permitID: "permit-0001", kind: "project_create", ttl: 0},
 		{name: "ttl above limit", permitID: "permit-0001", kind: "project_create", ttl: 3601},
+		{name: "display name too long", permitID: "permit-0001", kind: "project_create", ttl: 60, displayName: strings.Repeat("x", 65)},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			_, err := h.mgr.IssuePermit(workspaceID, testCase.permitID, testCase.kind, testCase.ttl)
+			_, err := h.mgr.IssuePermit(workspaceID, testCase.permitID, testCase.kind, testCase.ttl, testCase.displayName)
 			require.ErrorIs(t, err, ErrInvalidRequest)
 		})
 	}

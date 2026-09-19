@@ -199,6 +199,27 @@ func (a *syncAgentServer) setObservations(observations ...Observation) {
 	a.offset = 0
 }
 
+// setProjectCreation publishes the guard creation state of a workspace runtime
+// so the control plane sees the same snapshot the browser agent serves.
+func (a *syncAgentServer) setProjectCreation(workspaceId int, creation *AgentProjectCreation) {
+	a.mutex.Lock()
+	defer a.mutex.Unlock()
+	runtime, ok := a.runtimes[workspaceId]
+	if !ok {
+		now := time.Now().Unix()
+		runtime = AgentRuntime{
+			RuntimeId:      "ws-" + strconv.Itoa(workspaceId),
+			WorkspaceId:    workspaceId,
+			State:          AgentStateRunning,
+			CreatedAt:      now,
+			LastActivityAt: now,
+			IdleDeadlineAt: now + 600,
+		}
+	}
+	runtime.ProjectCreation = creation
+	a.runtimes[workspaceId] = runtime
+}
+
 func (a *syncAgentServer) setFailPermits(fail bool) {
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
@@ -450,11 +471,11 @@ func TestWebWorkspaceApplyObservationsKeepsForeignProjectOwnership(t *testing.T)
 func TestWebWorkspaceIssueProjectPermitRequiresLiveSession(t *testing.T) {
 	_, agent, user, workspace := setupWebWorkspaceSyncTest(t)
 
-	_, err := IssueProjectPermit(context.Background(), user.Id, 0)
+	_, err := IssueProjectPermit(context.Background(), user.Id, 0, "New Project")
 	assert.ErrorIs(t, err, ErrSessionRequired)
 
 	sessions.put(Session{Id: "stopped-session", UserId: user.Id, WorkspaceId: workspace.Id, State: AgentStateStopped})
-	_, err = IssueProjectPermit(context.Background(), user.Id, 0)
+	_, err = IssueProjectPermit(context.Background(), user.Id, 0, "New Project")
 	assert.ErrorIs(t, err, ErrSessionRequired)
 	assert.Empty(t, agent.issuedPermits())
 }
@@ -464,11 +485,11 @@ func TestWebWorkspaceIssueProjectPermitEnforcesProjectLimit(t *testing.T) {
 	putWebWorkspaceTestSession(t, user, workspace)
 	require.NoError(t, db.Create(&model.WebProject{WorkspaceId: workspace.Id, Provider: DefaultProvider, ExternalProjectId: syncTestProjectA, Name: "Project A"}).Error)
 
-	_, err := IssueProjectPermit(context.Background(), user.Id, 1)
+	_, err := IssueProjectPermit(context.Background(), user.Id, 1, "New Project")
 	assert.ErrorIs(t, err, ErrProjectLimitReached)
 	assert.Empty(t, agent.issuedPermits())
 
-	permit, err := IssueProjectPermit(context.Background(), user.Id, 0)
+	permit, err := IssueProjectPermit(context.Background(), user.Id, 0, "New Project")
 	require.NoError(t, err)
 	assert.NotEmpty(t, permit.PermitId)
 	assert.Equal(t, workspace.Id, permit.WorkspaceId)
@@ -483,7 +504,7 @@ func TestWebWorkspaceIssueProjectPermitAuditsIssuedPermit(t *testing.T) {
 	putWebWorkspaceTestSession(t, user, workspace)
 	lines := captureWebWorkspaceAudit(t)
 
-	permit, err := IssueProjectPermit(context.Background(), user.Id, 0)
+	permit, err := IssueProjectPermit(context.Background(), user.Id, 0, "New Project")
 	require.NoError(t, err)
 	require.NotEmpty(t, permit.PermitId)
 	assertAuditContains(t, lines, "event=permit_issued")
@@ -528,7 +549,7 @@ func TestWebWorkspaceIssueProjectPermitFailsClosedWhenAgentRejects(t *testing.T)
 	putWebWorkspaceTestSession(t, user, workspace)
 	agent.setFailPermits(true)
 
-	_, err := IssueProjectPermit(context.Background(), user.Id, 0)
+	_, err := IssueProjectPermit(context.Background(), user.Id, 0, "New Project")
 	assert.ErrorIs(t, err, ErrAgentRejected)
 
 	permits.mutex.RLock()
@@ -702,4 +723,76 @@ func TestWebWorkspaceSyncDatabasePostgreSQL(t *testing.T) {
 	prepareWebWorkspaceExternalTestDB(t, db)
 	useWebWorkspaceTestDB(t, db)
 	runWebWorkspaceSyncChecks(t, db)
+}
+
+func TestWebWorkspaceIssueProjectPermitValidatesDisplayName(t *testing.T) {
+	_, agent, user, workspace := setupWebWorkspaceSyncTest(t)
+	putWebWorkspaceTestSession(t, user, workspace)
+
+	for _, name := range []string{"", "   ", strings.Repeat("\u4ee3", 65)} {
+		_, err := IssueProjectPermit(context.Background(), user.Id, 0, name)
+		assert.ErrorIs(t, err, ErrInvalidProjectName)
+	}
+	assert.Empty(t, agent.issuedPermits())
+
+	permit, err := IssueProjectPermit(context.Background(), user.Id, 0, "  Quarterly Review  ")
+	require.NoError(t, err)
+	require.NotEmpty(t, permit.PermitId)
+	issued := agent.issuedPermits()
+	require.Len(t, issued, 1)
+	assert.Equal(t, "Quarterly Review", issued[0].Request.DisplayName)
+	assert.Equal(t, permit.PermitId, issued[0].Request.PermitId)
+}
+
+func TestWebWorkspaceIssueProjectPermitRefusesWhileCreationRuns(t *testing.T) {
+	_, agent, user, workspace := setupWebWorkspaceSyncTest(t)
+	putWebWorkspaceTestSession(t, user, workspace)
+	agent.setProjectCreation(workspace.Id, &AgentProjectCreation{
+		PermitId:  "permit-running",
+		State:     ProjectCreationStateRunning,
+		UpdatedAt: 1,
+	})
+
+	_, err := IssueProjectPermit(context.Background(), user.Id, 0, "Second project")
+	assert.ErrorIs(t, err, ErrProjectCreationInProgress)
+	assert.Empty(t, agent.issuedPermits())
+
+	// A failed attempt does not consume its permit, so a retry may replace it.
+	agent.setProjectCreation(workspace.Id, &AgentProjectCreation{
+		PermitId:  "permit-failed",
+		State:     ProjectCreationStateFailed,
+		Error:     "ERR_PROJECT_UI_NOT_FOUND",
+		UpdatedAt: 2,
+	})
+	permit, err := IssueProjectPermit(context.Background(), user.Id, 0, "Second project")
+	require.NoError(t, err)
+	require.NotEmpty(t, permit.PermitId)
+	assert.Len(t, agent.issuedPermits(), 1)
+}
+
+func TestWebWorkspaceSessionCarriesProjectCreation(t *testing.T) {
+	_, agent, user, workspace := setupWebWorkspaceSyncTest(t)
+	session := putWebWorkspaceTestSession(t, user, workspace)
+	agent.setProjectCreation(workspace.Id, &AgentProjectCreation{
+		PermitId:  "permit-1",
+		State:     ProjectCreationStateRunning,
+		UpdatedAt: 42,
+	})
+
+	refreshed, err := RefreshSession(context.Background(), user.Id, session.Id)
+	require.NoError(t, err)
+	require.NotNil(t, refreshed.ProjectCreation)
+	assert.Equal(t, "permit-1", refreshed.ProjectCreation.PermitId)
+	assert.Equal(t, ProjectCreationStateRunning, refreshed.ProjectCreation.State)
+
+	// A state the control plane does not know is reported as absent instead of
+	// being passed on to the client.
+	agent.setProjectCreation(workspace.Id, &AgentProjectCreation{
+		PermitId:  "permit-2",
+		State:     "BROKEN",
+		UpdatedAt: 43,
+	})
+	refreshed, err = RefreshSession(context.Background(), user.Id, session.Id)
+	require.NoError(t, err)
+	assert.Nil(t, refreshed.ProjectCreation)
 }

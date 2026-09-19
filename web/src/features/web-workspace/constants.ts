@@ -43,6 +43,9 @@ export const WEB_WORKSPACE_CONFIG_STALE_TIME_MS = 5 * 60 * 1000
 /** Session polling interval while the page is visible. */
 export const WEB_WORKSPACE_SESSION_POLL_INTERVAL_MS = 5000
 
+/** Fast creation-state polling requested while the create dialog is active. */
+export const WEB_WORKSPACE_PROJECT_CREATION_POLL_INTERVAL_MS = 2000
+
 /**
  * Keep-alive interval while the tab is hidden: the display stream is detached,
  * so the control plane has to keep the idle runtime alive on its own.
@@ -76,6 +79,8 @@ export const WEB_WORKSPACE_ERROR_CODES = {
   sessionNotFound: 'WEB_WORKSPACE_SESSION_NOT_FOUND',
   sessionRequired: 'WEB_WORKSPACE_SESSION_REQUIRED',
   projectLimit: 'WEB_WORKSPACE_PROJECT_LIMIT',
+  projectCreationInProgress:
+    'WEB_WORKSPACE_PROJECT_CREATION_IN_PROGRESS',
   ticketInvalid: 'WEB_WORKSPACE_TICKET_INVALID',
 } as const
 

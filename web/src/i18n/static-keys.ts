@@ -595,4 +595,12 @@ export const STATIC_I18N_KEYS = [
   'Web Workspace access is not available for this account.',
   'Something went wrong. Please try again.',
   'Could not verify the remote browser session.',
+  'A project creation is already running. Finish it or wait for it to fail before starting another.',
+  'Enter a name and the system creates it automatically in the remote browser.',
+  'Enter a project name of 1-64 characters.',
+  'Create project',
+  'Creating the project in the remote browser...',
+  'Automatic project creation failed',
+  'Create the project manually in the side panel. The remote browser is showing the full window; the system registers it automatically once the guard observes it.',
+  'Automatic creation failed. Create the project in the side panel of the full remote browser; cropping is restored automatically once the guard observes it.',
 ] as const

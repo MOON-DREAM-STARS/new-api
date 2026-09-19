@@ -52,12 +52,15 @@ type ownershipFile struct {
 	UpdatedAt     int64    `json:"updated_at"`
 }
 
-// permitFile mirrors the permit.json written by the agent.
+// permitFile mirrors the permit.json written by the agent. DisplayName is empty
+// for the legacy manual flow and carries the operator-facing name when the
+// creation controller is expected to drive the provider UI itself.
 type permitFile struct {
-	PermitID  string `json:"permit_id"`
-	Kind      string `json:"kind"`
-	IssuedAt  int64  `json:"issued_at"`
-	ExpiresAt int64  `json:"expires_at"`
+	PermitID    string `json:"permit_id"`
+	Kind        string `json:"kind"`
+	IssuedAt    int64  `json:"issued_at"`
+	ExpiresAt   int64  `json:"expires_at"`
+	DisplayName string `json:"display_name"`
 }
 
 // consumedFile mirrors the permit.consumed written by the guard.
@@ -269,18 +272,10 @@ func (s *providerState) activePermit() (permitFile, bool) {
 	return permit, true
 }
 
-// permitConsumed fails closed: a permit.consumed file that exists but cannot be
-// read or parsed counts as consumed.
+// permitConsumed fails closed through permitConsumedByDir, the shared reader of
+// the single-use marker that the creation controller also respects.
 func (s *providerState) permitConsumed(permitID string) bool {
-	data, err := os.ReadFile(filepath.Join(s.dir, permitConsumedFileName))
-	if err != nil {
-		return !errors.Is(err, fs.ErrNotExist)
-	}
-	var consumed consumedFile
-	if err := json.Unmarshal(data, &consumed); err != nil {
-		return true
-	}
-	return consumed.PermitID == permitID
+	return permitConsumedByDir(s.dir, permitID)
 }
 
 // writeConsumedPermit records the single use of one permit atomically, so a

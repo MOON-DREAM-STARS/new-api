@@ -40,7 +40,8 @@ export function useWebWorkspaceProjects(enabled = true) {
 /** Issues a creation permit. The permit alone never registers a project. */
 export function useCreateWebWorkspaceProjectPermit() {
   return useMutation({
-    mutationFn: createWebWorkspaceProjectPermit,
+    mutationFn: (input: { name: string }) =>
+      createWebWorkspaceProjectPermit(input.name),
   })
 }
 

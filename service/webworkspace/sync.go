@@ -29,6 +29,11 @@ const ProjectPermitKind = "project_create"
 // projectPermitTTLSeconds is the short permit lifetime frozen by contract §5.
 const projectPermitTTLSeconds = 300
 
+// projectDisplayNameMaxRunes is the frozen limit of the operator-facing project
+// name. The guard types it into the real provider UI, so the control plane and
+// the agent enforce the same bound.
+const projectDisplayNameMaxRunes = 64
+
 // provider-side identifier shapes of the Phase 4 ChatGPT URL contract.
 var (
 	externalProjectIdPattern      = regexp.MustCompile(`^g-p-[0-9a-f]{32}$`)
@@ -42,6 +47,12 @@ var (
 	// ErrProjectLimitReached means the workspace already holds the configured
 	// maximum number of registered projects.
 	ErrProjectLimitReached = errors.New("web workspace project limit reached")
+	// ErrInvalidProjectName means the requested project name is empty or longer
+	// than the frozen limit.
+	ErrInvalidProjectName = errors.New("web workspace project name is invalid")
+	// ErrProjectCreationInProgress means the guard is still running a project
+	// creation for this workspace, so a second permit would start over.
+	ErrProjectCreationInProgress = errors.New("web workspace project creation in progress")
 )
 
 // Observation is one guard observation line. Unknown events are ignored so a
@@ -114,12 +125,31 @@ func auditObservationSkipped(workspaceId int, reason string) {
 	webWorkspaceAudit("observations_applied", fmt.Sprintf("workspace_id=%d", workspaceId), "result=skipped", "reason="+reason)
 }
 
+// normalizeProjectDisplayName trims the operator-facing project name and
+// enforces the frozen length limit. The guard types the name into the real
+// provider UI, so an empty or oversized name is refused instead of being
+// silently rewritten.
+func normalizeProjectDisplayName(name string) (string, bool) {
+	trimmed := strings.TrimSpace(name)
+	count := utf8.RuneCountInString(trimmed)
+	if count < 1 || count > projectDisplayNameMaxRunes {
+		return "", false
+	}
+	return trimmed, true
+}
+
 // IssueProjectPermit issues one short-lived creation permit for the caller's
 // live session. It never creates a local project row: the guard reports
-// project_created only after the user really opened the project.
-func IssueProjectPermit(ctx context.Context, userId int, maxProjects int) (*ProjectPermit, error) {
+// project_created only after the provider really opened the project. The
+// display name travels with the permit so the guard can create the project
+// without the operator touching the cropped provider sidebar.
+func IssueProjectPermit(ctx context.Context, userId int, maxProjects int, displayName string) (*ProjectPermit, error) {
 	if userId <= 0 {
 		return nil, ErrSessionRequired
+	}
+	name, ok := normalizeProjectDisplayName(displayName)
+	if !ok {
+		return nil, ErrInvalidProjectName
 	}
 	session, ok := sessions.currentForUser(userId)
 	if !ok || !LiveRuntimeState(session.State) {
@@ -138,11 +168,20 @@ func IssueProjectPermit(ctx context.Context, userId int, maxProjects int) (*Proj
 	if err != nil {
 		return nil, err
 	}
+	// A creation the guard is still running must not be replaced by a second
+	// permit. The check is best effort: the guard keeps the final decision and
+	// a runtime the agent no longer knows about is reported by the permit call
+	// itself.
+	if runtime, err := client.GetRuntime(ctx, session.WorkspaceId); err == nil {
+		if creation := runtime.ProjectCreation.normalized(); creation != nil && creation.State == ProjectCreationStateRunning {
+			return nil, ErrProjectCreationInProgress
+		}
+	}
 	permitId, err := randomToken(32)
 	if err != nil {
 		return nil, err
 	}
-	expiresAt, err := client.IssueProjectPermit(ctx, session.WorkspaceId, permitId, projectPermitTTLSeconds)
+	expiresAt, err := client.IssueProjectPermit(ctx, session.WorkspaceId, permitId, projectPermitTTLSeconds, name)
 	if err != nil {
 		return nil, err
 	}
