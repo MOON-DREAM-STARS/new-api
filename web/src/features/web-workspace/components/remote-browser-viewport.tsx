@@ -35,6 +35,8 @@ type RemoteBrowserViewportProps = {
   sessionState: string | undefined
   enabled: boolean
   immersive: boolean
+  /** True when the account really has no project: no placeholder is invented. */
+  projectsEmpty: boolean
   surface: RemoteSurfaceController
   onStart: () => void
   onExitImmersive: () => void
@@ -122,13 +124,25 @@ export function RemoteBrowserViewport(props: RemoteBrowserViewportProps) {
       title: t('Starting the remote browser...'),
     }
   } else if (!isLive) {
-    status = {
-      kind: 'empty',
-      title: t('Remote browser is not running'),
-      description: t('Start a session to open the remote browser.'),
-      actionLabel: t('Start session'),
-      onAction: props.onStart,
-    }
+    // A real account without projects gets its own empty state: projects are
+    // created inside the remote browser, so the action stays "start session".
+    status = props.projectsEmpty
+      ? {
+          kind: 'empty',
+          title: t('No projects yet.'),
+          description: t(
+            'Create a project inside the remote browser and the system registers it here automatically.'
+          ),
+          actionLabel: t('Start session'),
+          onAction: props.onStart,
+        }
+      : {
+          kind: 'empty',
+          title: t('Remote browser is not running'),
+          description: t('Start a session to open the remote browser.'),
+          actionLabel: t('Start session'),
+          onAction: props.onStart,
+        }
   } else if (props.surface.status === 'failed') {
     status = {
       kind: 'failed',

@@ -239,12 +239,42 @@ describe('WebWorkspace page', () => {
     expect(container.textContent).not.toContain('A0')
   })
 
+  test('shows the real empty state for an account without projects', async () => {
+    apiClient.get = async (url) => {
+      if (url === CONFIG_PATH) return ok({ enabled: true, entitled: true })
+      if (url === SESSION_PATH) return ok(null)
+      if (url === PROJECTS_PATH) return ok({ items: [] })
+      if (url === STATUS_PATH) {
+        return ok({ entitled: true, workspace: undefined })
+      }
+      throw new Error(`unexpected request ${url}`)
+    }
+
+    const { container } = renderPage(<WebWorkspace />)
+
+    expect(await screen.findByText('No projects yet.')).toBeTruthy()
+    expect(container.textContent).not.toContain('A0')
+    expect(screen.queryByLabelText('A0')).toBeNull()
+  })
+
   test('shows the workspace empty state and starts a session on demand', async () => {
     const posted: string[] = []
     apiClient.get = async (url) => {
       if (url === CONFIG_PATH) return ok({ enabled: true, entitled: true })
       if (url === SESSION_PATH) return ok(null)
-      if (url === PROJECTS_PATH) return ok({ items: [] })
+      if (url === PROJECTS_PATH) {
+        return ok({
+          items: [
+            {
+              id: 1,
+              provider: 'chatgpt',
+              name: 'acceptance project',
+              created_at: 1,
+              updated_at: 1,
+            },
+          ],
+        })
+      }
       if (url === STATUS_PATH) {
         return ok({ entitled: true, workspace: undefined })
       }
