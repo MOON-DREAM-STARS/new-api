@@ -60,10 +60,14 @@ export type WebWorkspaceNavigation = {
   updated_at: number
 }
 
+/** Runtime policy mode reported by the control plane. Never client supplied. */
+export type WebWorkspaceSessionMode = 'LOCKED' | 'LOGIN'
+
 /** Control-plane view of one browser session. Runtime ids never reach the client. */
 export type WebWorkspaceSession = {
   session_id: string
   state: WebWorkspaceSessionState | string
+  mode: WebWorkspaceSessionMode | string
   created_at: number
   last_seen_at: number
   idle_deadline_at: number

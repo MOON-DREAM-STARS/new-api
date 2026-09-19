@@ -7374,6 +7374,8 @@
     "Connection details": "连接详情",
     "Refresh page": "刷新页面",
     "Browser forward": "浏览器前进",
-    "Browser back": "浏览器后退"
+    "Browser back": "浏览器后退",
+    "Finish sign-in and lock": "完成登录并锁定",
+    "Login mode": "登录模式"
   }
 }

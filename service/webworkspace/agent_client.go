@@ -57,10 +57,15 @@ type AgentRuntime struct {
 	RuntimeId      string           `json:"runtime_id"`
 	WorkspaceId    int              `json:"workspace_id"`
 	State          string           `json:"state"`
+	Mode           string           `json:"mode"`
 	CreatedAt      int64            `json:"created_at"`
 	LastActivityAt int64            `json:"last_activity_at"`
 	IdleDeadlineAt int64            `json:"idle_deadline_at"`
 	Navigation     *AgentNavigation `json:"navigation"`
+}
+
+type agentRestartRuntimeRequest struct {
+	Mode string `json:"mode,omitempty"`
 }
 
 type agentCreateRuntimeRequest struct {
@@ -264,10 +269,11 @@ func (c *AgentClient) StopRuntime(ctx context.Context, workspaceId int) error {
 	return c.do(ctx, http.MethodPost, path, nil, nil)
 }
 
-func (c *AgentClient) RestartRuntime(ctx context.Context, workspaceId int) (*AgentRuntime, error) {
+func (c *AgentClient) RestartRuntime(ctx context.Context, workspaceId int, mode string) (*AgentRuntime, error) {
 	var runtime AgentRuntime
 	path := fmt.Sprintf("/internal/v1/runtimes/%d/restart", workspaceId)
-	if err := c.do(ctx, http.MethodPost, path, nil, &runtime); err != nil {
+	payload := agentRestartRuntimeRequest{Mode: strings.TrimSpace(mode)}
+	if err := c.do(ctx, http.MethodPost, path, payload, &runtime); err != nil {
 		return nil, err
 	}
 	return &runtime, nil

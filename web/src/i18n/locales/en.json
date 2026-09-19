@@ -7357,6 +7357,8 @@
     "Issue a new permit and finish creating the project.": "Issue a new permit and finish creating the project.",
     "Refresh page": "Refresh page",
     "Browser forward": "Browser forward",
-    "Browser back": "Browser back"
+    "Browser back": "Browser back",
+    "Finish sign-in and lock": "Finish sign-in and lock",
+    "Login mode": "Login mode"
   }
 }

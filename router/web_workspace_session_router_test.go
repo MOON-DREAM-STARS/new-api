@@ -47,6 +47,7 @@ type routerFakeAgent struct {
 	acked           map[int]int
 	permitCalls     []routerPermitCall
 	navigationCalls []routerNavigationCall
+	restartModes    []string
 	failPermits     bool
 	navigationFail  string
 }
@@ -115,6 +116,7 @@ func newRouterFakeAgent(t *testing.T) *routerFakeAgent {
 					RuntimeId:      fmt.Sprintf("ws-%d", request.WorkspaceId),
 					WorkspaceId:    request.WorkspaceId,
 					State:          webworkspace.AgentStateRunning,
+					Mode:           "LOCKED",
 					CreatedAt:      now,
 					LastActivityAt: now,
 					IdleDeadlineAt: now + 600,
@@ -153,7 +155,21 @@ func newRouterFakeAgent(t *testing.T) *routerFakeAgent {
 			agent.mutex.Unlock()
 			writeRouterAgentJSON(t, w, runtime)
 		case suffix == "restart" && r.Method == http.MethodPost:
+			var restartRequest struct {
+				Mode string `json:"mode"`
+			}
+			if len(body) > 0 {
+				if err := common.Unmarshal(body, &restartRequest); err != nil {
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write([]byte(`{"success":false,"error":"invalid_request"}`))
+					return
+				}
+			}
 			agent.mutex.Lock()
+			agent.restartModes = append(agent.restartModes, restartRequest.Mode)
+			if restartRequest.Mode != "" {
+				runtime.Mode = restartRequest.Mode
+			}
 			runtime.State = webworkspace.AgentStateRunning
 			runtime.LastActivityAt = time.Now().Unix()
 			runtime.IdleDeadlineAt = time.Now().Unix() + 600
@@ -622,6 +638,46 @@ func TestWebWorkspaceRouterNavigationFailsClosedWithoutAgent(t *testing.T) {
 	assert.Equal(t, "WEB_WORKSPACE_AGENT_UNAVAILABLE", decodeWebWorkspaceError(t, recorder).Code)
 }
 
+func TestWebWorkspaceRouterRestartModeTransition(t *testing.T) {
+	agent := newRouterFakeAgent(t)
+	fixture := setupWebWorkspaceSessionRouterTest(t, agent.server.URL)
+	token := webWorkspaceBearer(t, fixture.userA)
+	sessionId := startWebWorkspaceRouterSession(t, fixture, token)
+	path := "/api/web-workspace/session/" + sessionId + "/restart"
+
+	// The operator opened a sign-in window: the runtime mode is LOGIN and the
+	// client must be able to see it.
+	agent.mutex.Lock()
+	for id, runtime := range agent.runtimes {
+		runtime.Mode = "LOGIN"
+		agent.runtimes[id] = runtime
+	}
+	agent.mutex.Unlock()
+
+	locked := doWebWorkspaceRequest(fixture.engine, http.MethodPost, path, token, `{"mode":"LOCKED"}`)
+	require.Equal(t, http.StatusOK, locked.Code, locked.Body.String())
+	assert.Contains(t, locked.Body.String(), `"mode":"LOCKED"`)
+
+	agent.mutex.Lock()
+	modes := append([]string{}, agent.restartModes...)
+	agent.mutex.Unlock()
+	require.Len(t, modes, 1)
+	assert.Equal(t, "LOCKED", modes[0])
+
+	// A restart without a body stays valid and keeps the current mode.
+	reused := doWebWorkspaceRequest(fixture.engine, http.MethodPost, path, token, "")
+	require.Equal(t, http.StatusOK, reused.Code, reused.Body.String())
+
+	// Entering LOGIN stays an operator action: the client API rejects it, and
+	// the agent never receives the request.
+	opened := doWebWorkspaceRequest(fixture.engine, http.MethodPost, path, token, `{"mode":"LOGIN"}`)
+	assert.Equal(t, http.StatusBadRequest, opened.Code)
+	assert.Equal(t, "WEB_WORKSPACE_INVALID_REQUEST", decodeWebWorkspaceError(t, opened).Code)
+	agent.mutex.Lock()
+	modes = append([]string{}, agent.restartModes...)
+	agent.mutex.Unlock()
+	assert.Equal(t, []string{"LOCKED", ""}, modes)
+}
 func TestWebWorkspaceRouterStreamGateway(t *testing.T) {
 	agent := newRouterFakeAgent(t)
 	fixture := setupWebWorkspaceSessionRouterTest(t, agent.server.URL)
