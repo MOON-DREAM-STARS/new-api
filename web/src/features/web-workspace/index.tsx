@@ -131,6 +131,8 @@ export function WebWorkspace() {
   const autoOpenAttemptRef = useRef<string | null>(null)
   const navigatedProjectRef = useRef<string | null>(null)
   const screenRemapAttemptedRef = useRef<string | null>(null)
+  const autoStartAttemptedRef = useRef(false)
+  const manualStopRef = useRef(false)
   const firstProjectPromptedRef = useRef(false)
   const [screenRemapPending, setScreenRemapPending] = useState(false)
   const userId = useAuthStore((state) => state.auth.user?.id ?? null)
@@ -214,6 +216,33 @@ export function WebWorkspace() {
         maxHeight: configQuery.data?.max_screen_height,
       })
     : null
+  // An idle runtime is stopped by the agent after its deadline. Opening the
+  // workspace should bring it back once instead of leaving the operator on a
+  // stale stopped page. The attempt is bounded per mount so a real start error
+  // stays visible and Stop does not immediately start a new runtime.
+  useEffect(() => {
+    if (
+      !ready ||
+      !isDesktop ||
+      !sessionQuery.isSuccess ||
+      isLive ||
+      startMutation.isPending ||
+      autoStartAttemptedRef.current ||
+      manualStopRef.current
+    ) {
+      return
+    }
+    autoStartAttemptedRef.current = true
+    startMutation.mutate({ screenSize: proposedScreen })
+  }, [
+    isDesktop,
+    isLive,
+    proposedScreen,
+    ready,
+    sessionQuery.isSuccess,
+    startMutation,
+  ])
+
   const surfacePresentation = computePresentation({
     provider,
     screen: surface.screen,
@@ -415,6 +444,7 @@ export function WebWorkspace() {
   ])
 
   function startSession() {
+    manualStopRef.current = false
     startMutation.mutate({ screenSize: proposedScreen })
   }
 
@@ -526,7 +556,9 @@ export function WebWorkspace() {
           onRestart={restartSession}
           onLockSession={lockSession}
           onStop={() => {
-            if (session) stopMutation.mutate(session.session_id)
+            if (!session) return
+            manualStopRef.current = true
+            stopMutation.mutate(session.session_id)
           }}
           onNavigateBack={() => navigate('back')}
           onNavigateForward={() => navigate('forward')}
