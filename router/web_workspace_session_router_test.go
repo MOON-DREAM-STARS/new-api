@@ -879,7 +879,7 @@ func TestWebWorkspaceRouterProjectPermitFlow(t *testing.T) {
 	token := webWorkspaceBearer(t, fixture.userA)
 
 	// No live session: the permit is refused before the agent is contacted.
-	noSession := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/projects", token, `{"name":"Quarterly Review"}`)
+	noSession := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/projects", token, `{"name":"Quarterly-Review"}`)
 	require.Equal(t, http.StatusConflict, noSession.Code, noSession.Body.String())
 	assert.Equal(t, "WEB_WORKSPACE_SESSION_REQUIRED", decodeWebWorkspaceError(t, noSession).Code)
 
@@ -888,7 +888,7 @@ func TestWebWorkspaceRouterProjectPermitFlow(t *testing.T) {
 	var workspace model.WebWorkspace
 	require.NoError(t, model.DB.Where("user_id = ?", fixture.userA.Id).First(&workspace).Error)
 
-	permitRecorder := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/projects", token, `{"name":"Quarterly Review"}`)
+	permitRecorder := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/projects", token, `{"name":"Quarterly-Review"}`)
 	require.Equal(t, http.StatusOK, permitRecorder.Code, permitRecorder.Body.String())
 	var payload struct {
 		Data struct {
@@ -905,7 +905,7 @@ func TestWebWorkspaceRouterProjectPermitFlow(t *testing.T) {
 	assert.Equal(t, payload.Data.PermitId, calls[0].PermitId)
 	assert.Equal(t, "project_create", calls[0].Kind)
 	assert.Equal(t, 300, calls[0].TtlSeconds)
-	assert.Equal(t, "Quarterly Review", calls[0].DisplayName)
+	assert.Equal(t, "Quarterly-Review", calls[0].DisplayName)
 
 	// Issuing a permit must not create a local project row.
 	var projectCount int64
@@ -930,10 +930,37 @@ func TestWebWorkspaceRouterProjectPermitEnforcesLimit(t *testing.T) {
 	}).Error)
 
 	system_setting.GetWebWorkspaceSettings().MaxProjects = 1
-	recorder := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/projects", token, `{"name":"Quarterly Review"}`)
+	recorder := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/projects", token, `{"name":"Quarterly-Review"}`)
 	require.Equal(t, http.StatusConflict, recorder.Code, recorder.Body.String())
 	assert.Equal(t, "WEB_WORKSPACE_PROJECT_LIMIT", decodeWebWorkspaceError(t, recorder).Code)
 	assert.Empty(t, agent.permitCallsFor(workspace.Id))
+}
+
+func TestWebWorkspaceRouterRejectsDeletingTheLastProject(t *testing.T) {
+	agent := newRouterFakeAgent(t)
+	fixture := setupWebWorkspaceSessionRouterTest(t, agent.server.URL)
+	token := webWorkspaceBearer(t, fixture.userA)
+
+	start := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/session", token, "")
+	require.Equal(t, http.StatusOK, start.Code, start.Body.String())
+	var workspace model.WebWorkspace
+	require.NoError(t, model.DB.Where("user_id = ?", fixture.userA.Id).First(&workspace).Error)
+	project := &model.WebProject{
+		WorkspaceId:       workspace.Id,
+		Provider:          "chatgpt",
+		ExternalProjectId: "g-p-cccccccccccccccccccccccccccccccc",
+		Name:              "Keep-Me",
+	}
+	require.NoError(t, model.DB.Create(project).Error)
+
+	request := fmt.Sprintf("/api/web-workspace/projects/%d", project.Id)
+	recorder := doWebWorkspaceRequest(fixture.engine, http.MethodDelete, request, token, "")
+	require.Equal(t, http.StatusConflict, recorder.Code, recorder.Body.String())
+	assert.Equal(t, "WEB_WORKSPACE_LAST_PROJECT_REQUIRED", decodeWebWorkspaceError(t, recorder).Code)
+
+	var count int64
+	require.NoError(t, model.DB.Model(&model.WebProject{}).Where("id = ?", project.Id).Count(&count).Error)
+	assert.EqualValues(t, 1, count)
 }
 
 func TestWebWorkspaceRouterProjectPermitFailsClosedWhenAgentRejects(t *testing.T) {
@@ -945,7 +972,7 @@ func TestWebWorkspaceRouterProjectPermitFailsClosedWhenAgentRejects(t *testing.T
 	require.Equal(t, http.StatusOK, start.Code, start.Body.String())
 	agent.setFailPermits(true)
 
-	recorder := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/projects", token, `{"name":"Quarterly Review"}`)
+	recorder := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/projects", token, `{"name":"Quarterly-Review"}`)
 	require.Equal(t, http.StatusServiceUnavailable, recorder.Code, recorder.Body.String())
 	assert.Equal(t, "WEB_WORKSPACE_AGENT_UNAVAILABLE", decodeWebWorkspaceError(t, recorder).Code)
 }

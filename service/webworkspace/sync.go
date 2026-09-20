@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
@@ -29,10 +30,15 @@ const ProjectPermitKind = "project_create"
 // projectPermitTTLSeconds is the short permit lifetime frozen by contract §5.
 const projectPermitTTLSeconds = 300
 
-// projectDisplayNameMaxRunes is the frozen limit of the operator-facing project
-// name. The guard types it into the real provider UI, so the control plane and
-// the agent enforce the same bound.
+// projectDisplayNameMaxRunes is the frozen total limit of the operator-facing
+// project name. The guard types it into the real provider UI, so the control
+// plane and the agent enforce the same bound.
 const projectDisplayNameMaxRunes = 64
+
+// projectNameSegmentMaxRunes is the per-segment limit for the operator-facing
+// `user-project` naming convention. The control plane rejects names the UI
+// cannot construct so an API caller cannot bypass the two-field flow.
+const projectNameSegmentMaxRunes = 24
 
 // provider-side identifier shapes of the Phase 4 ChatGPT URL contract.
 var (
@@ -53,6 +59,9 @@ var (
 	// ErrProjectCreationInProgress means the guard is still running a project
 	// creation for this workspace, so a second permit would start over.
 	ErrProjectCreationInProgress = errors.New("web workspace project creation in progress")
+	// ErrLastProjectRequired means deleting the target project would leave the
+	// workspace without any provider-side project.
+	ErrLastProjectRequired = errors.New("web workspace requires at least one project")
 	// ErrCapacityReached means the agent's global active-runtime cap is full.
 	ErrCapacityReached = errors.New("web workspace runtime capacity reached")
 )
@@ -128,17 +137,40 @@ func auditObservationSkipped(workspaceId int, reason string) {
 	webWorkspaceAudit("observations_applied", fmt.Sprintf("workspace_id=%d", workspaceId), "result=skipped", "reason="+reason)
 }
 
-// normalizeProjectDisplayName trims the operator-facing project name and
-// enforces the frozen length limit. The guard types the name into the real
-// provider UI, so an empty or oversized name is refused instead of being
-// silently rewritten.
-func normalizeProjectDisplayName(name string) (string, bool) {
+// NormalizeProjectDisplayName trims the operator-facing project name and
+// enforces the `user-project` convention. Each segment allows Unicode letters,
+// digits and underscores; the single separator is an ASCII hyphen. The guard
+// types the name into the real provider UI, so invalid names are refused
+// instead of being silently rewritten.
+func NormalizeProjectDisplayName(name string) (string, bool) {
 	trimmed := strings.TrimSpace(name)
-	count := utf8.RuneCountInString(trimmed)
-	if count < 1 || count > projectDisplayNameMaxRunes {
+	if trimmed == "" || utf8.RuneCountInString(trimmed) > projectDisplayNameMaxRunes {
 		return "", false
 	}
+	parts := strings.Split(trimmed, "-")
+	if len(parts) != 2 {
+		return "", false
+	}
+	for _, part := range parts {
+		if !isValidProjectNameSegment(part) {
+			return "", false
+		}
+	}
 	return trimmed, true
+}
+
+func isValidProjectNameSegment(segment string) bool {
+	count := utf8.RuneCountInString(segment)
+	if count < 1 || count > projectNameSegmentMaxRunes {
+		return false
+	}
+	for _, r := range segment {
+		if r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // IssueProjectPermit issues one short-lived creation permit for the caller's
@@ -150,7 +182,7 @@ func IssueProjectPermit(ctx context.Context, userId int, maxProjects int, displa
 	if userId <= 0 {
 		return nil, ErrSessionRequired
 	}
-	name, ok := normalizeProjectDisplayName(displayName)
+	name, ok := NormalizeProjectDisplayName(displayName)
 	if !ok {
 		return nil, ErrInvalidProjectName
 	}

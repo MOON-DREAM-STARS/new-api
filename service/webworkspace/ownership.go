@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 
 	"github.com/QuantumNous/new-api/model"
 	"gorm.io/gorm"
@@ -140,24 +141,68 @@ func RenameOwnedProject(userID int, projectID int, name string) (*model.WebProje
 	if err != nil {
 		return nil, err
 	}
+	normalized, ok := NormalizeProjectDisplayName(name)
+	if !ok {
+		return nil, ErrInvalidProjectName
+	}
 	// RowsAffected is intentionally not checked: MySQL reports zero changed
 	// rows when the new name equals the previous one.
 	if err := model.DB.Model(&model.WebProject{}).
 		Where("id = ? AND workspace_id = ?", project.Id, project.WorkspaceId).
-		Update("name", name).Error; err != nil {
+		Update("name", normalized).Error; err != nil {
 		return nil, err
 	}
 	return GetOwnedProject(userID, projectID)
 }
 
+// projectDeletionLocks serializes deletes for one workspace in this control
+// plane process so two concurrent requests cannot both observe a project count
+// above one and remove the last two provider projects.
+var projectDeletionLocks = struct {
+	sync.Mutex
+	entries map[int]*sync.Mutex
+}{entries: make(map[int]*sync.Mutex)}
+
+func projectDeletionLock(workspaceID int) *sync.Mutex {
+	projectDeletionLocks.Lock()
+	defer projectDeletionLocks.Unlock()
+	lock := projectDeletionLocks.entries[workspaceID]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		projectDeletionLocks.entries[workspaceID] = lock
+	}
+	return lock
+}
+
 // DeleteOwnedProjectWithProvider deletes the provider-side project through the
 // runtime guard first, then removes the local mapping and its conversations. If
-// the provider deletion fails, the local row is deliberately retained.
+// the provider deletion fails, the local row is deliberately retained. A
+// workspace must always keep at least one registered project.
 func DeleteOwnedProjectWithProvider(ctx context.Context, userID int, projectID int) error {
 	project, err := GetOwnedProject(userID, projectID)
 	if err != nil {
 		return err
 	}
+	lock := projectDeletionLock(project.WorkspaceId)
+	lock.Lock()
+	defer lock.Unlock()
+
+	// Re-read under the per-workspace lock so a concurrent delete cannot remove
+	// the target between the initial ownership check and the count.
+	project, err = GetOwnedProject(userID, projectID)
+	if err != nil {
+		return err
+	}
+	var count int64
+	if err := model.DB.Model(&model.WebProject{}).
+		Where("workspace_id = ?", project.WorkspaceId).
+		Count(&count).Error; err != nil {
+		return err
+	}
+	if count <= 1 {
+		return ErrLastProjectRequired
+	}
+
 	client, err := newAgentClient()
 	if err != nil {
 		return err

@@ -35,7 +35,7 @@ func TestWebWorkspaceRouterFailsClosedWhenDatabaseUnavailable(t *testing.T) {
 		{http.MethodGet, "/api/web-workspace/projects", ""},
 		{http.MethodPost, "/api/web-workspace/projects", `{}`},
 		{http.MethodGet, fmt.Sprintf("/api/web-workspace/projects/%d", fixture.projectA.Id), ""},
-		{http.MethodPatch, fmt.Sprintf("/api/web-workspace/projects/%d", fixture.projectA.Id), `{"name":"renamed"}`},
+		{http.MethodPatch, fmt.Sprintf("/api/web-workspace/projects/%d", fixture.projectA.Id), `{"name":"renamed-project"}`},
 		{http.MethodDelete, fmt.Sprintf("/api/web-workspace/projects/%d", fixture.projectA.Id), ""},
 		{http.MethodGet, fmt.Sprintf("/api/web-workspace/projects/%d/conversations", fixture.projectA.Id), ""},
 		{http.MethodGet, "/api/web-workspace/session", ""},
