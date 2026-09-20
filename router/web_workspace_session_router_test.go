@@ -42,17 +42,24 @@ type routerFakeAgent struct {
 	stop     int
 	echo     bool
 
-	ownership       map[int]webworkspace.OwnershipSnapshot
-	observations    map[int][]webworkspace.Observation
-	acked           map[int]int
-	permitCalls     []routerPermitCall
-	navigationCalls []routerNavigationCall
-	restartModes    []string
-	createdSizes    [][2]int
-	activityCalls   int
-	restartSizes    [][2]int
-	failPermits     bool
-	navigationFail  string
+	ownership                map[int]webworkspace.OwnershipSnapshot
+	observations             map[int][]webworkspace.Observation
+	acked                    map[int]int
+	permitCalls              []routerPermitCall
+	navigationCalls          []routerNavigationCall
+	restartModes             []string
+	createdSizes             [][2]int
+	activityCalls            int
+	restartSizes             [][2]int
+	failPermits              bool
+	navigationFail           string
+	fileChooserCalls         []routerFileChooserCall
+	fileChooserFailure       string
+	fileChooserFailureStatus int
+	clipboardCalls           []routerClipboardCall
+	clipboardFailure         string
+	inputCalls               []routerInputCall
+	inputFailure             string
 }
 
 type routerPermitCall struct {
@@ -63,9 +70,42 @@ type routerPermitCall struct {
 	DisplayName string
 }
 
+type routerFileChooserCall struct {
+	Method      string
+	WorkspaceId int
+	ChooserID   string
+	ContentType string
+	BodySize    int
+}
+
+type routerClipboardCall struct {
+	Method      string
+	WorkspaceId int
+	MIME        string
+	BodySize    int
+}
+
+type routerInputCall struct {
+	Method      string
+	WorkspaceId int
+	Text        string
+	Key         string
+	Modifiers   []string
+}
 type routerNavigationCall struct {
 	WorkspaceId int
 	Action      string
+}
+
+func routerInputFailureStatus(failure string) int {
+	switch failure {
+	case "input_timeout":
+		return http.StatusGatewayTimeout
+	case "input_rejected":
+		return http.StatusUnprocessableEntity
+	default:
+		return http.StatusServiceUnavailable
+	}
 }
 
 func newRouterFakeAgent(t *testing.T) *routerFakeAgent {
@@ -81,6 +121,26 @@ func newRouterFakeAgent(t *testing.T) *routerFakeAgent {
 	agent.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+routerTestAgentToken {
 			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if strings.Contains(r.URL.Path, "/kasm/") {
+			if strings.HasSuffix(r.URL.Path, "/websockify") {
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer conn.Close()
+				for {
+					messageType, payload, err := conn.ReadMessage()
+					if err != nil {
+						return
+					}
+					if err := conn.WriteMessage(messageType, payload); err != nil {
+						return
+					}
+				}
+			}
+			_, _ = w.Write([]byte("kasm:" + r.URL.Path))
 			return
 		}
 		if strings.HasSuffix(r.URL.Path, "/stream") {
@@ -231,6 +291,62 @@ func newRouterFakeAgent(t *testing.T) *routerFakeAgent {
 				Action     string                        `json:"action"`
 				Navigation *webworkspace.AgentNavigation `json:"navigation"`
 			}{Action: request.Action, Navigation: runtime.Navigation})
+		case suffix == "input/text" && r.Method == http.MethodPost:
+			var request struct {
+				Text string `json:"text"`
+			}
+			if err := common.Unmarshal(body, &request); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"success":false,"error":"invalid_request"}`))
+				return
+			}
+			agent.mutex.Lock()
+			agent.inputCalls = append(agent.inputCalls, routerInputCall{Method: "text", WorkspaceId: workspaceId, Text: request.Text})
+			failure := agent.inputFailure
+			agent.mutex.Unlock()
+			if failure != "" {
+				w.WriteHeader(routerInputFailureStatus(failure))
+				_, _ = w.Write([]byte(`{"success":false,"error":"` + failure + `"}`))
+				return
+			}
+			writeRouterAgentJSON(t, w, struct {
+				OK bool `json:"ok"`
+			}{OK: true})
+		case suffix == "input/key" && r.Method == http.MethodPost:
+			var request struct {
+				Key       string   `json:"key"`
+				Modifiers []string `json:"modifiers"`
+			}
+			if err := common.Unmarshal(body, &request); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"success":false,"error":"invalid_request"}`))
+				return
+			}
+			agent.mutex.Lock()
+			agent.inputCalls = append(agent.inputCalls, routerInputCall{Method: "key", WorkspaceId: workspaceId, Key: request.Key, Modifiers: request.Modifiers})
+			failure := agent.inputFailure
+			agent.mutex.Unlock()
+			if failure != "" {
+				w.WriteHeader(routerInputFailureStatus(failure))
+				_, _ = w.Write([]byte(`{"success":false,"error":"` + failure + `"}`))
+				return
+			}
+			writeRouterAgentJSON(t, w, struct {
+				OK bool `json:"ok"`
+			}{OK: true})
+		case suffix == "input/caret" && r.Method == http.MethodGet:
+			agent.mutex.Lock()
+			agent.inputCalls = append(agent.inputCalls, routerInputCall{Method: "caret", WorkspaceId: workspaceId})
+			failure := agent.inputFailure
+			agent.mutex.Unlock()
+			if failure != "" {
+				w.WriteHeader(routerInputFailureStatus(failure))
+				_, _ = w.Write([]byte(`{"success":false,"error":"` + failure + `"}`))
+				return
+			}
+			writeRouterAgentJSON(t, w, struct {
+				Caret map[string]float64 `json:"caret"`
+			}{Caret: map[string]float64{"x": 100, "y": 200, "width": 2, "height": 18}})
 		case suffix == "ownership" && r.Method == http.MethodPut:
 			var request webworkspace.OwnershipSnapshot
 			if err := common.Unmarshal(body, &request); err != nil {
@@ -301,6 +417,77 @@ func newRouterFakeAgent(t *testing.T) *routerFakeAgent {
 			writeRouterAgentJSON(t, w, struct {
 				Offset int64 `json:"offset"`
 			}{request.Offset})
+		case suffix == "file-chooser" && r.Method == http.MethodGet:
+			writeRouterAgentJSON(t, w, struct {
+				Chooser *webworkspace.AgentFileChooser `json:"chooser"`
+			}{Chooser: &webworkspace.AgentFileChooser{ChooserID: "chooser-0000000000000001", Mode: "selectSingle", CreatedAt: time.Now().Unix(), ExpiresAt: time.Now().Unix() + 300}})
+		case strings.HasPrefix(suffix, "file-chooser/") && strings.HasSuffix(suffix, "/files") && r.Method == http.MethodPost:
+			parts := strings.Split(strings.Trim(suffix, "/"), "/")
+			agent.mutex.Lock()
+			agent.fileChooserCalls = append(agent.fileChooserCalls, routerFileChooserCall{Method: "files", WorkspaceId: workspaceId, ChooserID: parts[1], ContentType: r.Header.Get("Content-Type"), BodySize: len(body)})
+			failure := agent.fileChooserFailure
+			failureStatus := agent.fileChooserFailureStatus
+			agent.mutex.Unlock()
+			if failure != "" {
+				if failureStatus == 0 {
+					failureStatus = http.StatusUnprocessableEntity
+				}
+				w.WriteHeader(failureStatus)
+				_, _ = w.Write([]byte(`{"success":false,"error":"` + failure + `"}`))
+				return
+			}
+			writeRouterAgentJSON(t, w, struct {
+				ChooserID string `json:"chooser_id"`
+				State     string `json:"state"`
+				Error     string `json:"error"`
+				UpdatedAt int64  `json:"updated_at"`
+			}{ChooserID: parts[1], State: "DONE", UpdatedAt: time.Now().Unix()})
+		case strings.HasPrefix(suffix, "file-chooser/") && strings.HasSuffix(suffix, "/cancel") && r.Method == http.MethodPost:
+			parts := strings.Split(strings.Trim(suffix, "/"), "/")
+			agent.mutex.Lock()
+			agent.fileChooserCalls = append(agent.fileChooserCalls, routerFileChooserCall{Method: "cancel", WorkspaceId: workspaceId, ChooserID: parts[1]})
+			failure := agent.fileChooserFailure
+			failureStatus := agent.fileChooserFailureStatus
+			agent.mutex.Unlock()
+			if failure != "" {
+				if failureStatus == 0 {
+					failureStatus = http.StatusUnprocessableEntity
+				}
+				w.WriteHeader(failureStatus)
+				_, _ = w.Write([]byte(`{"success":false,"error":"` + failure + `"}`))
+				return
+			}
+			writeRouterAgentJSON(t, w, struct {
+				ChooserID string `json:"chooser_id"`
+				State     string `json:"state"`
+				Error     string `json:"error"`
+				UpdatedAt int64  `json:"updated_at"`
+			}{ChooserID: parts[1], State: "CANCELLED", UpdatedAt: time.Now().Unix()})
+		case suffix == "clipboard/copy" && r.Method == http.MethodPost:
+			agent.mutex.Lock()
+			agent.clipboardCalls = append(agent.clipboardCalls, routerClipboardCall{Method: "copy", WorkspaceId: workspaceId})
+			failure := agent.clipboardFailure
+			agent.mutex.Unlock()
+			if failure != "" {
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write([]byte(`{"success":false,"error":"` + failure + `"}`))
+				return
+			}
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = w.Write([]byte("remote selection"))
+		case suffix == "clipboard/paste" && r.Method == http.MethodPost:
+			agent.mutex.Lock()
+			agent.clipboardCalls = append(agent.clipboardCalls, routerClipboardCall{Method: "paste", WorkspaceId: workspaceId, MIME: r.Header.Get("Content-Type"), BodySize: len(body)})
+			failure := agent.clipboardFailure
+			agent.mutex.Unlock()
+			if failure != "" {
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write([]byte(`{"success":false,"error":"` + failure + `"}`))
+				return
+			}
+			writeRouterAgentJSON(t, w, struct {
+				OK bool `json:"ok"`
+			}{OK: true})
 		default:
 			writeRouterAgentJSON(t, w, runtime)
 		}
@@ -367,6 +554,42 @@ func (a *routerFakeAgent) setFailPermits(fail bool) {
 	a.failPermits = fail
 }
 
+func (a *routerFakeAgent) setFileChooserFailure(code string, status int) {
+	a.mutex.Lock()
+	defer a.mutex.Unlock()
+	a.fileChooserFailure = code
+	a.fileChooserFailureStatus = status
+}
+
+func (a *routerFakeAgent) fileChooserCallsFor(workspaceId int) []routerFileChooserCall {
+	a.mutex.Lock()
+	defer a.mutex.Unlock()
+	calls := make([]routerFileChooserCall, 0, len(a.fileChooserCalls))
+	for _, call := range a.fileChooserCalls {
+		if call.WorkspaceId == workspaceId {
+			calls = append(calls, call)
+		}
+	}
+	return calls
+}
+
+func (a *routerFakeAgent) setClipboardFailure(code string) {
+	a.mutex.Lock()
+	defer a.mutex.Unlock()
+	a.clipboardFailure = code
+}
+
+func (a *routerFakeAgent) clipboardCallsFor(workspaceId int) []routerClipboardCall {
+	a.mutex.Lock()
+	defer a.mutex.Unlock()
+	calls := make([]routerClipboardCall, 0, len(a.clipboardCalls))
+	for _, call := range a.clipboardCalls {
+		if call.WorkspaceId == workspaceId {
+			calls = append(calls, call)
+		}
+	}
+	return calls
+}
 func (a *routerFakeAgent) setNavigationFail(failure string) {
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
@@ -871,6 +1094,106 @@ func TestWebWorkspaceRouterStreamGateway(t *testing.T) {
 	require.Error(t, err)
 	require.NotNil(t, missingResponse)
 	assert.Equal(t, http.StatusForbidden, missingResponse.StatusCode)
+}
+
+func TestWebWorkspaceRouterKasmProxy(t *testing.T) {
+	agent := newRouterFakeAgent(t)
+	fixture := setupWebWorkspaceSessionRouterTest(t, agent.server.URL)
+	token := webWorkspaceBearer(t, fixture.userA)
+
+	start := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/session", token, "")
+	require.Equal(t, http.StatusOK, start.Code, start.Body.String())
+	var startPayload struct {
+		Data struct {
+			SessionId string `json:"session_id"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(start.Body.Bytes(), &startPayload))
+	sessionID := startPayload.Data.SessionId
+	require.NotEmpty(t, sessionID)
+
+	ticketRecorder := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/session/"+sessionID+"/stream-ticket", token, "")
+	require.Equal(t, http.StatusOK, ticketRecorder.Code, ticketRecorder.Body.String())
+	var ticketPayload struct {
+		Data struct {
+			Ticket string `json:"ticket"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(ticketRecorder.Body.Bytes(), &ticketPayload))
+	require.NotEmpty(t, ticketPayload.Data.Ticket)
+
+	server := httptest.NewServer(fixture.engine)
+	t.Cleanup(server.Close)
+	kasmPath := "/api/web-workspace/session/" + sessionID + "/kasm/t/" + ticketPayload.Data.Ticket
+
+	assetRequest, err := http.NewRequest(
+		http.MethodGet,
+		server.URL+kasmPath+"/vnc.html?autoconnect=1",
+		nil,
+	)
+	require.NoError(t, err)
+	assetResponse, err := http.DefaultClient.Do(assetRequest)
+	require.NoError(t, err)
+	defer assetResponse.Body.Close()
+	assetBody, err := io.ReadAll(assetResponse.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, assetResponse.StatusCode, string(assetBody))
+	assert.True(t, strings.HasSuffix(string(assetBody), "/kasm/vnc.html"), string(assetBody))
+
+	// Relative KasmVNC assets inherit the ticket path segment and must remain
+	// authorized without an Authorization header.
+	relativeAsset, err := http.Get(server.URL + kasmPath + "/assets/ui-test.js")
+	require.NoError(t, err)
+	defer relativeAsset.Body.Close()
+	relativeBody, err := io.ReadAll(relativeAsset.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, relativeAsset.StatusCode, string(relativeBody))
+	assert.True(t, strings.HasSuffix(string(relativeBody), "/kasm/assets/ui-test.js"), string(relativeBody))
+
+	// A ticket issued for this session cannot be replayed on another session.
+	foreignResponse, err := http.Get(server.URL + "/api/web-workspace/session/foreign-session/kasm/t/" + ticketPayload.Data.Ticket + "/vnc.html")
+	require.NoError(t, err)
+	defer foreignResponse.Body.Close()
+	foreignBody, err := io.ReadAll(foreignResponse.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusForbidden, foreignResponse.StatusCode, string(foreignBody))
+	var foreignError webWorkspaceErrorBody
+	require.NoError(t, common.Unmarshal(foreignBody, &foreignError))
+	assert.Equal(t, "WEB_WORKSPACE_TICKET_INVALID", foreignError.Code)
+
+	wsBase := "ws" + strings.TrimPrefix(server.URL, "http")
+	wsPath := wsBase + kasmPath + "/websockify"
+	conn, response, err := websocket.DefaultDialer.Dial(wsPath, nil)
+	if response != nil && response.Body != nil {
+		defer response.Body.Close()
+	}
+	require.NoError(t, err, "kasm websocket dial failed")
+	defer conn.Close()
+
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte("kasm-probe")))
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	messageType, payload, err := conn.ReadMessage()
+	require.NoError(t, err)
+	assert.Equal(t, websocket.TextMessage, messageType)
+	assert.Equal(t, "kasm-probe", string(payload))
+
+	// The websocket upgrade consumes the ticket; replay is rejected.
+	replay, replayResponse, err := websocket.DefaultDialer.Dial(wsPath, nil)
+	if replay != nil {
+		_ = replay.Close()
+	}
+	if replayResponse != nil && replayResponse.Body != nil {
+		defer replayResponse.Body.Close()
+	}
+	require.Error(t, err)
+	require.NotNil(t, replayResponse)
+	assert.Equal(t, http.StatusForbidden, replayResponse.StatusCode)
+
+	// The old header-only path is not an alternate authorization channel.
+	missing, err := http.Get(server.URL + "/api/web-workspace/session/" + sessionID + "/kasm/vnc.html")
+	require.NoError(t, err)
+	defer missing.Body.Close()
+	require.Equal(t, http.StatusForbidden, missing.StatusCode)
 }
 
 func TestWebWorkspaceRouterProjectPermitFlow(t *testing.T) {

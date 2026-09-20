@@ -6,6 +6,9 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
+	"mime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -40,6 +43,17 @@ type Session struct {
 	Navigation      *AgentNavigation
 	Page            *AgentPageStatus
 	ProjectCreation *AgentProjectCreation
+	IMEState        string
+}
+
+// NormalizeIMEState keeps the presentation-only IBus field inside its frozen
+// READY/UNAVAILABLE contract. Unknown, empty and malformed values fail closed
+// to UNAVAILABLE without affecting the session.
+func NormalizeIMEState(value string) string {
+	if value == "READY" {
+		return "READY"
+	}
+	return "UNAVAILABLE"
 }
 
 type sessionStore struct {
@@ -138,6 +152,7 @@ func (s *sessionStore) applyRuntime(sessionId string, runtime *AgentRuntime) (Se
 	session.Navigation = runtime.Navigation
 	session.Page = runtime.Page.normalized()
 	session.ProjectCreation = runtime.ProjectCreation.normalized()
+	session.IMEState = NormalizeIMEState(runtime.IMEState)
 	if runtime.LastActivityAt > session.LastSeenAt {
 		session.LastSeenAt = runtime.LastActivityAt
 	}
@@ -233,6 +248,7 @@ func StartSession(ctx context.Context, userId int, screenWidth int, screenHeight
 		StreamBytesIn:  runtime.StreamBytesIn,
 		Navigation:     runtime.Navigation,
 		Page:           runtime.Page.normalized(),
+		IMEState:       NormalizeIMEState(runtime.IMEState),
 	}
 	sessions.put(session)
 	// The guard denies every unregistered provider resource, so the session is
@@ -344,6 +360,202 @@ func NavigateSession(ctx context.Context, userId int, sessionId string, action s
 		return nil, ErrSessionNotFound
 	}
 	return &updated, nil
+}
+
+// FileChooser is the control-plane view of one pending local file chooser. It
+// never contains the CDP backend node id, session id or a staging path.
+type FileChooser struct {
+	ChooserID string
+	Mode      string
+	CreatedAt int64
+	ExpiresAt int64
+}
+
+// FileChooserResult is the real guard result of one attach or cancel command.
+type FileChooserResult struct {
+	ChooserID string
+	State     string
+	Error     string
+	UpdatedAt int64
+}
+
+// WaitFileChooser long-polls the agent for the caller's pending chooser.
+func WaitFileChooser(ctx context.Context, userId int, sessionId string, wait time.Duration) (*FileChooser, error) {
+	session, err := GetSession(userId, sessionId)
+	if err != nil {
+		return nil, err
+	}
+	client, err := newAgentClient()
+	if err != nil {
+		return nil, err
+	}
+	chooser, err := client.WaitFileChooser(ctx, session.WorkspaceId, wait)
+	if err != nil {
+		return nil, err
+	}
+	if chooser == nil {
+		return nil, nil
+	}
+	return &FileChooser{
+		ChooserID: chooser.ChooserID,
+		Mode:      chooser.Mode,
+		CreatedAt: chooser.CreatedAt,
+		ExpiresAt: chooser.ExpiresAt,
+	}, nil
+}
+
+// UploadFileChooserFiles streams multipart parts to the agent after checking
+// session ownership. The caller must never supply a filesystem path.
+func UploadFileChooserFiles(ctx context.Context, userId int, sessionId string, chooserID string, contentType string, body io.Reader) (*FileChooserResult, error) {
+	session, err := GetSession(userId, sessionId)
+	if err != nil {
+		return nil, err
+	}
+	if chooserID == "" {
+		return nil, ErrInvalidFileChooser
+	}
+	client, err := newAgentClient()
+	if err != nil {
+		return nil, err
+	}
+	result, err := client.UploadFileChooserFiles(ctx, session.WorkspaceId, chooserID, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	return &FileChooserResult{
+		ChooserID: result.ChooserID,
+		State:     result.State,
+		Error:     result.Error,
+		UpdatedAt: result.UpdatedAt,
+	}, nil
+}
+
+// CancelFileChooser dismisses a pending chooser after checking ownership.
+func CancelFileChooser(ctx context.Context, userId int, sessionId string, chooserID string) (*FileChooserResult, error) {
+	session, err := GetSession(userId, sessionId)
+	if err != nil {
+		return nil, err
+	}
+	if chooserID == "" {
+		return nil, ErrInvalidFileChooser
+	}
+	client, err := newAgentClient()
+	if err != nil {
+		return nil, err
+	}
+	result, err := client.CancelFileChooser(ctx, session.WorkspaceId, chooserID)
+	if err != nil {
+		return nil, err
+	}
+	return &FileChooserResult{
+		ChooserID: result.ChooserID,
+		State:     result.State,
+		Error:     result.Error,
+		UpdatedAt: result.UpdatedAt,
+	}, nil
+}
+
+// CopyClipboard checks session ownership and returns the raw remote selection.
+func CopyClipboard(ctx context.Context, userId int, sessionId string) (string, []byte, error) {
+	session, err := GetSession(userId, sessionId)
+	if err != nil {
+		return "", nil, err
+	}
+	client, err := newAgentClient()
+	if err != nil {
+		return "", nil, err
+	}
+	return client.CopyClipboard(ctx, session.WorkspaceId)
+}
+
+// PasteClipboard checks session ownership, bounds the raw body and forwards it
+// to the agent without a JSON wrapper.
+func PasteClipboard(ctx context.Context, userId int, sessionId string, mimeType string, body io.Reader) error {
+	session, err := GetSession(userId, sessionId)
+	if err != nil {
+		return err
+	}
+	normalized, err := normalizeClipboardMIME(mimeType)
+	if err != nil {
+		return err
+	}
+	payload, err := readClipboardPayload(body)
+	if err != nil {
+		return err
+	}
+	client, err := newAgentClient()
+	if err != nil {
+		return err
+	}
+	return client.PasteClipboard(ctx, session.WorkspaceId, normalized, payload)
+}
+
+// InsertInputText checks session ownership and injects one committed local
+// text value through the agent.
+func InsertInputText(ctx context.Context, userId int, sessionId string, text string) error {
+	session, err := GetSession(userId, sessionId)
+	if err != nil {
+		return err
+	}
+	client, err := newAgentClient()
+	if err != nil {
+		return err
+	}
+	return client.InsertInputText(ctx, session.WorkspaceId, text)
+}
+
+// DispatchInputKey checks session ownership and forwards one approved key.
+func DispatchInputKey(ctx context.Context, userId int, sessionId string, key string, modifiers []string) error {
+	session, err := GetSession(userId, sessionId)
+	if err != nil {
+		return err
+	}
+	client, err := newAgentClient()
+	if err != nil {
+		return err
+	}
+	return client.DispatchInputKey(ctx, session.WorkspaceId, key, modifiers)
+}
+
+// ProbeInputCaret checks session ownership and returns the remote caret, or nil
+// when the remote page has no active editable element.
+func ProbeInputCaret(ctx context.Context, userId int, sessionId string) (*InputCaret, error) {
+	session, err := GetSession(userId, sessionId)
+	if err != nil {
+		return nil, err
+	}
+	client, err := newAgentClient()
+	if err != nil {
+		return nil, err
+	}
+	return client.ProbeInputCaret(ctx, session.WorkspaceId)
+}
+
+func normalizeClipboardMIME(value string) (string, error) {
+	mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(value))
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrClipboardMIMEUnsupported, err)
+	}
+	switch strings.ToLower(mediaType) {
+	case "text/plain", "image/png", "image/jpeg", "image/webp":
+		return strings.ToLower(mediaType), nil
+	default:
+		return "", fmt.Errorf("%w: %s", ErrClipboardMIMEUnsupported, mediaType)
+	}
+}
+
+func readClipboardPayload(body io.Reader) ([]byte, error) {
+	if body == nil {
+		return []byte{}, nil
+	}
+	payload, err := io.ReadAll(io.LimitReader(body, maxClipboardPayloadBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(payload)) > maxClipboardPayloadBytes {
+		return nil, ErrClipboardPayloadTooLarge
+	}
+	return payload, nil
 }
 
 // TouchRuntimeActivity keeps a live session alive without attaching a stream. A

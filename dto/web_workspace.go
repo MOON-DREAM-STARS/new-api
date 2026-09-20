@@ -85,6 +85,31 @@ type WebWorkspaceNavigationRequest struct {
 	ProjectID int    `json:"project_id,omitempty"`
 }
 
+// WebWorkspaceInputTextRequest carries one already-committed local text value.
+type WebWorkspaceInputTextRequest struct {
+	Text string `json:"text"`
+}
+
+// WebWorkspaceInputKeyRequest carries one approved remote key and modifiers.
+type WebWorkspaceInputKeyRequest struct {
+	Key       string   `json:"key"`
+	Modifiers []string `json:"modifiers,omitempty"`
+}
+
+// WebWorkspaceInputCaretDto is the remote caret rectangle in remote CSS pixels.
+type WebWorkspaceInputCaretDto struct {
+	X      float64 `json:"x"`
+	Y      float64 `json:"y"`
+	Width  float64 `json:"width"`
+	Height float64 `json:"height"`
+}
+
+// WebWorkspaceInputCaretResponse wraps the optional caret. A null caret is a
+// valid result: the remote page has no active editable element.
+type WebWorkspaceInputCaretResponse struct {
+	Caret *WebWorkspaceInputCaretDto `json:"caret"`
+}
+
 // WebWorkspaceStartRequest carries the optional remote screen size proposal of
 // a start. Both dimensions zero mean the agent default.
 type WebWorkspaceStartRequest struct {
@@ -118,6 +143,24 @@ type WebWorkspaceProjectCreationDto struct {
 	UpdatedAt int64  `json:"updated_at"`
 }
 
+// WebWorkspaceFileChooserDto is the URL-free pending local file chooser. It
+// never contains the CDP backend node id, session id or a staging path.
+type WebWorkspaceFileChooserDto struct {
+	ChooserID string `json:"chooser_id"`
+	Mode      string `json:"mode"`
+	CreatedAt int64  `json:"created_at"`
+	ExpiresAt int64  `json:"expires_at"`
+}
+
+// WebWorkspaceFileChooserResultDto is the real guard result of attaching files
+// or cancelling the local chooser.
+type WebWorkspaceFileChooserResultDto struct {
+	ChooserID string `json:"chooser_id"`
+	State     string `json:"state"`
+	Error     string `json:"error"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
 // WebWorkspaceSessionDto is the control-plane view of one browser session.
 // Runtime ids, container addresses and ports never leave the control plane.
 type WebWorkspaceSessionDto struct {
@@ -132,6 +175,7 @@ type WebWorkspaceSessionDto struct {
 	Navigation      *WebWorkspaceNavigationDto      `json:"navigation"`
 	Page            *WebWorkspacePageDto            `json:"page"`
 	ProjectCreation *WebWorkspaceProjectCreationDto `json:"project_creation"`
+	IMEState        string                          `json:"ime_state"`
 }
 
 // WebWorkspaceStreamTicketDto carries the one-time ticket for a stream attach.

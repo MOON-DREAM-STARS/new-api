@@ -59,6 +59,33 @@ func IssueStreamTicket(session *Session) (string, int64, error) {
 	return token, expiresAt, nil
 }
 
+// validateStreamTicketLocked validates one ticket without consuming it.
+func validateStreamTicketLocked(token string, sessionId string, prune bool) (StreamTicket, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return StreamTicket{}, ErrStreamTicketInvalid
+	}
+	now := time.Now().Unix()
+	if prune {
+		tickets.pruneLocked(now)
+	}
+	entry, ok := tickets.entries[token]
+	if !ok || entry.ExpiresAt < now || entry.SessionId != sessionId {
+		return StreamTicket{}, ErrStreamTicketInvalid
+	}
+	return entry, nil
+}
+
+// ValidateStreamTicket validates a ticket without consuming it. It is used for
+// the KasmVNC document and its relative assets, which cannot carry an
+// Authorization header. The ticket remains short-lived and is consumed when the
+// Kasm websocket upgrade is authorized.
+func ValidateStreamTicket(token string, sessionId string) (StreamTicket, error) {
+	tickets.mutex.Lock()
+	defer tickets.mutex.Unlock()
+	return validateStreamTicketLocked(token, sessionId, true)
+}
+
 // ConsumeStreamTicket validates and burns a ticket. The ticket is removed even
 // when the remaining checks fail, so a replay can never succeed. Callers must
 // still resolve the session and confirm the session belongs to the same user.
@@ -67,15 +94,13 @@ func ConsumeStreamTicket(token string, sessionId string) (StreamTicket, error) {
 	if token == "" {
 		return StreamTicket{}, ErrStreamTicketInvalid
 	}
-	now := time.Now().Unix()
 	tickets.mutex.Lock()
 	defer tickets.mutex.Unlock()
-	entry, ok := tickets.entries[token]
-	if ok {
+	entry, err := validateStreamTicketLocked(token, sessionId, true)
+	if err != nil {
 		delete(tickets.entries, token)
-	}
-	if !ok || entry.ExpiresAt < now || entry.SessionId != sessionId {
 		return StreamTicket{}, ErrStreamTicketInvalid
 	}
+	delete(tickets.entries, token)
 	return entry, nil
 }

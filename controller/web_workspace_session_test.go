@@ -20,6 +20,7 @@ func TestToWebWorkspaceSessionDtoMapsURLFreePageHealth(t *testing.T) {
 			Attempts:  2,
 			UpdatedAt: 1789800000,
 		},
+		IMEState: "READY",
 	}
 
 	result := toWebWorkspaceSessionDto(session)
@@ -28,7 +29,9 @@ func TestToWebWorkspaceSessionDtoMapsURLFreePageHealth(t *testing.T) {
 	assert.Equal(t, session.Page.Error, result.Page.Error)
 	assert.Equal(t, session.Page.Attempts, result.Page.Attempts)
 	assert.Equal(t, session.Page.UpdatedAt, result.Page.UpdatedAt)
+	assert.Equal(t, "READY", result.IMEState)
 	assert.Nil(t, toWebWorkspaceSessionDto(&webworkspace.Session{}).Page)
+	assert.Equal(t, "UNAVAILABLE", toWebWorkspaceSessionDto(&webworkspace.Session{}).IMEState)
 
 	raw, err := common.Marshal(result)
 	require.NoError(t, err)

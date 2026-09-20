@@ -551,6 +551,27 @@ func TestWebWorkspaceSyncCorrectsAnExistingProjectDisplayName(t *testing.T) {
 	assert.Equal(t, "test0", stored.Name)
 }
 
+// A rename observation without a slug carries no operator-facing name. It must
+// never overwrite the stored name with the raw provider id, which is what the
+// guard's own slug-less project navigation used to produce.
+func TestWebWorkspaceSyncIgnoresSluglessRenameObservation(t *testing.T) {
+	db, agent, _, workspace := setupWebWorkspaceSyncTest(t)
+	project := &model.WebProject{WorkspaceId: workspace.Id, Provider: DefaultProvider, ExternalProjectId: syncTestProjectA, Name: "test0"}
+	require.NoError(t, db.Create(project).Error)
+	agent.setObservations(Observation{
+		Event:             ObservationProjectRenamed,
+		ExternalProjectId: syncTestProjectA,
+		Slug:              "",
+		ObservedAt:        11,
+	})
+
+	require.NoError(t, SyncWorkspace(context.Background(), workspace.Id))
+
+	var stored model.WebProject
+	require.NoError(t, db.Where("id = ?", project.Id).First(&stored).Error)
+	assert.Equal(t, "test0", stored.Name)
+}
+
 func TestWebWorkspaceSyncWorkspaceAppliesObservationsIdempotently(t *testing.T) {
 	db, agent, _, workspace := setupWebWorkspaceSyncTest(t)
 	agent.setObservations(
