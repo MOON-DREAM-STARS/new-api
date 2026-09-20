@@ -16,7 +16,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Plus, Settings } from 'lucide-react'
+import { Folder, Plus, Settings } from 'lucide-react'
+import { useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -29,12 +30,6 @@ import {
 } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 
-import {
-  CONNECTION_DOT_CLASSES,
-  CONNECTION_LABEL_KEYS,
-  type WorkspaceConnection,
-} from '../lib/connection'
-import { projectAbbreviation } from '../lib/project-label'
 import type { WebProject } from '../types'
 
 type ProjectRailProps = {
@@ -42,127 +37,125 @@ type ProjectRailProps = {
   selectedProjectId: number | null
   isLoading: boolean
   isError: boolean
-  connection: WorkspaceConnection
   canCreate: boolean
-  immersive: boolean
   onSelect: (project: WebProject) => void
   onCreate: () => void
   onOpenManager: () => void
 }
 
-function ConnectionIndicator(props: { connection: WorkspaceConnection }) {
-  const { t } = useTranslation()
-  const label = t(CONNECTION_LABEL_KEYS[props.connection])
-  return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <span
-            role='status'
-            aria-label={label}
-            className={cn(
-              'mt-1 size-2.5 shrink-0 rounded-full',
-              CONNECTION_DOT_CLASSES[props.connection]
-            )}
-          />
-        }
-      />
-      <TooltipContent side='right'>{label}</TooltipContent>
-    </Tooltip>
-  )
-}
-
 /**
- * Project rail: the only project navigation the workspace exposes. Every entry
- * is a real registered project of the signed-in user; there is no placeholder
- * project when the account has none.
+ * Horizontal project navigation for the workspace header. Tabs stay on one
+ * line, scroll horizontally when needed, and keep their management controls
+ * pinned at the end of the strip.
  */
 export function ProjectRail(props: ProjectRailProps) {
   const { t } = useTranslation()
+  const navRef = useRef<HTMLElement | null>(null)
+  const selectedRef = useRef<HTMLButtonElement | null>(null)
 
-  if (props.immersive) return null
+  useEffect(() => {
+    const nav = navRef.current
+    const selected = selectedRef.current
+    if (!nav || !selected) return
+
+    const navRect = nav.getBoundingClientRect()
+    const selectedRect = selected.getBoundingClientRect()
+    if (selectedRect.left < navRect.left) {
+      nav.scrollLeft -= navRect.left - selectedRect.left
+    } else if (selectedRect.right > navRect.right) {
+      nav.scrollLeft += selectedRect.right - navRect.right
+    }
+  }, [props.projects, props.selectedProjectId])
 
   return (
     <TooltipProvider delay={200}>
-      <aside
-        aria-label={t('Projects')}
-        className='bg-card/40 flex w-16 shrink-0 flex-col items-center gap-2 rounded-xl border py-2'
-      >
-        <ConnectionIndicator connection={props.connection} />
+      <div className='flex max-w-full min-w-0 items-center gap-1.5'>
+        <nav
+          ref={navRef}
+          aria-label={t('Projects')}
+          className='no-scrollbar min-w-0 flex-1 overflow-x-auto overscroll-x-contain'
+        >
+          <div className='flex w-max items-center gap-1'>
+            {props.isLoading ? (
+              <>
+                <Skeleton className='h-9 w-32 shrink-0 rounded-lg' />
+                <Skeleton className='h-9 w-32 shrink-0 rounded-lg' />
+                <Skeleton className='h-9 w-32 shrink-0 rounded-lg' />
+              </>
+            ) : null}
 
-        <div className='flex min-h-0 flex-1 flex-col items-center gap-1.5 overflow-y-auto py-1'>
-          {props.isLoading ? (
-            <>
-              <Skeleton className='size-10 rounded-lg' />
-              <Skeleton className='size-10 rounded-lg' />
-              <Skeleton className='size-10 rounded-lg' />
-            </>
-          ) : null}
+            {!props.isLoading && props.isError ? (
+              <span
+                aria-hidden='true'
+                className='text-muted-foreground shrink-0 text-xs'
+                title={t('Could not load projects')}
+              >
+                !
+              </span>
+            ) : null}
 
-          {!props.isLoading && props.isError ? (
-            <span
-              aria-hidden='true'
-              className='text-muted-foreground text-xs'
-              title={t('Could not load projects')}
-            >
-              !
-            </span>
-          ) : null}
+            {!props.isLoading &&
+            !props.isError &&
+            props.projects.length === 0 ? (
+              <span
+                aria-hidden='true'
+                className='text-muted-foreground shrink-0 text-xs'
+              >
+                –
+              </span>
+            ) : null}
 
-          {!props.isLoading && !props.isError && props.projects.length === 0 ? (
-            <span aria-hidden='true' className='text-muted-foreground text-xs'>
-              –
-            </span>
-          ) : null}
+            {props.projects.map((project) => {
+              const selected = project.id === props.selectedProjectId
+              return (
+                <Tooltip key={project.id}>
+                  <TooltipTrigger
+                    render={
+                      <button
+                        ref={selected ? selectedRef : undefined}
+                        type='button'
+                        aria-label={project.name}
+                        aria-pressed={selected}
+                        onClick={() => {
+                          props.onSelect(project)
+                        }}
+                        className={cn(
+                          'flex h-9 max-w-[14rem] shrink-0 items-center gap-2 rounded-lg border px-3 text-left text-sm font-medium transition-colors',
+                          selected
+                            ? 'bg-card text-foreground border-border shadow-sm'
+                            : 'bg-muted/40 text-muted-foreground hover:bg-accent hover:text-accent-foreground border-transparent'
+                        )}
+                      />
+                    }
+                  >
+                    <Folder aria-hidden='true' className='size-3.5 shrink-0' />
+                    <span className='truncate'>{project.name}</span>
+                  </TooltipTrigger>
+                  <TooltipContent side='bottom'>{project.name}</TooltipContent>
+                </Tooltip>
+              )
+            })}
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    type='button'
+                    size='icon-sm'
+                    variant='ghost'
+                    aria-label={t('New project')}
+                    disabled={!props.canCreate}
+                    onClick={props.onCreate}
+                  />
+                }
+              >
+                <Plus aria-hidden='true' />
+              </TooltipTrigger>
+              <TooltipContent side='bottom'>{t('New project')}</TooltipContent>
+            </Tooltip>
+          </div>
+        </nav>
 
-          {props.projects.map((project) => {
-            const selected = project.id === props.selectedProjectId
-            return (
-              <Tooltip key={project.id}>
-                <TooltipTrigger
-                  render={
-                    <button
-                      type='button'
-                      aria-label={project.name}
-                      aria-pressed={selected}
-                      onClick={() => {
-                        props.onSelect(project)
-                      }}
-                      className={cn(
-                        'flex size-10 items-center justify-center rounded-lg border text-xs font-semibold transition-colors',
-                        selected
-                          ? 'border-primary/40 bg-primary/10 text-primary'
-                          : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground border-transparent'
-                      )}
-                    />
-                  }
-                >
-                  {projectAbbreviation(project.name)}
-                </TooltipTrigger>
-                <TooltipContent side='right'>{project.name}</TooltipContent>
-              </Tooltip>
-            )
-          })}
-        </div>
-
-        <div className='flex flex-col items-center gap-1.5'>
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  type='button'
-                  size='icon-sm'
-                  variant='ghost'
-                  aria-label={t('New project')}
-                  disabled={!props.canCreate}
-                  onClick={props.onCreate}
-                />
-              }
-            >
-              <Plus aria-hidden='true' />
-            </TooltipTrigger>
-            <TooltipContent side='right'>{t('New project')}</TooltipContent>
-          </Tooltip>
+        <div className='flex shrink-0 items-center'>
           <Tooltip>
             <TooltipTrigger
               render={
@@ -177,12 +170,12 @@ export function ProjectRail(props: ProjectRailProps) {
             >
               <Settings aria-hidden='true' />
             </TooltipTrigger>
-            <TooltipContent side='right'>
+            <TooltipContent side='bottom'>
               {t('Project settings')}
             </TooltipContent>
           </Tooltip>
         </div>
-      </aside>
+      </div>
     </TooltipProvider>
   )
 }

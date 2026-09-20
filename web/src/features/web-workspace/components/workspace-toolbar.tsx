@@ -109,7 +109,6 @@ export function WorkspaceNavigationControls(
 type WorkspaceToolbarProps = {
   connection: WorkspaceConnection
   connectionDetail: string
-  currentProjectName: string | null
   sessionMode: string | null
   isLive: boolean
   isBusy: boolean
@@ -130,8 +129,8 @@ type WorkspaceToolbarProps = {
 
 /**
  * Compact workspace toolbar. Low-frequency session operations live in the
- * overflow menu; the toolbar itself keeps the connection state, the current
- * project and the two reversible actions.
+ * overflow menu; the toolbar itself keeps the connection state and the two
+ * reversible navigation actions.
  */
 export function WorkspaceToolbar(props: WorkspaceToolbarProps) {
   const { t } = useTranslation()
@@ -151,14 +150,6 @@ export function WorkspaceToolbar(props: WorkspaceToolbarProps) {
           )}
         />
         {t(CONNECTION_LABEL_KEYS[props.connection])}
-        {props.currentProjectName ? (
-          <>
-            <span aria-hidden='true'>·</span>
-            <span className='text-foreground max-w-[12rem] truncate font-medium'>
-              {props.currentProjectName}
-            </span>
-          </>
-        ) : null}
       </span>
 
       {props.sessionMode === 'LOGIN' ? (
