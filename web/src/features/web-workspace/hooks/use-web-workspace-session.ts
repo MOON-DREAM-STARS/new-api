@@ -118,6 +118,7 @@ export function useWebWorkspaceActivity() {
 export type NavigateWebWorkspaceSessionInput = {
   sessionId: string
   action: WebWorkspaceNavigationAction
+  projectId?: number
 }
 
 /** Executes a real remote-browser command and syncs the returned session DTO. */
@@ -125,7 +126,11 @@ export function useNavigateWebWorkspaceSession() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (input: NavigateWebWorkspaceSessionInput) =>
-      navigateWebWorkspaceSession(input.sessionId, input.action),
+      navigateWebWorkspaceSession(
+        input.sessionId,
+        input.action,
+        input.projectId
+      ),
     onSuccess: (session) => {
       queryClient.setQueryData(WEB_WORKSPACE_SESSION_QUERY_KEY, session)
       void queryClient.invalidateQueries({

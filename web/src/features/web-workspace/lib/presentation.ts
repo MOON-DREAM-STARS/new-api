@@ -76,6 +76,16 @@ export const REMOTE_SCREEN_MIN_WIDTH = 640
 export const REMOTE_SCREEN_MAX_WIDTH = 3840
 export const REMOTE_SCREEN_MIN_HEIGHT = 720
 export const REMOTE_SCREEN_MAX_HEIGHT = 1440
+
+export type RemoteScreenBounds = {
+  maxWidth: number
+  maxHeight: number
+}
+
+export const DEFAULT_REMOTE_SCREEN_BOUNDS: RemoteScreenBounds = {
+  maxWidth: REMOTE_SCREEN_MAX_WIDTH,
+  maxHeight: REMOTE_SCREEN_MAX_HEIGHT,
+}
 export const PRESENTATION_PROFILES: Record<string, PresentationProfile> = {
   chatgpt: CHATGPT_PRESENTATION_PROFILE,
 }
@@ -154,9 +164,34 @@ export function computePresentation(
 
   const screen = input.screen as RemoteScreenSize
   const frame = input.frame as FrameSize
+  if (input.revealProviderChrome) {
+    // Fallback and login mode must expose the entire provider window. Fit the
+    // whole framebuffer into the frame (contain) instead of cropping it to
+    // fill the frame (cover); the renderer centres the letterboxed stage.
+    const scale = Math.min(
+      frame.width / screen.width,
+      frame.height / screen.height
+    )
+    if (!Number.isFinite(scale) || scale <= 0) {
+      return { status: 'unavailable', reason: 'invalid-geometry' }
+    }
+    const stageWidth = screen.width * scale
+    const stageHeight = screen.height * scale
+    return {
+      status: 'ready',
+      transform: {
+        crop: { x: 0, y: 0, width: screen.width, height: screen.height },
+        scale,
+        offsetX: Math.round((frame.width - stageWidth) / 2),
+        offsetY: Math.round((frame.height - stageHeight) / 2),
+        stageWidth,
+        stageHeight,
+      },
+    }
+  }
+
   const maxCropLeft = Math.max(0, screen.width - profile.minVisibleWidth)
-  const baseCropLeft = input.revealProviderChrome ? 0 : profile.cropLeft
-  const cropLeft = clamp(Math.round(baseCropLeft), 0, maxCropLeft)
+  const cropLeft = clamp(Math.round(profile.cropLeft), 0, maxCropLeft)
   const visibleWidth = screen.width - cropLeft
   const visibleHeight = screen.height
   if (visibleWidth <= 0 || visibleHeight <= 0) {
@@ -205,22 +240,54 @@ export function computePresentation(
  */
 export function remoteScreenSizeForFrame(
   frame: FrameSize | null | undefined,
-  profile: PresentationProfile
+  profile: PresentationProfile,
+  bounds?: Partial<RemoteScreenBounds> | null
 ): RemoteScreenSize | null {
   if (!isUsableSize(frame)) return null
   const measured = frame as FrameSize
   const aspect = measured.width / measured.height
   if (!Number.isFinite(aspect) || aspect <= 0) return null
-  const height = clamp(
-    Math.round(measured.height),
-    REMOTE_SCREEN_MIN_HEIGHT,
-    REMOTE_SCREEN_MAX_HEIGHT
-  )
-  const width = clamp(
-    Math.round(profile.cropLeft + height * aspect),
+
+  const maxWidth = clamp(
+    Math.round(bounds?.maxWidth ?? DEFAULT_REMOTE_SCREEN_BOUNDS.maxWidth),
     REMOTE_SCREEN_MIN_WIDTH,
     REMOTE_SCREEN_MAX_WIDTH
   )
+  const maxHeight = clamp(
+    Math.round(bounds?.maxHeight ?? DEFAULT_REMOTE_SCREEN_BOUNDS.maxHeight),
+    REMOTE_SCREEN_MIN_HEIGHT,
+    REMOTE_SCREEN_MAX_HEIGHT
+  )
+
+  let height = clamp(
+    Math.round(measured.height),
+    REMOTE_SCREEN_MIN_HEIGHT,
+    maxHeight
+  )
+  const maxVisibleWidth = Math.max(
+    profile.minVisibleWidth,
+    maxWidth - profile.cropLeft
+  )
+  let visibleWidth = height * aspect
+  if (visibleWidth > maxVisibleWidth) {
+    visibleWidth = maxVisibleWidth
+    // Preserve the frame aspect ratio when the width budget is the limiting
+    // factor. Very wide frames may therefore fall below 720p, but never below
+    // the agent's own 360px minimum.
+    height = Math.max(360, Math.round(visibleWidth / aspect))
+  }
+  if (height > maxHeight) {
+    height = maxHeight
+    visibleWidth = height * aspect
+  }
+
+  let width = Math.round(profile.cropLeft + visibleWidth)
+  if (width > maxWidth) {
+    width = maxWidth
+    visibleWidth = Math.max(0, width - profile.cropLeft)
+    height = Math.max(360, Math.round(visibleWidth / aspect))
+  }
+  width = clamp(width, REMOTE_SCREEN_MIN_WIDTH, maxWidth)
   return { width, height }
 }
 
@@ -237,7 +304,7 @@ export function toRemotePoint(
   point: { x: number; y: number }
 ): { x: number; y: number } {
   return {
-    x: transform.crop.x + point.x / transform.scale,
-    y: transform.crop.y + point.y / transform.scale,
+    x: (point.x - transform.offsetX) / transform.scale,
+    y: (point.y - transform.offsetY) / transform.scale,
   }
 }

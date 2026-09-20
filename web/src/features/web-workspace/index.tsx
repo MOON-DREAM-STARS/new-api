@@ -159,7 +159,10 @@ export function WebWorkspace() {
   const frameSize = useElementSize(frameRef)
   const presentationProfile = findPresentationProfile(provider)
   const proposedScreen = presentationProfile
-    ? remoteScreenSizeForFrame(frameSize, presentationProfile)
+    ? remoteScreenSizeForFrame(frameSize, presentationProfile, {
+        maxWidth: configQuery.data?.max_screen_width,
+        maxHeight: configQuery.data?.max_screen_height,
+      })
     : null
   const connection = resolveConnection({
     sessionState: session?.state,
@@ -170,12 +173,26 @@ export function WebWorkspace() {
   const projectsError = projectsQuery.isError
     ? classifyWebWorkspaceError(projectsQuery.error)
     : null
+  const startError = startMutation.error
+    ? classifyWebWorkspaceError(startMutation.error)
+    : null
   const isNavigationAvailable =
     isLive && Boolean(session) && surface.status === 'connected'
 
-  function navigate(action: WebWorkspaceNavigationAction) {
+  function navigate(action: WebWorkspaceNavigationAction, projectId?: number) {
     if (!session) return
-    navigationMutation.mutate({ sessionId: session.session_id, action })
+    navigationMutation.mutate({
+      sessionId: session.session_id,
+      action,
+      projectId,
+    })
+  }
+
+  function openProject(project: WebProject) {
+    setSelectedProjectId(project.id)
+    setDrawerOpen(false)
+    if (!isLive) return
+    navigate('project', project.id)
   }
 
   function startSession() {
@@ -293,9 +310,7 @@ export function WebWorkspace() {
             connection={connection}
             canCreate={isLive}
             immersive={immersive.immersive}
-            onSelect={(project) => {
-              setSelectedProjectId(project.id)
-            }}
+            onSelect={openProject}
             onCreate={() => setCreateOpen(true)}
             onOpenManager={() => setDrawerOpen(true)}
           />
@@ -314,6 +329,7 @@ export function WebWorkspace() {
             immersive={immersive.immersive}
             surface={surface}
             page={session?.page ?? null}
+            startErrorMessageKey={startError?.messageKey ?? null}
             isReloadPending={navigationMutation.isPending}
             frameRef={frameRef}
             frameSize={frameSize}
@@ -361,9 +377,7 @@ export function WebWorkspace() {
           onRefetch={() => {
             void projectsQuery.refetch()
           }}
-          onSelect={(project) => {
-            setSelectedProjectId(project.id)
-          }}
+          onSelect={openProject}
           onCreate={() => setCreateOpen(true)}
           onRename={setRenameTarget}
           onDelete={setDeleteTarget}

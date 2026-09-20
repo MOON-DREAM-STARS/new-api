@@ -466,6 +466,42 @@ describe('WebWorkspace page', () => {
     })
   })
 
+  test('shows the real global capacity error when a start is refused', async () => {
+    apiClient.get = async (url) => {
+      if (url === CONFIG_PATH) return ok({ enabled: true, entitled: true })
+      if (url === SESSION_PATH) return ok(null)
+      if (url === PROJECTS_PATH) return ok({ items: [] })
+      if (url === STATUS_PATH) {
+        return ok({
+          entitled: true,
+          workspace: {
+            provider: 'chatgpt',
+            status: 1,
+            created_at: 1,
+            last_active_at: 1,
+          },
+        })
+      }
+      throw new Error(`unexpected request ${url}`)
+    }
+    apiClient.post = async () =>
+      fail(409, 'WEB_WORKSPACE_CAPACITY_REACHED')
+
+    renderPage(<WebWorkspace />)
+
+    const startButtons = await screen.findAllByText('Start session')
+    startButtons[0].click()
+
+    expect(
+      await screen.findByText('Could not start the remote browser.')
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        'The server already has an active Web Workspace. Wait for it to become idle or stop it before starting another.'
+      )
+    ).toBeInTheDocument()
+  })
+
   test('detaches the display stream while the tab is hidden', async () => {
     mockWorkspaceGets(runningSession)
 
@@ -608,6 +644,29 @@ describe('WebWorkspace page', () => {
     reloadButton.click()
     await waitFor(() => {
       expect(navigationPosts[2]?.data).toEqual({ action: 'reload' })
+    })
+  })
+
+  test('opens a registered project in the remote browser from the rail', async () => {
+    mockWorkspaceGets(runningSession)
+    const navigationPosts: Array<{ url: string; data: unknown }> = []
+    apiClient.post = async (url, data) => {
+      navigationPosts.push({ url, data })
+      return ok(runningSession)
+    }
+
+    renderPage(<WebWorkspace />)
+
+    const projectButton = await screen.findByRole('button', {
+      name: 'acceptance project',
+    })
+    projectButton.click()
+
+    await waitFor(() => {
+      expect(navigationPosts[0]).toEqual({
+        url: `${SESSION_PATH}/${runningSession.session_id}/navigation`,
+        data: { action: 'project', project_id: 1 },
+      })
     })
   })
 

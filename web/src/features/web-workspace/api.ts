@@ -121,11 +121,12 @@ export async function touchWebWorkspaceSession(
 }
 export async function navigateWebWorkspaceSession(
   sessionId: string,
-  action: WebWorkspaceNavigationAction
+  action: WebWorkspaceNavigationAction,
+  projectId?: number
 ): Promise<WebWorkspaceSession> {
   const res = await api.post<ApiEnvelope<WebWorkspaceSession>>(
     `${BASE_PATH}/session/${encodeURIComponent(sessionId)}/navigation`,
-    { action }
+    projectId === undefined ? { action } : { action, project_id: projectId }
   )
   return res.data.data
 }

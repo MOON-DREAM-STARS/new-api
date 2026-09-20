@@ -42,7 +42,7 @@ type ProjectDeleteDialogProps = {
   onDeleted: (projectId: number) => void
 }
 
-/** Confirmation dialog for deleting one project registration. */
+/** Confirmation dialog for deleting one provider-side project. */
 export function ProjectDeleteDialog(props: ProjectDeleteDialogProps) {
   const { t } = useTranslation()
   const deleteMutation = useDeleteWebWorkspaceProject()
@@ -76,7 +76,7 @@ export function ProjectDeleteDialog(props: ProjectDeleteDialogProps) {
           </AlertDialogTitle>
           <AlertDialogDescription>
             {t(
-              'This removes the registration only. The provider-side project is not deleted.'
+              'This deletes the provider-side project and its Web Workspace registration. This cannot be undone.'
             )}
           </AlertDialogDescription>
         </AlertDialogHeader>
