@@ -412,7 +412,13 @@ func (m *Manager) CancelFileChooser(ctx context.Context, workspaceID int64, choo
 		return FileChooserResult{}, ErrFileChooserExpired
 	}
 	if current.ChooserID != chooserID {
-		return FileChooserResult{}, ErrFileBridgeBusy
+		// Only a chooser that is actually still pending owns the bridge. A stale
+		// record from an already finished chooser must not be reported as a
+		// concurrent one, or the caller sees a busy bridge that does not exist.
+		if current.State == fileChooserStatePending && current.ExpiresAt > m.now().Unix() {
+			return FileChooserResult{}, ErrFileBridgeBusy
+		}
+		return FileChooserResult{}, ErrFileChooserExpired
 	}
 	if current.State != fileChooserStatePending || current.ExpiresAt <= m.now().Unix() {
 		_ = m.cleanupFileChooserStaging(workspaceID, chooserID)

@@ -370,6 +370,8 @@ func (c *AgentClient) do(ctx context.Context, method string, path string, body a
 			}
 		}
 		switch code {
+		case "invalid_request":
+			return fmt.Errorf("%w: %w: code=%s status=%d", ErrAgentRejected, ErrAgentInvalidRequest, code, response.StatusCode)
 		case "navigation_timeout":
 			return fmt.Errorf("%w: %w: code=%s status=%d", ErrAgentRejected, ErrAgentNavigationTimeout, code, response.StatusCode)
 		case "navigation_unavailable", "runtime_not_running":
@@ -713,6 +715,8 @@ func mapAgentFileChooserError(raw []byte, status int) error {
 		}
 	}
 	switch code {
+	case "invalid_request":
+		return fmt.Errorf("%w: %w: code=%s status=%d", ErrAgentRejected, ErrInvalidFileChooser, code, status)
 	case "file_chooser_expired":
 		return fmt.Errorf("%w: %w: code=%s status=%d", ErrAgentRejected, ErrFileChooserExpired, code, status)
 	case "file_too_large":

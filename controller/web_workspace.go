@@ -936,6 +936,8 @@ func writeWebWorkspaceSessionError(c *gin.Context, err error) {
 		writeWebWorkspaceError(c, http.StatusConflict, webWorkspaceCodeCapacityReached, "web workspace capacity reached", "")
 	case errors.Is(err, webworkspace.ErrAgentUnavailable), errors.Is(err, webworkspace.ErrAgentRejected):
 		writeWebWorkspaceError(c, http.StatusServiceUnavailable, webWorkspaceCodeAgentUnavailable, "web workspace agent unavailable", "")
+	case errors.Is(err, webworkspace.ErrAgentInvalidRequest):
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid web workspace request", "")
 	case errors.Is(err, webworkspace.ErrResourceNotFound):
 		writeWebWorkspaceError(c, http.StatusNotFound, webWorkspaceCodeResourceNotFound, "web workspace resource not found", "")
 	default:
@@ -955,7 +957,7 @@ func writeWebWorkspaceFileChooserError(c *gin.Context, err error) {
 		writeWebWorkspaceError(c, http.StatusUnprocessableEntity, webWorkspaceCodeFileInjectFailed, "the browser could not attach the selected files", "")
 	case errors.Is(err, webworkspace.ErrFileBridgeBusy):
 		writeWebWorkspaceError(c, http.StatusConflict, webWorkspaceCodeFileBridgeBusy, "another file chooser is already pending", "")
-	case errors.Is(err, webworkspace.ErrInvalidFileChooser):
+	case errors.Is(err, webworkspace.ErrInvalidFileChooser), errors.Is(err, webworkspace.ErrAgentInvalidRequest):
 		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid file chooser request", "")
 	case errors.Is(err, webworkspace.ErrSessionNotFound), errors.Is(err, webworkspace.ErrAgentRuntimeNotFound):
 		writeWebWorkspaceError(c, http.StatusNotFound, webWorkspaceCodeSessionNotFound, "web workspace session not found", "")
@@ -1010,6 +1012,8 @@ func writeWebWorkspaceNavigationError(c *gin.Context, err error) {
 		writeWebWorkspaceError(c, http.StatusConflict, webWorkspaceCodeNavigationUnavailable, "web workspace navigation unavailable", "")
 	case errors.Is(err, webworkspace.ErrSessionNotFound), errors.Is(err, webworkspace.ErrAgentRuntimeNotFound):
 		writeWebWorkspaceError(c, http.StatusNotFound, webWorkspaceCodeSessionNotFound, "web workspace session not found", "")
+	case errors.Is(err, webworkspace.ErrAgentInvalidRequest):
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid web workspace request", "")
 	case errors.Is(err, webworkspace.ErrResourceNotFound):
 		writeWebWorkspaceError(c, http.StatusNotFound, webWorkspaceCodeResourceNotFound, "web workspace resource not found", "")
 	case errors.Is(err, webworkspace.ErrAgentUnavailable), errors.Is(err, webworkspace.ErrAgentRejected):
