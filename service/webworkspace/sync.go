@@ -53,6 +53,8 @@ var (
 	// ErrProjectCreationInProgress means the guard is still running a project
 	// creation for this workspace, so a second permit would start over.
 	ErrProjectCreationInProgress = errors.New("web workspace project creation in progress")
+	// ErrCapacityReached means the agent's global active-runtime cap is full.
+	ErrCapacityReached = errors.New("web workspace runtime capacity reached")
 )
 
 // Observation is one guard observation line. Unknown events are ignored so a
@@ -63,6 +65,7 @@ type Observation struct {
 	ExternalProjectId      string `json:"external_project_id"`
 	ExternalConversationId string `json:"external_conversation_id"`
 	Slug                   string `json:"slug"`
+	DisplayName            string `json:"display_name"`
 	ObservedAt             int64  `json:"observed_at"`
 }
 
@@ -353,7 +356,7 @@ func applyProjectCreated(tx *gorm.DB, workspaceId int, observation Observation) 
 	} else {
 		webWorkspaceAudit("permit_unmatched", fmt.Sprintf("workspace_id=%d", workspaceId))
 	}
-	name := projectDisplayName(observation.Slug, externalId)
+	name := projectDisplayName(observation.DisplayName, observation.Slug, externalId)
 	project := model.WebProject{WorkspaceId: workspaceId, Provider: DefaultProvider, ExternalProjectId: externalId, Name: name}
 	created := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&project)
 	if created.Error != nil {
@@ -399,7 +402,7 @@ func applyProjectRenamed(tx *gorm.DB, workspaceId int, observation Observation) 
 	if err != nil {
 		return false, err
 	}
-	name := projectDisplayName(observation.Slug, externalId)
+	name := projectDisplayName("", observation.Slug, externalId)
 	if name == project.Name {
 		return false, nil
 	}
@@ -476,12 +479,14 @@ func applyProjectNotFound(tx *gorm.DB, workspaceId int, observation Observation)
 	return true, nil
 }
 
-// projectDisplayName prefers the provider slug and falls back to the stable
-// external id when the slug is absent or cannot fit the name column.
-func projectDisplayName(slug string, externalId string) string {
-	name := strings.TrimSpace(slug)
-	if name == "" || utf8.RuneCountInString(name) > 255 {
-		return externalId
+// projectDisplayName prefers the explicit operator-facing name recorded with a
+// creation permit, then the provider slug, and finally the stable external id.
+func projectDisplayName(displayName string, slug string, externalId string) string {
+	for _, candidate := range []string{displayName, slug} {
+		name := strings.TrimSpace(candidate)
+		if name != "" && utf8.RuneCountInString(name) <= 255 {
+			return name
+		}
 	}
-	return name
+	return externalId
 }

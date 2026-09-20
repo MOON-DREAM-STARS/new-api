@@ -41,6 +41,15 @@ var (
 	// ErrAgentNavigationUnavailable means the runtime cannot accept navigation
 	// commands in its current state.
 	ErrAgentNavigationUnavailable = errors.New("web workspace navigation unavailable")
+	// ErrAgentProjectDeletionTimeout means the guard did not complete a
+	// provider-side project deletion before its deadline.
+	ErrAgentProjectDeletionTimeout = errors.New("web workspace project deletion timeout")
+	// ErrAgentProjectDeletionUnavailable means the runtime cannot accept a
+	// provider-side deletion command in its current state.
+	ErrAgentProjectDeletionUnavailable = errors.New("web workspace project deletion unavailable")
+	// ErrAgentProjectDeletionRejected means the provider UI rejected deletion
+	// with a stable guard error code.
+	ErrAgentProjectDeletionRejected = errors.New("web workspace project deletion rejected")
 )
 
 // AgentNavigation is the browser navigation snapshot exposed by the agent.
@@ -202,12 +211,18 @@ type agentObservationsResult struct {
 }
 
 type agentNavigationRequest struct {
-	Action string `json:"action"`
+	Action    string `json:"action"`
+	ProjectID string `json:"project_id,omitempty"`
 }
 
 type agentNavigationResponse struct {
 	Action     string           `json:"action"`
 	Navigation *AgentNavigation `json:"navigation"`
+}
+
+type agentProjectDeletionRequest struct {
+	ProjectID   string `json:"project_id"`
+	ProjectName string `json:"project_name"`
 }
 
 type agentErrorResponse struct {
@@ -324,6 +339,14 @@ func (c *AgentClient) do(ctx context.Context, method string, path string, body a
 			return fmt.Errorf("%w: %w: code=%s status=%d", ErrAgentRejected, ErrAgentNavigationTimeout, code, response.StatusCode)
 		case "navigation_unavailable", "runtime_not_running":
 			return fmt.Errorf("%w: %w: code=%s status=%d", ErrAgentRejected, ErrAgentNavigationUnavailable, code, response.StatusCode)
+		case "project_deletion_timeout":
+			return fmt.Errorf("%w: %w: code=%s status=%d", ErrAgentRejected, ErrAgentProjectDeletionTimeout, code, response.StatusCode)
+		case "project_deletion_unavailable":
+			return fmt.Errorf("%w: %w: code=%s status=%d", ErrAgentRejected, ErrAgentProjectDeletionUnavailable, code, response.StatusCode)
+		case "project_deletion_rejected":
+			return fmt.Errorf("%w: %w: code=%s status=%d", ErrAgentRejected, ErrAgentProjectDeletionRejected, code, response.StatusCode)
+		case "runtime_capacity_reached":
+			return fmt.Errorf("%w: %w: code=%s status=%d", ErrAgentRejected, ErrCapacityReached, code, response.StatusCode)
 		}
 		if code != "" {
 			return fmt.Errorf("%w: code=%s status=%d", ErrAgentRejected, code, response.StatusCode)
@@ -377,15 +400,35 @@ func (c *AgentClient) RestartRuntime(ctx context.Context, workspaceId int, mode 
 // NavigateRuntime sends one navigation command to the workspace runtime and
 // returns the agent's updated navigation snapshot.
 func (c *AgentClient) NavigateRuntime(ctx context.Context, workspaceId int, action string) (*AgentNavigation, error) {
+	return c.navigate(ctx, workspaceId, action, "")
+}
+
+// NavigateProject asks the agent to open one already-authorized provider
+// project. The external project id stays inside the control-plane-to-agent
+// channel and is never returned to the browser client.
+func (c *AgentClient) NavigateProject(ctx context.Context, workspaceId int, projectID string) (*AgentNavigation, error) {
+	return c.navigate(ctx, workspaceId, "project", projectID)
+}
+
+func (c *AgentClient) navigate(ctx context.Context, workspaceId int, action string, projectID string) (*AgentNavigation, error) {
 	var result agentNavigationResponse
 	path := fmt.Sprintf("/internal/v1/runtimes/%d/navigation", workspaceId)
-	if err := c.do(ctx, http.MethodPost, path, agentNavigationRequest{Action: action}, &result); err != nil {
+	payload := agentNavigationRequest{Action: action, ProjectID: projectID}
+	if err := c.do(ctx, http.MethodPost, path, payload, &result); err != nil {
 		return nil, err
 	}
 	if result.Navigation == nil {
 		return nil, fmt.Errorf("%w: navigation response is missing navigation", ErrAgentUnavailable)
 	}
 	return result.Navigation, nil
+}
+
+// DeleteProject asks the Agent to delete one provider-side project through the
+// runtime's unique CDP consumer.
+func (c *AgentClient) DeleteProject(ctx context.Context, workspaceId int, projectID string, projectName string) error {
+	path := fmt.Sprintf("/internal/v1/runtimes/%d/projects/delete", workspaceId)
+	payload := agentProjectDeletionRequest{ProjectID: projectID, ProjectName: projectName}
+	return c.do(ctx, http.MethodPost, path, payload, nil)
 }
 
 // TouchRuntime refreshes the idle deadline of a workspace runtime and returns

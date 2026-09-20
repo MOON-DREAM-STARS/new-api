@@ -41,6 +41,11 @@ type syncPermitCall struct {
 	Request     agentPermitRequest
 }
 
+type syncProjectDeleteCall struct {
+	WorkspaceId int
+	Request     agentProjectDeletionRequest
+}
+
 // syncAgentServer is a scripted Browser Agent internal API: it serves the
 // runtime, ownership, permit and observation endpoints the control plane uses
 // and records every call so tests can assert what was published.
@@ -48,14 +53,17 @@ type syncAgentServer struct {
 	server *httptest.Server
 	mutex  sync.Mutex
 
-	runtimes        map[int]AgentRuntime
-	log             []Observation
-	offset          int
-	ownershipPushes []syncOwnershipPush
-	permitCalls     []syncPermitCall
-	ackOffsets      []int64
-	failPermits     bool
-	permitExpires   int64
+	runtimes           map[int]AgentRuntime
+	log                []Observation
+	offset             int
+	ownershipPushes    []syncOwnershipPush
+	permitCalls        []syncPermitCall
+	projectDeleteCalls []syncProjectDeleteCall
+	navigationCalls    []agentNavigationRequest
+	ackOffsets         []int64
+	failPermits        bool
+	failProjectDelete  bool
+	permitExpires      int64
 }
 
 func newSyncAgentServer(t *testing.T) *syncAgentServer {
@@ -145,6 +153,41 @@ func newSyncAgentServer(t *testing.T) *syncAgentServer {
 				PermitId  string `json:"permit_id"`
 				ExpiresAt int64  `json:"expires_at"`
 			}{request.PermitId, expiresAt})
+		case suffix == "navigation" && r.Method == http.MethodPost:
+			var request agentNavigationRequest
+			if err := common.Unmarshal(body, &request); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			agent.mutex.Lock()
+			agent.navigationCalls = append(agent.navigationCalls, request)
+			agent.mutex.Unlock()
+			writeSyncAgentJSON(t, w, struct {
+				Action     string           `json:"action"`
+				Navigation *AgentNavigation `json:"navigation"`
+			}{request.Action, &AgentNavigation{CanGoBack: true, UpdatedAt: time.Now().Unix()}})
+		case suffix == "projects/delete" && r.Method == http.MethodPost:
+			var request agentProjectDeletionRequest
+			if err := common.Unmarshal(body, &request); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			agent.mutex.Lock()
+			agent.projectDeleteCalls = append(agent.projectDeleteCalls, syncProjectDeleteCall{WorkspaceId: workspaceId, Request: request})
+			fail := agent.failProjectDelete
+			agent.mutex.Unlock()
+			if fail {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = w.Write([]byte(`{"success":false,"error":"project_deletion_rejected","message":"provider project deletion failed"}`))
+				return
+			}
+			writeSyncAgentJSON(t, w, map[string]any{
+				"id":         1,
+				"project_id": request.ProjectID,
+				"state":      "DONE",
+				"error":      "",
+				"updated_at": time.Now().Unix(),
+			})
 		case suffix == "observations" && r.Method == http.MethodGet:
 			agent.mutex.Lock()
 			offset := agent.offset
@@ -236,6 +279,24 @@ func (a *syncAgentServer) issuedPermits() []syncPermitCall {
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
 	return append([]syncPermitCall{}, a.permitCalls...)
+}
+
+func (a *syncAgentServer) navigations() []agentNavigationRequest {
+	a.mutex.Lock()
+	defer a.mutex.Unlock()
+	return append([]agentNavigationRequest{}, a.navigationCalls...)
+}
+
+func (a *syncAgentServer) projectDeletes() []syncProjectDeleteCall {
+	a.mutex.Lock()
+	defer a.mutex.Unlock()
+	return append([]syncProjectDeleteCall{}, a.projectDeleteCalls...)
+}
+
+func (a *syncAgentServer) setFailProjectDelete(fail bool) {
+	a.mutex.Lock()
+	defer a.mutex.Unlock()
+	a.failProjectDelete = fail
 }
 
 func (a *syncAgentServer) acks() []int64 {
@@ -355,10 +416,92 @@ func TestWebWorkspaceBuildOwnershipReportsGenerationAndResources(t *testing.T) {
 	assert.Equal(t, []string{syncTestConversation}, snapshot.Conversations)
 }
 
+func TestWebWorkspaceDeleteOwnedProjectWithProviderDeletesProviderBeforeLocal(t *testing.T) {
+	db, agent, user, workspace := setupWebWorkspaceSyncTest(t)
+	project := &model.WebProject{WorkspaceId: workspace.Id, Provider: DefaultProvider, ExternalProjectId: syncTestProjectA, Name: "Project A"}
+	require.NoError(t, db.Create(project).Error)
+	require.NoError(t, db.Create(&model.WebConversation{ProjectId: project.Id, Provider: DefaultProvider, ExternalConversationId: syncTestConversation, Title: "Conversation"}).Error)
+
+	require.NoError(t, DeleteOwnedProjectWithProvider(context.Background(), user.Id, project.Id))
+
+	calls := agent.projectDeletes()
+	require.Len(t, calls, 1)
+	assert.Equal(t, workspace.Id, calls[0].WorkspaceId)
+	assert.Equal(t, project.ExternalProjectId, calls[0].Request.ProjectID)
+	assert.Equal(t, project.Name, calls[0].Request.ProjectName)
+	_, err := GetOwnedProject(user.Id, project.Id)
+	assert.ErrorIs(t, err, ErrResourceNotFound)
+	assert.EqualValues(t, 0, countWebWorkspaceRows(t, db, &model.WebConversation{}, "project_id = ?", project.Id))
+}
+
+func TestWebWorkspaceDeleteOwnedProjectWithProviderRetainsLocalOnProviderFailure(t *testing.T) {
+	db, agent, user, workspace := setupWebWorkspaceSyncTest(t)
+	project := &model.WebProject{WorkspaceId: workspace.Id, Provider: DefaultProvider, ExternalProjectId: syncTestProjectA, Name: "Project A"}
+	require.NoError(t, db.Create(project).Error)
+	require.NoError(t, db.Create(&model.WebConversation{ProjectId: project.Id, Provider: DefaultProvider, ExternalConversationId: syncTestConversation, Title: "Conversation"}).Error)
+	agent.setFailProjectDelete(true)
+
+	err := DeleteOwnedProjectWithProvider(context.Background(), user.Id, project.Id)
+	require.ErrorIs(t, err, ErrAgentProjectDeletionRejected)
+	_, err = GetOwnedProject(user.Id, project.Id)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, countWebWorkspaceRows(t, db, &model.WebConversation{}, "project_id = ?", project.Id))
+}
+
+func TestWebWorkspaceNavigateSessionOpensAnOwnedProject(t *testing.T) {
+	db, agent, user, workspace := setupWebWorkspaceSyncTest(t)
+	project := &model.WebProject{WorkspaceId: workspace.Id, Provider: DefaultProvider, ExternalProjectId: syncTestProjectA, Name: "Project A"}
+	require.NoError(t, db.Create(project).Error)
+	session := putWebWorkspaceTestSession(t, user, workspace)
+
+	updated, err := NavigateSession(context.Background(), user.Id, session.Id, "project", project.Id)
+	require.NoError(t, err)
+	require.NotNil(t, updated.Navigation)
+	calls := agent.navigations()
+	require.Len(t, calls, 1)
+	assert.Equal(t, "project", calls[0].Action)
+	assert.Equal(t, project.ExternalProjectId, calls[0].ProjectID)
+}
+
+func TestWebWorkspaceNavigateSessionRejectsForeignAndMissingProject(t *testing.T) {
+	db, agent, user, workspace := setupWebWorkspaceSyncTest(t)
+	other := createWebWorkspaceTestUser(t, db, "ws-sync-foreign")
+	otherWorkspace, err := EnsureWorkspace(other.Id, DefaultProvider)
+	require.NoError(t, err)
+	foreign := &model.WebProject{WorkspaceId: otherWorkspace.Id, Provider: DefaultProvider, ExternalProjectId: syncTestProjectA, Name: "Foreign"}
+	require.NoError(t, db.Create(foreign).Error)
+	session := putWebWorkspaceTestSession(t, user, workspace)
+
+	_, err = NavigateSession(context.Background(), user.Id, session.Id, "project", foreign.Id)
+	assert.ErrorIs(t, err, ErrResourceNotFound)
+	_, err = NavigateSession(context.Background(), user.Id, session.Id, "project", 0)
+	assert.ErrorIs(t, err, ErrInvalidNavigationAction)
+	assert.Empty(t, agent.navigations())
+}
+
+func TestWebWorkspaceSyncCorrectsAnExistingProjectDisplayName(t *testing.T) {
+	db, agent, _, workspace := setupWebWorkspaceSyncTest(t)
+	existing := &model.WebProject{WorkspaceId: workspace.Id, Provider: DefaultProvider, ExternalProjectId: syncTestProjectA, Name: syncTestProjectA}
+	require.NoError(t, db.Create(existing).Error)
+	agent.setObservations(Observation{
+		Event:             ObservationProjectCreated,
+		PermitId:          "permit-with-display-name",
+		ExternalProjectId: syncTestProjectA,
+		DisplayName:       "test0",
+		ObservedAt:        10,
+	})
+
+	require.NoError(t, SyncWorkspace(context.Background(), workspace.Id))
+
+	var stored model.WebProject
+	require.NoError(t, db.Where("workspace_id = ? AND external_project_id = ?", workspace.Id, syncTestProjectA).First(&stored).Error)
+	assert.Equal(t, "test0", stored.Name)
+}
+
 func TestWebWorkspaceSyncWorkspaceAppliesObservationsIdempotently(t *testing.T) {
 	db, agent, _, workspace := setupWebWorkspaceSyncTest(t)
 	agent.setObservations(
-		Observation{Event: ObservationProjectCreated, PermitId: "permit-from-agent", ExternalProjectId: syncTestProjectA, Slug: "Sync Project", ObservedAt: 10},
+		Observation{Event: ObservationProjectCreated, PermitId: "permit-from-agent", ExternalProjectId: syncTestProjectA, Slug: "sync-project", DisplayName: "Operator Project", ObservedAt: 10},
 		Observation{Event: ObservationConversationCreated, ExternalProjectId: syncTestProjectA, ExternalConversationId: syncTestConversation, ObservedAt: 11},
 	)
 
@@ -367,7 +510,7 @@ func TestWebWorkspaceSyncWorkspaceAppliesObservationsIdempotently(t *testing.T) 
 	assert.EqualValues(t, 1, countWebWorkspaceRows(t, db, &model.WebConversation{}, "provider = ?", DefaultProvider))
 	var stored model.WebProject
 	require.NoError(t, db.Where("workspace_id = ?", workspace.Id).First(&stored).Error)
-	assert.Equal(t, "Sync Project", stored.Name)
+	assert.Equal(t, "Operator Project", stored.Name)
 	assert.Equal(t, []int64{2}, agent.acks())
 
 	pushes := agent.pushes()

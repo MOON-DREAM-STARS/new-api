@@ -2,8 +2,10 @@ package dto
 
 // WebWorkspaceConfig is the capability probe used before the entry is shown.
 type WebWorkspaceConfig struct {
-	Enabled  bool `json:"enabled"`
-	Entitled bool `json:"entitled"`
+	Enabled         bool `json:"enabled"`
+	Entitled        bool `json:"entitled"`
+	MaxScreenWidth  int  `json:"max_screen_width"`
+	MaxScreenHeight int  `json:"max_screen_height"`
 }
 
 // WebWorkspaceStatus reports the caller's own workspace state. It never
@@ -79,7 +81,8 @@ type WebWorkspaceNavigationDto struct {
 // WebWorkspaceNavigationRequest is the only client input for a navigation
 // command. The action is validated by the service before reaching the agent.
 type WebWorkspaceNavigationRequest struct {
-	Action string `json:"action"`
+	Action    string `json:"action"`
+	ProjectID int    `json:"project_id,omitempty"`
 }
 
 // WebWorkspaceStartRequest carries the optional remote screen size proposal of

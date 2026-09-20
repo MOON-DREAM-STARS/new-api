@@ -166,6 +166,18 @@ func TestWebWorkspaceRouterRequiresAuthentication(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, recorder.Code)
 }
 
+func TestWebWorkspaceRouterConfigReturnsScreenBudget(t *testing.T) {
+	fixture := setupWebWorkspaceRouterTest(t)
+	fixture.settings.MaxScreenWidth = 2048
+	fixture.settings.MaxScreenHeight = 900
+
+	token := webWorkspaceBearer(t, fixture.userA)
+	recorder := doWebWorkspaceRequest(fixture.engine, http.MethodGet, "/api/web-workspace/config", token, "")
+	assert.Equal(t, http.StatusOK, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), `"max_screen_width":2048`)
+	assert.Contains(t, recorder.Body.String(), `"max_screen_height":900`)
+}
+
 func TestWebWorkspaceRouterRequiresEntitlement(t *testing.T) {
 	fixture := setupWebWorkspaceRouterTest(t)
 	fixture.settings.Enabled = false

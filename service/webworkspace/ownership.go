@@ -1,6 +1,7 @@
 package webworkspace
 
 import (
+	"context"
 	"errors"
 	"strings"
 
@@ -149,10 +150,31 @@ func RenameOwnedProject(userID int, projectID int, name string) (*model.WebProje
 	return GetOwnedProject(userID, projectID)
 }
 
+// DeleteOwnedProjectWithProvider deletes the provider-side project through the
+// runtime guard first, then removes the local mapping and its conversations. If
+// the provider deletion fails, the local row is deliberately retained.
+func DeleteOwnedProjectWithProvider(ctx context.Context, userID int, projectID int) error {
+	project, err := GetOwnedProject(userID, projectID)
+	if err != nil {
+		return err
+	}
+	client, err := newAgentClient()
+	if err != nil {
+		return err
+	}
+	if err := client.DeleteProject(ctx, project.WorkspaceId, project.ExternalProjectId, project.Name); err != nil {
+		return err
+	}
+	if err := DeleteOwnedProject(userID, projectID); err != nil && !errors.Is(err, ErrResourceNotFound) {
+		return err
+	}
+	return nil
+}
+
 // DeleteOwnedProject removes the local mapping and its conversation mappings in
-// one transaction. Provider-side deletion lands in Phase 4. The ownership join
-// is repeated in every statement so a concurrent ownership change can never
-// delete a foreign row.
+// one transaction. Provider-side deletion is performed by callers before this
+// local cleanup. The ownership join is repeated in every statement so a
+// concurrent ownership change can never delete a foreign row.
 func DeleteOwnedProject(userID int, projectID int) error {
 	project, err := GetOwnedProject(userID, projectID)
 	if err != nil {
