@@ -18,6 +18,7 @@ RUN apk add --no-cache \
       xvfb \
       x11vnc \
       font-noto \
+      font-noto-cjk \
       ca-certificates \
     && rm -rf /var/cache/apk/*
 
