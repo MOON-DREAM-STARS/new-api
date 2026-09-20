@@ -370,7 +370,12 @@ func validFileChooserCommand(command fileChooserCommand) bool {
 		}
 		prefix := runtime.WorkspaceMountTarget + "/uploads/.bridge/" + command.ChooserID + "/"
 		for _, file := range command.Files {
-			if !strings.HasPrefix(file, prefix) || strings.Contains(file, "..") {
+			// The remainder has to be exactly one path element of the current
+			// chooser directory. Checking the shape instead of searching for
+			// ".." keeps legitimate names such as report..v2.txt injectable
+			// while still refusing traversal and nested paths.
+			name := strings.TrimPrefix(file, prefix)
+			if name == file || name == "" || name == "." || name == ".." || strings.Contains(name, "/") {
 				return false
 			}
 		}
