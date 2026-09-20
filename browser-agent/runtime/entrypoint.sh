@@ -183,7 +183,6 @@ chromium --no-sandbox \
     --disable-gpu \
     --disable-software-rasterizer \
     --disable-dev-shm-usage \
-    --renderer-process-limit=1 \
     --disable-component-update \
     --disable-sync \
     --metrics-recording-only \

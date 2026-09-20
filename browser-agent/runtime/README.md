@@ -42,12 +42,12 @@ Dockerfile 为多阶段构建：`golang:1.26.1-alpine` 阶段只复制 `go.mod`�
 --remote-debugging-address=127.0.0.1        CDP 只监听 loopback，禁止 publish
 --deny-permission-prompts                   自动拒绝权限提示（clipboard 等）
 --no-sandbox --test-type --password-store=basic --user-data-dir=... --display=... --window-size=<W,H> --window-position=0,0 --app="$WW_START_URL"
---disable-gpu --disable-software-rasterizer --disable-dev-shm-usage --renderer-process-limit=1
+--disable-gpu --disable-software-rasterizer --disable-dev-shm-usage
 --disable-component-update --disable-sync --metrics-recording-only --no-pings --disable-breakpad
 --force-device-scale-factor=1 --js-flags=--max-old-space-size=256
 ```
 
-其中 `--disable-gpu`、`--disable-software-rasterizer` 与 `--disable-features=...Vulkan` 固定软件渲染路径；其余低资源参数限制 renderer、后台更新、崩溃上报和 V8 堆大小。`--disable-background-networking` 未启用：本机 smoke test 中它会让 ChatGPT 主页面停留在空白页，保留现有代理与 Guard 策略即可。
+其中 `--disable-gpu`、`--disable-software-rasterizer` 与 `--disable-features=...Vulkan` 固定软件渲染路径；其余低资源参数限制后台更新、崩溃上报和 V8 堆大小。未设置 `--renderer-process-limit`，避免 ChatGPT 多模块加载时触发 `ERR_INSUFFICIENT_RESOURCES`。`--disable-background-networking` 未启用：本机 smoke test 中它会让 ChatGPT 主页面停留在空白页，保留现有代理与 Guard 策略即可。
 
 Chromium 使用 `--password-store=basic`：Provider cookie、localStorage 及其加密密钥随 workspace `profile/` 持久化，不依赖容器内 keyring/portal。因此 runtime 容器重建或重启后 Provider 登录态应继续可用；profile 的 `0700`/`0600` 权限与 workspace 隔离同时也是登录态保护边界。New API 的本机浏览器登录 cookie 不在此 profile 中。
 
