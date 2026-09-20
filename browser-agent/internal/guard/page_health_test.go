@@ -286,6 +286,110 @@ func TestPageHealthIgnoresAbortedDocumentNavigation(t *testing.T) {
 	assert.Zero(t, countBufferedMethod(f, "Page.navigate"))
 	run.assertRunning(100 * time.Millisecond)
 }
+func TestPageHealthReportsOwnDocumentDenialAsTerminalPolicyOutcome(t *testing.T) {
+	logs := &logBuffer{}
+	dir := t.TempDir()
+	f := newFakeCDP(t)
+	writeOwnership(t, dir, 1, nil, nil)
+	run := startGuardWithPageHealth(t, f, logs, dir, "https://chatgpt.com/", []time.Duration{10 * time.Millisecond})
+	attachPage(t, f, "session-1", "target-1")
+	f.awaitIn("session-1", "Network.enable")
+	sendMainFrameReady(t, f)
+	awaitNavigationStatusMatch(t, dir, 0, func(status navigationStatus) bool {
+		return status.PageState == pageStateReady
+	})
+
+	// A provider project the guard does not own is failed with AccessDenied;
+	// Chromium reports that back as ERR_ACCESS_DENIED. The status must name the
+	// real policy reason, must not be treated as a provider page failure and must
+	// not consume a start-URL retry.
+	unowned := "https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef/project"
+	sendDeniedDocument(t, f, "session-1", "request-denied", "frame-main", unowned)
+
+	status := awaitNavigationStatusMatch(t, dir, 0, func(status navigationStatus) bool {
+		return status.PageState == pageStateFailed
+	})
+	assert.Equal(t, "ERR_POLICY_PROJECT_NOT_REGISTERED", status.PageError)
+	assert.Zero(t, status.PageAttempts)
+	countBefore := countBufferedMethod(f, "Page.navigate")
+
+	// Chromium reports the refused request as a generic ERR_ACCESS_DENIED right
+	// after the guard's decision. That must not overwrite the real policy code.
+	f.send("Network.loadingFailed", "session-1", map[string]any{
+		"requestId": "request-denied",
+		"type":      "Document",
+		"errorText": "net::ERR_ACCESS_DENIED",
+	})
+	f.drain(50 * time.Millisecond)
+	after := awaitNavigationStatus(t, dir, 0)
+	assert.Equal(t, pageStateFailed, after.PageState)
+	assert.Equal(t, "ERR_POLICY_PROJECT_NOT_REGISTERED", after.PageError)
+	assert.Zero(t, countBufferedMethod(f, "Page.navigate")-countBefore)
+	run.assertRunning(100 * time.Millisecond)
+}
+
+func sendDeniedDocument(t *testing.T, f *fakeCDP, sessionID, requestID, frameID, rawURL string) {
+	t.Helper()
+	f.send("Fetch.requestPaused", sessionID, map[string]any{
+		"requestId":    requestID,
+		"resourceType": "Document",
+		"frameId":      frameID,
+		"request":      map[string]any{"url": rawURL, "method": "GET"},
+	})
+	cmd := f.awaitIn(sessionID, "Fetch.failRequest")
+	params := struct {
+		RequestID   string `json:"requestId"`
+		ErrorReason string `json:"errorReason"`
+	}{}
+	decodeParams(t, cmd, &params)
+	assert.Equal(t, requestID, params.RequestID)
+	assert.Equal(t, "AccessDenied", params.ErrorReason)
+}
+
+func TestPageHealthClearsPolicyDenialAfterAdmittedNavigation(t *testing.T) {
+	logs := &logBuffer{}
+	dir := t.TempDir()
+	f := newFakeCDP(t)
+	writeOwnership(t, dir, 1, nil, nil)
+	run := startGuardWithPageHealth(t, f, logs, dir, "https://chatgpt.com/", []time.Duration{10 * time.Millisecond})
+	attachPage(t, f, "session-1", "target-1")
+	f.awaitIn("session-1", "Network.enable")
+	sendMainFrameReady(t, f)
+	awaitNavigationStatusMatch(t, dir, 0, func(status navigationStatus) bool {
+		return status.PageState == pageStateReady
+	})
+
+	unowned := "https://chatgpt.com/g/g-p-0123456789abcdef0123456789abcdef/project"
+	sendDeniedDocument(t, f, "session-1", "request-denied", "frame-main", unowned)
+	awaitNavigationStatusMatch(t, dir, 0, func(status navigationStatus) bool {
+		return status.PageState == pageStateFailed
+	})
+
+	// A later navigation that the guard admits clears the earlier refusal: the
+	// page really is owned now, so the stale policy code must not persist.
+	sendMainFrameSuccess(t, f)
+	status := awaitNavigationStatusMatch(t, dir, 0, func(status navigationStatus) bool {
+		return status.PageState == pageStateReady
+	})
+	assert.Empty(t, status.PageError)
+	assert.Zero(t, status.PageAttempts)
+	run.assertRunning(100 * time.Millisecond)
+}
+
+func TestPolicyPageErrorCodeMapsKnownReasons(t *testing.T) {
+	for reason, want := range map[string]string{
+		reasonProjectNotRegistered:       "ERR_POLICY_PROJECT_NOT_REGISTERED",
+		reasonOwnershipUnavailable:       "ERR_POLICY_OWNERSHIP_UNAVAILABLE",
+		reasonConversationWithoutProject: "ERR_POLICY_CONVERSATION_WITHOUT_PROJECT",
+		reasonUnknownResourceShape:       "ERR_POLICY_UNKNOWN_RESOURCE_SHAPE",
+		reasonPermitNotRecorded:          "ERR_POLICY_PERMIT_NOT_RECORDED",
+		"host not in LOGIN allowlist":    "ERR_POLICY_HOST_NOT_ALLOWED",
+		"unexpected reason":              "ERR_POLICY_DENIED",
+	} {
+		assert.Equal(t, want, policyPageErrorCode(reason), reason)
+	}
+}
+
 func TestPageHealthReloadsBlankPageUntilContentReady(t *testing.T) {
 	logs := &logBuffer{}
 	dir := t.TempDir()

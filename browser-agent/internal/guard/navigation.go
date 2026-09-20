@@ -293,8 +293,12 @@ func (n *navigationController) applyCommand(ctx context.Context, command navigat
 				return err
 			}
 			if handled {
-				n.markApplied(command.ID)
-				return n.refresh(ctx, sessionID, command.ID)
+				// The bounded automatic recovery already navigated; the receipt
+				// is written from the cached state and the history refresh stays
+				// off the acknowledgement path.
+				n.acknowledge(command.ID)
+				n.refreshAsync(ctx, sessionID, command.ID)
+				return nil
 			}
 		}
 		if err := n.client.call(ctx, sessionID, "Page.reload", nil); err != nil {
@@ -306,18 +310,70 @@ func (n *navigationController) applyCommand(ctx context.Context, command navigat
 		if err != nil || resource.Kind != chatgpt.KindProject || resource.ProjectID != strings.TrimSpace(command.ProjectID) || resource.Slug != "" {
 			return errors.New("project navigation target is invalid")
 		}
-		if err := n.client.call(ctx, sessionID, "Page.navigate", map[string]any{"url": target}); err != nil {
+		// Page.navigate is dispatched without waiting for its response. The
+		// response carries no policy decision and is only returned once the
+		// renderer commits the document, which local acceptance measured at ~15s
+		// on a loaded provider page. Waiting here delayed the receipt and every
+		// later command on the single command loop. The request is still written
+		// to the one CDP channel before the acknowledgement, so enforcement runs
+		// exactly as before; a dispatch write failure is a real error.
+		if err := n.client.notify(sessionID, "Page.navigate", map[string]any{"url": target}); err != nil {
 			return err
 		}
 	case "state":
-		// No navigation is performed; the receipt still refreshes from the
-		// current page history.
+		{
+			// A state probe performs no navigation, so the synchronous history read
+			// is the command itself rather than a post-ack refresh.
+			n.markApplied(command.ID)
+			return n.refresh(ctx, sessionID, command.ID)
+		}
 	default:
 		// Unknown actions are recorded as applied, never executed, and never
-		// allowed to stop the guard.
+		// allowed to stop the guard. They still publish a current receipt.
+		n.markApplied(command.ID)
+		return n.refresh(ctx, sessionID, command.ID)
 	}
-	n.markApplied(command.ID)
-	return n.refresh(ctx, sessionID, command.ID)
+	// A dispatched navigation is acknowledged from the cached history state
+	// immediately. Waiting for the post-navigation history read here used to
+	// gate the receipt on a busy renderer: local acceptance measured 11s
+	// acknowledgements for a document navigation whose receipt only depended on
+	// the history round trip. The refresh below still publishes the real
+	// back/forward state as soon as the renderer answers.
+	n.acknowledge(command.ID)
+	n.refreshAsync(ctx, sessionID, command.ID)
+	return nil
+}
+
+// acknowledge writes a receipt for id from the cached history state without any
+// CDP round trip, so a dispatched navigation is never blocked by a busy page.
+func (n *navigationController) acknowledge(id int64) {
+	if n == nil {
+		return
+	}
+	n.writeMu.Lock()
+	defer n.writeMu.Unlock()
+	if id < n.lastWritten {
+		return
+	}
+	n.writeStatusLocked(id, time.Now().Unix())
+}
+
+// refreshAsync publishes the real history state after the acknowledgement. It is
+// best effort: a failed or late refresh never invalidates the receipt that was
+// already handed to the manager.
+func (n *navigationController) refreshAsync(ctx context.Context, sessionID string, id int64) {
+	if n == nil {
+		return
+	}
+	go func() {
+		if err := n.refresh(ctx, sessionID, id); err != nil {
+			n.logger.Debug("navigation status refresh failed",
+				"event", "navigation_status_refresh_failed",
+				"component", "guard",
+				"error", err,
+			)
+		}
+	}()
 }
 
 func (n *navigationController) history(ctx context.Context, sessionID string) (navigationHistory, error) {
@@ -374,6 +430,12 @@ func (n *navigationController) writeNavigation(id int64, canGoBack, canGoForward
 	}
 	n.canGoBack = canGoBack
 	n.canGoForward = canGoForward
+	return n.writeStatusLocked(id, updatedAt)
+}
+
+// writeStatusLocked serialises the current cached state. The caller holds
+// writeMu.
+func (n *navigationController) writeStatusLocked(id int64, updatedAt int64) error {
 	status := navigationStatus{
 		ID:           id,
 		CanGoBack:    n.canGoBack,

@@ -54,9 +54,13 @@ const (
 	envScreenWidth  = "WW_SCREEN_WIDTH"
 	envScreenHeight = "WW_SCREEN_HEIGHT"
 	envVNCPort      = "WW_VNC_PORT"
+	envKasmPort     = "WW_KASM_PORT"
 	envProvider     = "WW_PROVIDER"
 	envProxyServer  = "WW_PROXY_SERVER"
 	envGuardMode    = "WW_GUARD_MODE"
+
+	featureNavigation = "navigation"
+	featureInput      = "input"
 
 	// A started container is not a ready display: Xvfb and x11vnc need a moment
 	// before the RFB port accepts connections, so the runtime only becomes
@@ -113,6 +117,7 @@ type Snapshot struct {
 	Navigation      *NavigationStatus `json:"navigation"`
 	Page            *PageStatus       `json:"page"`
 	ProjectCreation *ProjectCreation  `json:"project_creation"`
+	IMEState        string            `json:"ime_state"`
 }
 
 // StartOptions carries the request parameters of a runtime start.
@@ -192,7 +197,7 @@ type runtimeState struct {
 	streamBytesIn   int64
 }
 
-func (rt *runtimeState) snapshot(workspaceID int64) Snapshot {
+func (rt *runtimeState) snapshot(workspaceID int64, imeState string) Snapshot {
 	snapshot := Snapshot{
 		RuntimeID:      runtimeID(workspaceID),
 		WorkspaceID:    workspaceID,
@@ -200,6 +205,7 @@ func (rt *runtimeState) snapshot(workspaceID int64) Snapshot {
 		Mode:           rt.mode,
 		CreatedAt:      rt.createdAt.Unix(),
 		LastActivityAt: rt.lastActivity.Unix(),
+		IMEState:       imeState,
 	}
 	if !rt.idleDeadline.IsZero() {
 		snapshot.IdleDeadlineAt = rt.idleDeadline.Unix()
@@ -219,6 +225,10 @@ func (rt *runtimeState) snapshot(workspaceID int64) Snapshot {
 		snapshot.ProjectCreation = &creation
 	}
 	return snapshot
+}
+
+func (m *Manager) snapshot(rt *runtimeState, workspaceID int64) Snapshot {
+	return rt.snapshot(workspaceID, readIMEState(WorkspaceDir(m.dataRoot, workspaceID)))
 }
 
 type streamHandle struct {
@@ -250,12 +260,13 @@ type Manager struct {
 	now               func() time.Time
 	chown             func(root *os.Root, name string, uid int, gid int) error
 
-	mu       sync.Mutex
-	runtimes map[int64]*runtimeState
-	reserved map[int64]struct{}
-	locks    map[int64]*sync.Mutex
-	streams  map[int64]map[*streamHandle]struct{}
-	ipIndex  map[string]int64
+	mu           sync.Mutex
+	runtimes     map[int64]*runtimeState
+	reserved     map[int64]struct{}
+	locks        map[int64]*sync.Mutex
+	featureLocks map[string]map[int64]*sync.Mutex
+	streams      map[int64]map[*streamHandle]struct{}
+	ipIndex      map[string]int64
 }
 
 // New returns a manager bound to a runtime driver and a display transport.
@@ -275,6 +286,7 @@ func New(driver runtime.Driver, display runtime.DisplayTransport, opts Options) 
 		runtimes:          map[int64]*runtimeState{},
 		reserved:          map[int64]struct{}{},
 		locks:             map[int64]*sync.Mutex{},
+		featureLocks:      map[string]map[int64]*sync.Mutex{},
 		streams:           map[int64]map[*streamHandle]struct{}{},
 		ipIndex:           map[string]int64{},
 	}
@@ -324,7 +336,7 @@ func (m *Manager) Get(workspaceID int64) (Snapshot, bool) {
 		return Snapshot{}, false
 	}
 	m.refreshNavigationLocked(rt, workspaceID)
-	return rt.snapshot(workspaceID), true
+	return m.snapshot(rt, workspaceID), true
 }
 
 // Start creates and starts the runtime of a workspace. It is idempotent: a
@@ -429,7 +441,7 @@ func (m *Manager) Activity(workspaceID int64) (Snapshot, bool) {
 	if rt.state == StateRunning || rt.state == StateIdle {
 		m.touchRuntime(rt, m.now())
 	}
-	return rt.snapshot(workspaceID), true
+	return m.snapshot(rt, workspaceID), true
 }
 
 // Touch records stream activity for a workspace.
@@ -899,6 +911,7 @@ func (m *Manager) startLocked(ctx context.Context, workspaceID int64, opts Start
 			envScreenWidth + "=" + strconv.Itoa(opts.Width),
 			envScreenHeight + "=" + strconv.Itoa(opts.Height),
 			envVNCPort + "=" + strconv.Itoa(runtime.VNCPort),
+			envKasmPort + "=" + strconv.Itoa(runtime.KasmPort),
 			envProvider + "=" + opts.Provider,
 			envProxyServer + "=" + m.egressProxyURL,
 			envGuardMode + "=" + string(opts.Mode),
@@ -945,7 +958,7 @@ func (m *Manager) startLocked(ctx context.Context, workspaceID int64, opts Start
 	rt.state = StateRunning
 	m.setRuntimeIPLocked(workspaceID, running.IP)
 	m.touchRuntime(rt, m.now())
-	snapshot := rt.snapshot(workspaceID)
+	snapshot := m.snapshot(rt, workspaceID)
 	m.mu.Unlock()
 	return snapshot, nil
 }
@@ -997,7 +1010,7 @@ func (m *Manager) stopLocked(ctx context.Context, workspaceID int64, preserveCap
 	wasActive := runtimeCountsAsActive(rt.state)
 	rt.state = StateStopping
 	handles := m.detachStreamsLocked(workspaceID)
-	snapshot := rt.snapshot(workspaceID)
+	snapshot := m.snapshot(rt, workspaceID)
 	m.mu.Unlock()
 
 	closeStreams(handles)
@@ -1023,7 +1036,7 @@ func (m *Manager) stopLocked(ctx context.Context, workspaceID int64, preserveCap
 		m.clearRuntimeIPLocked(workspaceID)
 		current.lastActivity = m.now()
 		current.idleDeadline = time.Time{}
-		snapshot = current.snapshot(workspaceID)
+		snapshot = m.snapshot(current, workspaceID)
 	}
 	if preserveCapacity && wasActive {
 		if m.reserved == nil {
@@ -1159,6 +1172,29 @@ func (m *Manager) lockFor(workspaceID int64) *sync.Mutex {
 	if lock == nil {
 		lock = &sync.Mutex{}
 		m.locks[workspaceID] = lock
+	}
+	return lock
+}
+
+// featureLock serialises one command file per workspace without coupling it to
+// the lifecycle lock or to unrelated feature commands. Waiting for a guard
+// receipt must never hold the lifecycle lock: a slow input probe must not stop
+// navigation, and vice versa.
+func (m *Manager) featureLock(feature string, workspaceID int64) *sync.Mutex {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.featureLocks == nil {
+		m.featureLocks = map[string]map[int64]*sync.Mutex{}
+	}
+	locks := m.featureLocks[feature]
+	if locks == nil {
+		locks = map[int64]*sync.Mutex{}
+		m.featureLocks[feature] = locks
+	}
+	lock := locks[workspaceID]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		locks[workspaceID] = lock
 	}
 	return lock
 }

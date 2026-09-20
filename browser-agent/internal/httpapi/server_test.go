@@ -163,7 +163,10 @@ func TestProtectedEndpointsRequireBearerToken(t *testing.T) {
 		{http.MethodPost, "/internal/v1/runtimes/1/permits"},
 		{http.MethodGet, "/internal/v1/runtimes/1/observations"},
 		{http.MethodPost, "/internal/v1/runtimes/1/observations/ack"},
+		{http.MethodPost, "/internal/v1/runtimes/1/clipboard/copy"},
+		{http.MethodPost, "/internal/v1/runtimes/1/clipboard/paste"},
 		{http.MethodGet, "/internal/v1/runtimes/1/stream"},
+		{http.MethodGet, "/internal/v1/runtimes/1/kasm/vnc.html"},
 		{http.MethodGet, "/internal/v1/unknown"},
 	}
 	for _, endpoint := range endpoints {
@@ -328,7 +331,7 @@ func TestRuntimeResponsesDoNotLeakInternals(t *testing.T) {
 	require.NoError(t, json.Unmarshal(body, &raw))
 	assert.ElementsMatch(t, []string{
 		"runtime_id", "workspace_id", "state", "mode", "created_at", "last_activity_at", "idle_deadline_at",
-		"navigation", "page", "project_creation", "stream_bytes_out", "stream_bytes_in",
+		"navigation", "page", "project_creation", "stream_bytes_out", "stream_bytes_in", "ime_state",
 	}, mapKeys(raw))
 }
 

@@ -363,6 +363,37 @@ func TestGuardObservesConversationOfRegisteredProject(t *testing.T) {
 	run.assertRunning(200 * time.Millisecond)
 }
 
+// A slug-less navigation of a registered project is the canonical form the
+// guard navigates to itself. It must not be reported as a rename, otherwise the
+// control plane would replace the operator-facing name with the raw external id.
+func TestGuardDoesNotReportSluglessNavigationAsRename(t *testing.T) {
+	logs := &logBuffer{}
+	f := newFakeCDP(t)
+	dir := t.TempDir()
+	writeOwnership(t, dir, 5, []string{testProjectID}, nil)
+
+	run := startGuardWithState(t, f, policy.ModeLocked, logs, dir)
+	attachPage(t, f, "session-1", "target-1")
+
+	// First navigation carries the real slug: this is the baseline, no rename.
+	sendDocument(t, f, "session-1", "request-1", "https://chatgpt.com/g/"+testProjectID+"-test0/project")
+	expectContinue(t, f, "session-1", "request-1")
+	assert.Empty(t, recordsOfEvent(readObservations(t, dir), "project_renamed"))
+
+	// The canonical slug-less form must not produce a rename either.
+	sendDocument(t, f, "session-1", "request-2", projectURL(testProjectID))
+	expectContinue(t, f, "session-1", "request-2")
+	assert.Empty(t, recordsOfEvent(readObservations(t, dir), "project_renamed"))
+
+	// A later real rename is still reported.
+	sendDocument(t, f, "session-1", "request-3", "https://chatgpt.com/g/"+testProjectID+"-renamed/project")
+	expectContinue(t, f, "session-1", "request-3")
+	renames := recordsOfEvent(readObservations(t, dir), "project_renamed")
+	require.Len(t, renames, 1)
+	assert.Equal(t, "renamed", renames[0]["slug"])
+	run.assertRunning(200 * time.Millisecond)
+}
+
 func TestGuardDeniesConversationsWithoutRegisteredProject(t *testing.T) {
 	t.Run("conversation without project is always denied", func(t *testing.T) {
 		logs := &logBuffer{}
@@ -553,6 +584,54 @@ func TestGuardObservesProjectNotFoundFromDocumentErrors(t *testing.T) {
 	require.Len(t, recordsOfEvent(records, "project_not_found"), 3)
 	assert.Equal(t, testProjectID, records[1]["external_project_id"])
 	assert.Equal(t, testProjectID3, records[2]["external_project_id"])
+	assert.NotContains(t, logs.String(), testProjectID)
+	run.assertRunning(200 * time.Millisecond)
+}
+
+// A deleted provider project never produces a document 404: the SPA document
+// answers 200 and bounces to the shell. The loss is only visible on the
+// provider backend request for that single project, so the guard has to observe
+// that shape or the control plane keeps a project that no longer exists.
+func TestGuardObservesProjectNotFoundFromBackendRequest(t *testing.T) {
+	logs := &logBuffer{}
+	f := newFakeCDP(t)
+	dir := t.TempDir()
+	writeOwnership(t, dir, 11, []string{testProjectID, testProjectID2}, nil)
+
+	run := startGuardWithState(t, f, policy.ModeLocked, logs, dir)
+	attachPage(t, f, "session-1", "target-1")
+
+	f.awaitIn("session-1", "Network.enable")
+
+	response := func(requestID, url string, status int, resourceType string) {
+		f.send("Network.responseReceived", "session-1", map[string]any{
+			"requestId": requestID,
+			"type":      resourceType,
+			"response":  map[string]any{"url": url, "status": status},
+		})
+	}
+	backend := func(id string) string {
+		return "https://chatgpt.com/backend-api/gizmos/" + id
+	}
+
+	// The document of the deleted project answers 200, so it must not be the
+	// signal; the backend request carries the real 404.
+	response("r1", projectURL(testProjectID2), 200, "Document")
+	response("r2", backend(testProjectID), 200, "Fetch")
+	response("r3", backend("g-p-ffffffffffffffffffffffffffffffff"), 404, "Fetch")
+	response("r4", "https://chatgpt.com/backend-api/gizmos/"+testProjectID+"/conversations?cursor=0&limit=5", 404, "Fetch")
+	response("r5", backend(testProjectID2), 404, "Fetch")
+
+	records := awaitObservations(t, dir, 1)
+	require.Len(t, records, 1)
+	requireKeys(t, records[0], "event", "external_project_id", "observed_at")
+	assert.Equal(t, "project_not_found", records[0]["event"])
+	assert.Equal(t, testProjectID2, records[0]["external_project_id"])
+
+	// The loss of each registered project is reported once.
+	response("r6", backend(testProjectID), 404, "Fetch")
+	response("r7", backend(testProjectID2), 404, "Fetch")
+	assert.Len(t, recordsOfEvent(readObservations(t, dir), "project_not_found"), 1)
 	assert.NotContains(t, logs.String(), testProjectID)
 	run.assertRunning(200 * time.Millisecond)
 }

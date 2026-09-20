@@ -128,6 +128,34 @@ func TestNavigationProjectOpenNavigatesToAuthorizedProviderProject(t *testing.T)
 	run.assertRunning(200 * time.Millisecond)
 }
 
+func TestProjectNavigationAcknowledgesBeforeHistoryRefresh(t *testing.T) {
+	dir := t.TempDir()
+	f := newFakeCDP(t)
+	run := startGuardWithState(t, f, policy.ModeLocked, &logBuffer{}, dir)
+	attachPage(t, f, "session-1", "target-1")
+	consumeInitialNavigation(t, f, dir)
+
+	// The renderer stay silent: the manager must still get the receipt because a
+	// dispatched navigation is acknowledged without waiting for the history.
+	f.silenceNext("Page.getNavigationHistory")
+	writeNavigationCommand(t, dir, navigationCommand{
+		ID:          1,
+		Action:      "project",
+		ProjectID:   testProjectID,
+		RequestedAt: 100,
+	})
+
+	navigateCommand := f.awaitIn("session-1", "Page.navigate")
+	var params struct {
+		URL string `json:"url"`
+	}
+	decodeParams(t, navigateCommand, &params)
+	assert.Equal(t, "https://chatgpt.com/g/"+testProjectID+"/project", params.URL)
+
+	awaitNavigationStatus(t, dir, 1)
+	run.assertRunning(200 * time.Millisecond)
+}
+
 func TestNavigationStateAndUnknownActionWriteReceipts(t *testing.T) {
 	dir := t.TempDir()
 	f := newFakeCDP(t)

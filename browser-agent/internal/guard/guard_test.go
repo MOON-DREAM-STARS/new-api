@@ -485,6 +485,37 @@ func TestRunInterceptsRequests(t *testing.T) {
 	}
 }
 
+// TestRunToleratesStaleInterceptionId covers the real CDP race where a paused
+// request is removed from the interception queue before the guard answers it.
+// Chromium then returns "Invalid InterceptionId"; the request can no longer be
+// continued or failed, so the guard must log and carry on instead of failing
+// closed and tearing down the whole runtime.
+func TestRunToleratesStaleInterceptionId(t *testing.T) {
+	logs := &logBuffer{}
+	f := newFakeCDP(t)
+	run := startGuard(t, f, policy.ModeLocked, logs)
+	attachPage(t, f, "session-1", "target-1")
+
+	f.failNext("Fetch.continueRequest", &cdpError{Code: -32602, Message: "Invalid InterceptionId."})
+	f.send("Fetch.requestPaused", "session-1", map[string]any{
+		"requestId":    "request-stale",
+		"resourceType": "XHR",
+		"request":      map[string]any{"url": "https://chatgpt.com/backend-api/me", "method": "GET"},
+	})
+	f.awaitIn("session-1", "Fetch.continueRequest")
+	logs.awaitEntry(t, "interception_already_resolved")
+	run.assertRunning(200 * time.Millisecond)
+
+	f.failNext("Fetch.failRequest", &cdpError{Code: -32602, Message: "Invalid InterceptionId."})
+	f.send("Fetch.requestPaused", "session-1", map[string]any{
+		"requestId":    "request-stale-denied",
+		"resourceType": "Document",
+		"request":      map[string]any{"url": "https://evil.example.com/x", "method": "GET"},
+	})
+	f.awaitIn("session-1", "Fetch.failRequest")
+	run.assertRunning(200 * time.Millisecond)
+}
+
 func TestRunGuardsPopupTargets(t *testing.T) {
 	t.Run("disallowed popup is closed and audited", func(t *testing.T) {
 		logs := &logBuffer{}

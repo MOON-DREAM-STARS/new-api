@@ -15,7 +15,16 @@ const (
 	navigationCommandFileName = "command.json"
 	navigationReceiptFileName = "navigation.json"
 	navigationPollInterval    = 100 * time.Millisecond
-	navigationWaitTimeout     = 2 * time.Second
+	// The guard acknowledges a dispatched navigation from cached state without
+	// waiting for Page.navigate or Page.getNavigationHistory on the renderer,
+	// and the manager no longer holds the lifecycle lock across this wait. Local
+	// acceptance of the real KasmVNC project-open path measured 0.30s-2.25s
+	// end-to-end while the file-chooser long poll and the Kasm websocket were
+	// both active; 10s is a bounded provider-slow allowance above that observed
+	// p99, not a lock-contention workaround. navigation_timeout stays distinct
+	// from navigation_unavailable so a slow provider is not reported as an
+	// unavailable agent.
+	navigationWaitTimeout = 10 * time.Second
 )
 
 // ErrNavigationUnavailable reports that the guard state directory could not be
@@ -189,6 +198,50 @@ func (m *Manager) navigate(workspaceID int64, action string, projectID string) (
 		return NavigationStatus{}, fmt.Errorf("%w: navigation request is invalid", ErrInvalidRequest)
 	}
 
+	feature := m.featureLock(featureNavigation, workspaceID)
+	feature.Lock()
+	defer feature.Unlock()
+
+	guardRoot, rt, commandID, err := m.prepareNavigation(workspaceID, action, projectID)
+	if err != nil {
+		return NavigationStatus{}, err
+	}
+	defer guardRoot.Close()
+
+	deadline := time.Now().Add(navigationWaitTimeout)
+	ticker := time.NewTicker(navigationPollInterval)
+	defer ticker.Stop()
+	for {
+		receipt, ok, readErr := readNavigationReceipt(guardRoot)
+		if readErr == nil && ok && receipt.ID == commandID {
+			status := receipt.status()
+			m.mu.Lock()
+			current := m.runtimes[workspaceID]
+			alive := current == rt && (current.state == StateRunning || current.state == StateIdle)
+			if alive {
+				current.navigation = &status
+				current.page = receipt.Page
+				if receipt.ID > current.navCommandID {
+					current.navCommandID = receipt.ID
+				}
+			}
+			m.mu.Unlock()
+			if !alive {
+				return NavigationStatus{}, fmt.Errorf("%w: runtime changed while navigating", ErrNavigationUnavailable)
+			}
+			return status, nil
+		}
+		if !time.Now().Before(deadline) {
+			return NavigationStatus{}, fmt.Errorf("%w: command %d was not acknowledged", ErrNavigationTimeout, commandID)
+		}
+		<-ticker.C
+	}
+}
+
+// prepareNavigation holds the lifecycle lock only for the runtime check and
+// command-file write. The caller waits for the receipt without that lock so a
+// slow navigation cannot block input, uploads or other workspace work.
+func (m *Manager) prepareNavigation(workspaceID int64, action string, projectID string) (*os.Root, *runtimeState, int64, error) {
 	lock := m.lockFor(workspaceID)
 	lock.Lock()
 	defer lock.Unlock()
@@ -197,24 +250,29 @@ func (m *Manager) navigate(workspaceID int64, action string, projectID string) (
 	rt := m.runtimes[workspaceID]
 	if rt == nil {
 		m.mu.Unlock()
-		return NavigationStatus{}, ErrNotFound
+		return nil, nil, 0, ErrNotFound
 	}
 	state := rt.state
 	lastKnownID := rt.navCommandID
 	m.mu.Unlock()
 	if state != StateRunning && state != StateIdle {
-		return NavigationStatus{}, fmt.Errorf("%w: runtime is %s", runtime.ErrNotRunning, state)
+		return nil, nil, 0, fmt.Errorf("%w: runtime is %s", runtime.ErrNotRunning, state)
 	}
 
 	guardRoot, err := ensureGuardStateDir(WorkspaceDir(m.dataRoot, workspaceID), m.chown)
 	if err != nil {
-		return NavigationStatus{}, fmt.Errorf("%w: prepare guard state directory: %v", ErrNavigationUnavailable, err)
+		return nil, nil, 0, fmt.Errorf("%w: prepare guard state directory: %v", ErrNavigationUnavailable, err)
 	}
-	defer guardRoot.Close()
+	closed := false
+	defer func() {
+		if !closed {
+			_ = guardRoot.Close()
+		}
+	}()
 
 	receipt, hasReceipt, err := readNavigationReceipt(guardRoot)
 	if err != nil {
-		return NavigationStatus{}, fmt.Errorf("%w: read navigation receipt: %v", ErrNavigationUnavailable, err)
+		return nil, nil, 0, fmt.Errorf("%w: read navigation receipt: %v", ErrNavigationUnavailable, err)
 	}
 	if hasReceipt && receipt.ID > lastKnownID {
 		lastKnownID = receipt.ID
@@ -227,10 +285,10 @@ func (m *Manager) navigate(workspaceID int64, action string, projectID string) (
 		RequestedAt: m.now().Unix(),
 	})
 	if err != nil {
-		return NavigationStatus{}, fmt.Errorf("%w: encode navigation command: %v", ErrNavigationUnavailable, err)
+		return nil, nil, 0, fmt.Errorf("%w: encode navigation command: %v", ErrNavigationUnavailable, err)
 	}
 	if err := writeStateFileAtomic(guardRoot, navigationCommandFileName, payload); err != nil {
-		return NavigationStatus{}, fmt.Errorf("%w: write navigation command: %v", ErrNavigationUnavailable, err)
+		return nil, nil, 0, fmt.Errorf("%w: write navigation command: %v", ErrNavigationUnavailable, err)
 	}
 
 	m.mu.Lock()
@@ -238,30 +296,8 @@ func (m *Manager) navigate(workspaceID int64, action string, projectID string) (
 		current.navCommandID = commandID
 	}
 	m.mu.Unlock()
-
-	deadline := time.Now().Add(navigationWaitTimeout)
-	ticker := time.NewTicker(navigationPollInterval)
-	defer ticker.Stop()
-	for {
-		receipt, ok, readErr := readNavigationReceipt(guardRoot)
-		if readErr == nil && ok && receipt.ID == commandID {
-			status := receipt.status()
-			m.mu.Lock()
-			if current := m.runtimes[workspaceID]; current == rt {
-				current.navigation = &status
-				current.page = receipt.Page
-				if receipt.ID > current.navCommandID {
-					current.navCommandID = receipt.ID
-				}
-			}
-			m.mu.Unlock()
-			return status, nil
-		}
-		if !time.Now().Before(deadline) {
-			return NavigationStatus{}, fmt.Errorf("%w: command %d was not acknowledged", ErrNavigationTimeout, commandID)
-		}
-		<-ticker.C
-	}
+	closed = true
+	return guardRoot, rt, commandID, nil
 }
 
 func readNavigationReceipt(root *os.Root) (navigationReceipt, bool, error) {

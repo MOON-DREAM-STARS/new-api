@@ -67,13 +67,22 @@ func (s *providerState) observeConversationCreated(projectID, conversationID str
 	})
 }
 
-// trackSlug keeps the last observed slug of a project. The first observation is
-// the baseline of the process and only a different slug is a rename, which is
-// also the in-memory dedup of this event: an unchanged slug produces nothing.
+// trackSlug keeps the last observed slug of a project. Only a non-empty slug
+// that differs from the previous observation is a rename, which is also the
+// in-memory dedup of this event. A slug-less navigation is not a rename: it is
+// the canonical form the guard itself navigates to, and reporting it would
+// overwrite the operator-facing name with the raw external id. The empty
+// observation is still remembered so a later real slug counts as a rename.
 func (s *providerState) trackSlug(projectID, slug string) {
+	if strings.TrimSpace(projectID) == "" {
+		return
+	}
 	previous, seen := s.lastSlug[projectID]
 	s.lastSlug[projectID] = slug
 	if !seen || previous == slug {
+		return
+	}
+	if strings.TrimSpace(slug) == "" {
 		return
 	}
 	s.append(observationRecord{
@@ -81,6 +90,27 @@ func (s *providerState) trackSlug(projectID, slug string) {
 		ExternalProjectID: projectID,
 		Slug:              &slug,
 	})
+}
+
+// observeProjectNotFoundBackend applies the provider backend rule: the SPA
+// document of a deleted project still answers 200 and then bounces to the shell,
+// so a document status check can never see the loss. The real 404 is carried by
+// the per-project gizmo request, whose project id is therefore the authoritative
+// signal that a registered project no longer exists.
+func (s *providerState) observeProjectNotFoundBackend(rawURL string) {
+	projectID, ok := chatgpt.GizmoNotFoundProjectID(rawURL)
+	if !ok {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.available {
+		return
+	}
+	if _, registered := s.projects[projectID]; !registered {
+		return
+	}
+	s.observeProjectNotFound(projectID)
 }
 
 // observeProjectNotFound records the loss of one registered project once per

@@ -173,6 +173,39 @@ func parseProjectToken(token, rawToken string) (string, string, bool) {
 	return prefix + id, slug, true
 }
 
+// GizmoNotFoundProjectID reports the project id of the provider backend call
+// that ChatGPT makes to load a single project. The runtime needs it because a
+// deleted project is not visible as a document 404: the SPA document still
+// answers 200 and then bounces to the shell, while this backend request carries
+// the real 404 and the project id. Only the bare gizmo resource is accepted, so
+// the per-project conversation listing stays out of this rule.
+func GizmoNotFoundProjectID(rawURL string) (string, bool) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", false
+	}
+	if !IsProviderHost(parsed.Hostname()) {
+		return "", false
+	}
+	if strings.TrimSpace(parsed.RawQuery) != "" || strings.TrimSpace(parsed.Fragment) != "" {
+		return "", false
+	}
+	path := trimOneTrailingSlash(parsed.Path)
+	rawPath := trimOneTrailingSlash(parsed.EscapedPath())
+	if path != rawPath {
+		return "", false
+	}
+	parts := strings.Split(path, "/")
+	if len(parts) != 4 || parts[0] != "" || parts[1] != "backend-api" || parts[2] != "gizmos" {
+		return "", false
+	}
+	id, slug, ok := parseProjectToken(parts[3], parts[3])
+	if !ok || slug != "" {
+		return "", false
+	}
+	return id, true
+}
+
 // trimOneTrailingSlash removes at most one trailing slash: the frozen syntax
 // allows exactly one, so a second one stays part of the shape and makes the
 // path unknown instead of being silently collapsed.

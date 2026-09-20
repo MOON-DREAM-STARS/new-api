@@ -62,12 +62,17 @@ type pageHealthController struct {
 	contentProbeDelays  []time.Duration
 	contentProbeTimeout time.Duration
 
-	mu               sync.Mutex
-	state            string
-	pageError        string
-	attempts         int
-	updatedAt        int64
-	errorPage        bool
+	mu        sync.Mutex
+	state     string
+	pageError string
+	attempts  int
+	updatedAt int64
+	errorPage bool
+	// policyDenied marks the page as terminally denied by the guard's own
+	// address or ownership decision. The refused document's Network.loadingFailed
+	// carries a generic ERR_ACCESS_DENIED and arrives after this decision, so it
+	// must not overwrite the real reason.
+	policyDenied     bool
 	phase            pageHealthPhase
 	retryAt          time.Time
 	mainSessionID    string
@@ -174,8 +179,31 @@ func (p *pageHealthController) observeFrameNavigated(sessionID, parentID, frameI
 	if frameID != "" {
 		p.mainFrameID = frameID
 	}
+	// A main-frame document that reached a real (non chrome-error) URL was
+	// admitted by the guard, so a previous policy refusal no longer describes
+	// the page. Chromium does not fire another load event for an in-app route
+	// change, so without this a later successful project open would keep showing
+	// the earlier refusal. Only a recorded policy denial is cleared: an ordinary
+	// page failure keeps its own detection and retry behaviour.
+	admitted := !isChromeErrorPage(rawURL)
+	clearPolicy := admitted && p.policyDenied
+	p.policyDenied = false
 	p.probeGeneration++
+	if clearPolicy {
+		p.state = pageStateReady
+		p.pageError = ""
+		p.errorPage = false
+		p.attempts = 0
+		p.phase = pagePhaseReady
+		p.retryAt = time.Time{}
+		p.updatedAt = time.Now().Unix()
+	}
+	status := p.statusLocked()
 	p.mu.Unlock()
+	if clearPolicy {
+		p.publish(status)
+		return
+	}
 
 	if isChromeErrorPage(rawURL) {
 		p.recordFailure(sessionID, "")
@@ -204,6 +232,12 @@ func (p *pageHealthController) observeRequestWillBeSent(sessionID string, params
 		p.mainFrameID = event.FrameID
 	}
 	p.documentRequests[event.RequestID] = event.FrameID
+	// A new main-frame document navigation supersedes the previous outcome, so a
+	// policy denial recorded for the previous attempt no longer describes the
+	// page and must not suppress or outlive the new navigation.
+	if event.FrameID == "" || p.mainFrameID == "" || event.FrameID == p.mainFrameID {
+		p.policyDenied = false
+	}
 	p.mu.Unlock()
 }
 
@@ -225,16 +259,94 @@ func (p *pageHealthController) observeLoadingFailed(sessionID string, params jso
 	delete(p.documentRequests, event.RequestID)
 	mainDocument := !known || p.mainFrameID == "" || frameID == p.mainFrameID
 	p.mu.Unlock()
-	if mainDocument {
-		// Chrome reports ERR_ABORTED when a document navigation is superseded
-		// by another navigation (for example, an in-app redirect). The old
-		// request being canceled is not a page failure: the replacement
-		// navigation or the current document owns the page now.
-		if normalizePageError(event.ErrorText) == "ERR_ABORTED" {
-			return
-		}
-		p.recordFailure(sessionID, event.ErrorText)
+	if !mainDocument {
+		return
 	}
+	// Chrome reports ERR_ABORTED when a document navigation is superseded
+	// by another navigation (for example, an in-app redirect). The old
+	// request being canceled is not a page failure: the replacement
+	// navigation or the current document owns the page now.
+	if normalizePageError(event.ErrorText) == "ERR_ABORTED" {
+		return
+	}
+	p.recordFailure(sessionID, event.ErrorText)
+}
+
+// markDeniedDocument reports one document request the guard refused together
+// with the frame it belonged to. A denied main-frame document is the
+// authoritative policy outcome for the page, so the real reason is published
+// immediately: Chromium's own Network.loadingFailed for that request is
+// routinely superseded by the next navigation and may never arrive, and waiting
+// for it would leave the page stuck on a generic ERR_ACCESS_DENIED.
+func (p *pageHealthController) markDeniedDocument(frameID string, reason string) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	mainFrameID := p.mainFrameID
+	sessionID := p.mainSessionID
+	p.mu.Unlock()
+	// Only an exact main-frame match is reported; an unknown or subframe id is
+	// left to the ordinary failure path so a policy denial can never be
+	// attributed to the wrong document.
+	if frameID == "" || mainFrameID == "" || frameID != mainFrameID {
+		return
+	}
+	p.recordPolicyDenial(sessionID, reason)
+}
+
+// recordPolicyDenial reports a document the guard denied. Unlike a provider
+// failure this is a terminal authorization outcome: no start-URL retry is
+// scheduled, because replaying the trusted shell would only hide the cause and
+// the operator would see the project page silently revert. The reported code
+// names the deny reason so the operator sees why the navigation was refused.
+func (p *pageHealthController) recordPolicyDenial(sessionID string, reason string) {
+	code := policyPageErrorCode(reason)
+	p.mu.Lock()
+	if sessionID != "" {
+		p.mainSessionID = sessionID
+	}
+	p.probeGeneration++
+	p.policyDenied = true
+	p.pageError = code
+	p.errorPage = true
+	p.attempts = 0
+	// The published state is terminal for this attempt, but the controller stays
+	// in the ready phase so a later successful navigation can still be observed
+	// and clear the failure. Nothing is retried automatically: only the waiting
+	// phase arms the retry schedule.
+	p.phase = pagePhaseReady
+	p.state = pageStateFailed
+	p.retryAt = time.Time{}
+	p.updatedAt = time.Now().Unix()
+	status := p.statusLocked()
+	p.mu.Unlock()
+	p.publish(status)
+	p.notify()
+}
+
+// policyPageErrorCode maps one fixed audit reason to one fixed uppercase code.
+// The status file only ever carries the mapped code, never the raw reason, so a
+// request URL or query can never leak through the page status.
+func policyPageErrorCode(reason string) string {
+	switch strings.TrimSpace(reason) {
+	case reasonProjectNotRegistered:
+		return "ERR_POLICY_PROJECT_NOT_REGISTERED"
+	case reasonOwnershipUnavailable:
+		return "ERR_POLICY_OWNERSHIP_UNAVAILABLE"
+	case reasonConversationWithoutProject:
+		return "ERR_POLICY_CONVERSATION_WITHOUT_PROJECT"
+	case reasonUnknownResourceShape:
+		return "ERR_POLICY_UNKNOWN_RESOURCE_SHAPE"
+	case reasonPermitNotRecorded:
+		return "ERR_POLICY_PERMIT_NOT_RECORDED"
+	}
+	// Address-policy reasons are fixed phrases; map the two allowlist misses so
+	// the operator can tell a missing host apart from an ownership refusal.
+	if strings.HasPrefix(reason, "host not in ") && strings.HasSuffix(reason, " allowlist") {
+		return "ERR_POLICY_HOST_NOT_ALLOWED"
+	}
+	return "ERR_POLICY_DENIED"
 }
 
 func (p *pageHealthController) observeLoadingFinished(sessionID string, params json.RawMessage) {
@@ -347,6 +459,13 @@ func (p *pageHealthController) recordFailureForGeneration(sessionID, rawError st
 		p.mu.Unlock()
 		return
 	}
+	// A generic ERR_ACCESS_DENIED that follows the guard's own refusal describes
+	// the same event, not a new failure: keep the real policy reason on screen.
+	if errorCode == "ERR_ACCESS_DENIED" && p.policyDenied {
+		p.mu.Unlock()
+		return
+	}
+	p.policyDenied = false
 	p.probeGeneration++
 	if sessionID != "" {
 		p.mainSessionID = sessionID
@@ -404,6 +523,7 @@ func (p *pageHealthController) recordSuccess(sessionID string, generation uint64
 	p.pageError = ""
 	p.attempts = 0
 	p.errorPage = false
+	p.policyDenied = false
 	p.phase = pagePhaseReady
 	p.retryAt = time.Time{}
 	p.updatedAt = time.Now().Unix()

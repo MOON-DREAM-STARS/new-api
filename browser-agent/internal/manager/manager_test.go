@@ -105,6 +105,38 @@ func newHarnessWithMaxActive(t *testing.T, maxActive int) *harness {
 	return &harness{mgr: mgr, driver: driver, display: display, clock: clock, dataRoot: dataRoot}
 }
 
+// The agent owns the ownership document, so it is the last line of defence for
+// the single-project invariant: even a caller that never asked the control plane
+// must not be able to leave the workspace without any provider project.
+func TestDeleteProjectRefusesTheOnlyRegisteredProject(t *testing.T) {
+	h := newHarness(t)
+	const workspaceID = int64(71)
+	only := "g-p-00000000000000000000000000000001"
+	other := "g-p-00000000000000000000000000000002"
+
+	_, err := h.mgr.Start(context.Background(), workspaceID, StartOptions{Provider: "chatgpt"})
+	require.NoError(t, err)
+
+	// Without an ownership document the agent cannot prove another project
+	// remains, so the deletion fails closed and no command is written.
+	_, err = h.mgr.DeleteProject(context.Background(), workspaceID, only, "only")
+	require.ErrorIs(t, err, ErrLastProjectRequired)
+	assert.NoFileExists(t, filepath.Join(guardStateDir(WorkspaceDir(h.dataRoot, workspaceID)), projectDeletionCommandFileName))
+
+	_, err = h.mgr.PutOwnership(workspaceID, Ownership{Generation: 1, Projects: []string{only}})
+	require.NoError(t, err)
+	_, err = h.mgr.DeleteProject(context.Background(), workspaceID, only, "only")
+	require.ErrorIs(t, err, ErrLastProjectRequired)
+	assert.NoFileExists(t, filepath.Join(guardStateDir(WorkspaceDir(h.dataRoot, workspaceID)), projectDeletionCommandFileName))
+
+	// A second registered project makes the deletion legitimate again, so the
+	// command is written and the guard owns the rest of the flow.
+	_, err = h.mgr.PutOwnership(workspaceID, Ownership{Generation: 2, Projects: []string{only, other}})
+	require.NoError(t, err)
+	_, _ = h.mgr.DeleteProject(context.Background(), workspaceID, only, "only")
+	assert.FileExists(t, filepath.Join(guardStateDir(WorkspaceDir(h.dataRoot, workspaceID)), projectDeletionCommandFileName))
+}
+
 func TestStartCreatesRuntimeAndWorkspaceMount(t *testing.T) {
 	h := newHarness(t)
 
@@ -132,9 +164,24 @@ func TestStartCreatesRuntimeAndWorkspaceMount(t *testing.T) {
 	assert.Contains(t, spec.Env, "WW_SCREEN_WIDTH=1280")
 	assert.Contains(t, spec.Env, "WW_SCREEN_HEIGHT=720")
 	assert.Contains(t, spec.Env, "WW_VNC_PORT=5900")
+	assert.Contains(t, spec.Env, "WW_KASM_PORT=6901")
 	assert.Contains(t, spec.Env, "WW_PROVIDER=chatgpt")
 	assert.Contains(t, spec.Env, "WW_PROXY_SERVER=http://ws-agent:8731")
 	assert.Contains(t, spec.Env, "WW_GUARD_MODE=LOCKED")
+}
+
+func TestKasmTargetRequiresLiveRuntimeAndUsesPrivateAddress(t *testing.T) {
+	h := newHarness(t)
+
+	_, err := h.mgr.KasmTarget(123)
+	require.ErrorIs(t, err, runtime.ErrNotRunning)
+
+	_, err = h.mgr.Start(context.Background(), 123, StartOptions{Provider: "chatgpt"})
+	require.NoError(t, err)
+
+	target, err := h.mgr.KasmTarget(123)
+	require.NoError(t, err)
+	assert.Equal(t, "http://10.77.0.1:6901", target.String())
 }
 
 func TestStartIsIdempotent(t *testing.T) {

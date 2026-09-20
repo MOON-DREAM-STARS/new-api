@@ -8,11 +8,14 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/browser-agent/internal/manager"
 	"github.com/QuantumNous/new-api/browser-agent/internal/policy"
@@ -33,6 +36,19 @@ const (
 	errorProjectDeletionUnavailable = "project_deletion_unavailable"
 	errorProjectDeletionTimeout     = "project_deletion_timeout"
 	errorProjectDeletionRejected    = "project_deletion_rejected"
+	errorLastProjectRequired        = "last_project_required"
+	errorInputUnavailable           = "input_unavailable"
+	errorInputTimeout               = "input_timeout"
+	errorInputRejected              = "input_rejected"
+	errorFileChooserExpired         = "file_chooser_expired"
+	errorFileTooLarge               = "file_too_large"
+	errorFileLimitExceeded          = "file_limit_exceeded"
+	errorFileInjectFailed           = "file_inject_failed"
+	errorFileBridgeBusy             = "file_bridge_busy"
+	errorClipboardUnavailable       = "clipboard_unavailable"
+	errorClipboardPayloadTooLarge   = "clipboard_payload_too_large"
+	errorClipboardMIMEUnsupported   = "clipboard_mime_unsupported"
+	errorClipboardFailed            = "clipboard_failed"
 	errorInternal                   = "internal_error"
 	errorNotFound                   = "not_found"
 )
@@ -65,11 +81,21 @@ func New(mgr *manager.Manager, token string, logger *slog.Logger) http.Handler {
 	mux.Handle("POST /internal/v1/runtimes/{workspace_id}/activity", server.authenticate(http.HandlerFunc(server.handleActivity)))
 	mux.Handle("POST /internal/v1/runtimes/{workspace_id}/navigation", server.authenticate(http.HandlerFunc(server.handleNavigation)))
 	mux.Handle("POST /internal/v1/runtimes/{workspace_id}/projects/delete", server.authenticate(http.HandlerFunc(server.handleDeleteProject)))
+	mux.Handle("POST /internal/v1/runtimes/{workspace_id}/input/text", server.authenticate(http.HandlerFunc(server.handleInputText)))
+	mux.Handle("POST /internal/v1/runtimes/{workspace_id}/input/key", server.authenticate(http.HandlerFunc(server.handleInputKey)))
+	mux.Handle("GET /internal/v1/runtimes/{workspace_id}/input/caret", server.authenticate(http.HandlerFunc(server.handleInputCaret)))
+	mux.Handle("GET /internal/v1/runtimes/{workspace_id}/file-chooser", server.authenticate(http.HandlerFunc(server.handleGetFileChooser)))
+	mux.Handle("POST /internal/v1/runtimes/{workspace_id}/file-chooser/{chooser_id}/files", server.authenticate(http.HandlerFunc(server.handleUploadFileChooserFiles)))
+	mux.Handle("POST /internal/v1/runtimes/{workspace_id}/file-chooser/{chooser_id}/cancel", server.authenticate(http.HandlerFunc(server.handleCancelFileChooser)))
+	mux.Handle("POST /internal/v1/runtimes/{workspace_id}/clipboard/copy", server.authenticate(http.HandlerFunc(server.handleClipboardCopy)))
+	mux.Handle("POST /internal/v1/runtimes/{workspace_id}/clipboard/paste", server.authenticate(http.HandlerFunc(server.handleClipboardPaste)))
 	mux.Handle("PUT /internal/v1/runtimes/{workspace_id}/ownership", server.authenticate(http.HandlerFunc(server.handlePutOwnership)))
 	mux.Handle("POST /internal/v1/runtimes/{workspace_id}/permits", server.authenticate(http.HandlerFunc(server.handleIssuePermit)))
 	mux.Handle("GET /internal/v1/runtimes/{workspace_id}/observations", server.authenticate(http.HandlerFunc(server.handleObservations)))
 	mux.Handle("POST /internal/v1/runtimes/{workspace_id}/observations/ack", server.authenticate(http.HandlerFunc(server.handleAckObservations)))
 	mux.Handle("GET /internal/v1/runtimes/{workspace_id}/stream", server.authenticate(server.streamRoute(stream.NewHandler(mgr, server.logger))))
+	mux.Handle("GET /internal/v1/runtimes/{workspace_id}/kasm/{rest...}", server.authenticate(http.HandlerFunc(server.handleKasmProxy)))
+	mux.Handle("POST /internal/v1/runtimes/{workspace_id}/kasm/{rest...}", server.authenticate(http.HandlerFunc(server.handleKasmProxy)))
 	mux.Handle("/", server.authenticate(http.HandlerFunc(server.handleNotFound)))
 	return mux
 }
@@ -254,6 +280,198 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, status)
 }
 
+type inputTextRequest struct {
+	Text string `json:"text"`
+}
+
+type inputKeyRequest struct {
+	Key       string   `json:"key"`
+	Modifiers []string `json:"modifiers,omitempty"`
+}
+
+func (s *Server) handleInputText(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := parseWorkspaceID(r.PathValue("workspace_id"))
+	if !ok {
+		writeError(w, http.StatusBadRequest, errorInvalidRequest)
+		return
+	}
+	var request inputTextRequest
+	if err := decodeJSONBody(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, errorInvalidRequest)
+		return
+	}
+	if err := s.mgr.InputText(r.Context(), workspaceID, request.Text); err != nil {
+		s.writeManagerError(w, workspaceID, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		OK bool `json:"ok"`
+	}{OK: true})
+}
+
+func (s *Server) handleInputKey(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := parseWorkspaceID(r.PathValue("workspace_id"))
+	if !ok {
+		writeError(w, http.StatusBadRequest, errorInvalidRequest)
+		return
+	}
+	var request inputKeyRequest
+	if err := decodeJSONBody(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, errorInvalidRequest)
+		return
+	}
+	if err := s.mgr.InputKey(r.Context(), workspaceID, request.Key, request.Modifiers); err != nil {
+		s.writeManagerError(w, workspaceID, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		OK bool `json:"ok"`
+	}{OK: true})
+}
+
+func (s *Server) handleInputCaret(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := parseWorkspaceID(r.PathValue("workspace_id"))
+	if !ok {
+		writeError(w, http.StatusBadRequest, errorInvalidRequest)
+		return
+	}
+	caret, err := s.mgr.InputCaret(r.Context(), workspaceID)
+	if err != nil {
+		s.writeManagerError(w, workspaceID, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Caret *manager.InputCaret `json:"caret"`
+	}{Caret: caret})
+}
+
+type fileChooserResponse struct {
+	Chooser *manager.FileChooser `json:"chooser"`
+}
+
+type multipartFileSource struct {
+	reader *multipart.Reader
+}
+
+func (source *multipartFileSource) Next() (manager.FileUpload, error) {
+	if source == nil || source.reader == nil {
+		return manager.FileUpload{}, io.EOF
+	}
+	for {
+		part, err := source.reader.NextPart()
+		if err != nil {
+			return manager.FileUpload{}, err
+		}
+		if part.FormName() != "files" {
+			_ = part.Close()
+			return manager.FileUpload{}, fmt.Errorf("unexpected multipart field")
+		}
+		if strings.TrimSpace(part.FileName()) == "" {
+			_ = part.Close()
+			return manager.FileUpload{}, fmt.Errorf("multipart part is not a file")
+		}
+		return manager.FileUpload{Name: part.FileName(), Reader: part}, nil
+	}
+}
+
+func (s *Server) handleGetFileChooser(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := parseWorkspaceID(r.PathValue("workspace_id"))
+	if !ok {
+		writeError(w, http.StatusBadRequest, errorInvalidRequest)
+		return
+	}
+	wait, ok := parseFileChooserWait(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, errorInvalidRequest)
+		return
+	}
+	chooser, err := s.mgr.WaitFileChooser(r.Context(), workspaceID, wait)
+	if err != nil {
+		s.writeManagerError(w, workspaceID, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, fileChooserResponse{Chooser: chooser})
+}
+
+func (s *Server) handleUploadFileChooserFiles(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := parseWorkspaceID(r.PathValue("workspace_id"))
+	if !ok || strings.TrimSpace(r.PathValue("chooser_id")) == "" {
+		writeError(w, http.StatusBadRequest, errorInvalidRequest)
+		return
+	}
+	reader, err := r.MultipartReader()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, errorInvalidRequest)
+		return
+	}
+	result, err := s.mgr.UploadFileChooserFiles(r.Context(), workspaceID, r.PathValue("chooser_id"), &multipartFileSource{reader: reader})
+	if err != nil {
+		s.writeManagerError(w, workspaceID, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleCancelFileChooser(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := parseWorkspaceID(r.PathValue("workspace_id"))
+	if !ok || strings.TrimSpace(r.PathValue("chooser_id")) == "" {
+		writeError(w, http.StatusBadRequest, errorInvalidRequest)
+		return
+	}
+	result, err := s.mgr.CancelFileChooser(r.Context(), workspaceID, r.PathValue("chooser_id"))
+	if err != nil {
+		s.writeManagerError(w, workspaceID, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func parseFileChooserWait(r *http.Request) (time.Duration, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get("wait_ms"))
+	if raw == "" {
+		return 25 * time.Second, true
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 || value > 30000 {
+		return 0, false
+	}
+	return time.Duration(value) * time.Millisecond, true
+}
+
+func (s *Server) handleClipboardCopy(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := parseWorkspaceID(r.PathValue("workspace_id"))
+	if !ok {
+		writeError(w, http.StatusBadRequest, errorInvalidRequest)
+		return
+	}
+	mimeType, payload, err := s.mgr.CopyClipboard(r.Context(), workspaceID)
+	if err != nil {
+		s.writeManagerError(w, workspaceID, err)
+		return
+	}
+	writeRaw(w, http.StatusOK, mimeType, payload)
+}
+
+func (s *Server) handleClipboardPaste(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := parseWorkspaceID(r.PathValue("workspace_id"))
+	if !ok {
+		writeError(w, http.StatusBadRequest, errorInvalidRequest)
+		return
+	}
+	mimeType := strings.TrimSpace(r.Header.Get("Content-Type"))
+	if mimeType == "" {
+		writeError(w, http.StatusBadRequest, errorInvalidRequest)
+		return
+	}
+	if err := s.mgr.PasteClipboard(r.Context(), workspaceID, mimeType, r.Body); err != nil {
+		s.writeManagerError(w, workspaceID, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		OK bool `json:"ok"`
+	}{OK: true})
+}
+
 type ownershipRequest struct {
 	Generation    int64    `json:"generation"`
 	Projects      []string `json:"projects"`
@@ -386,8 +604,34 @@ func (s *Server) writeManagerError(w http.ResponseWriter, workspaceID int64, err
 		writeError(w, http.StatusConflict, errorProjectDeletionUnavailable)
 	case errors.Is(err, manager.ErrProjectDeletionTimeout):
 		writeError(w, http.StatusGatewayTimeout, errorProjectDeletionTimeout)
+	case errors.Is(err, manager.ErrLastProjectRequired):
+		writeError(w, http.StatusConflict, errorLastProjectRequired)
 	case errors.Is(err, manager.ErrProjectDeletionRejected):
 		writeError(w, http.StatusUnprocessableEntity, errorProjectDeletionRejected)
+	case errors.Is(err, manager.ErrInputTimeout):
+		writeError(w, http.StatusGatewayTimeout, errorInputTimeout)
+	case errors.Is(err, manager.ErrInputUnavailable):
+		writeError(w, http.StatusServiceUnavailable, errorInputUnavailable)
+	case errors.Is(err, manager.ErrInputRejected):
+		writeError(w, http.StatusUnprocessableEntity, errorInputRejected)
+	case errors.Is(err, manager.ErrFileChooserExpired):
+		writeError(w, http.StatusGone, errorFileChooserExpired)
+	case errors.Is(err, manager.ErrFileTooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, errorFileTooLarge)
+	case errors.Is(err, manager.ErrFileLimitExceeded):
+		writeError(w, http.StatusBadRequest, errorFileLimitExceeded)
+	case errors.Is(err, manager.ErrFileInjectFailed):
+		writeError(w, http.StatusUnprocessableEntity, errorFileInjectFailed)
+	case errors.Is(err, manager.ErrFileBridgeBusy):
+		writeError(w, http.StatusConflict, errorFileBridgeBusy)
+	case errors.Is(err, manager.ErrClipboardUnavailable):
+		writeError(w, http.StatusServiceUnavailable, errorClipboardUnavailable)
+	case errors.Is(err, manager.ErrClipboardPayloadTooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, errorClipboardPayloadTooLarge)
+	case errors.Is(err, manager.ErrClipboardMIMEUnsupported):
+		writeError(w, http.StatusUnsupportedMediaType, errorClipboardMIMEUnsupported)
+	case errors.Is(err, manager.ErrClipboardFailed):
+		writeError(w, http.StatusBadGateway, errorClipboardFailed)
 	case errors.Is(err, runtime.ErrNotRunning):
 		writeError(w, http.StatusConflict, errorRuntimeNotActive)
 	default:
@@ -465,6 +709,12 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(encoded)
+}
+
+func writeRaw(w http.ResponseWriter, status int, contentType string, payload []byte) {
+	w.Header().Set("Content-Type", contentType)
+	w.WriteHeader(status)
+	_, _ = w.Write(payload)
 }
 
 func writeError(w http.ResponseWriter, status int, code string) {
