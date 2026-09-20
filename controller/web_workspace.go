@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
@@ -153,9 +152,9 @@ func UpdateWebWorkspaceProject(c *gin.Context) {
 		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid request body", "")
 		return
 	}
-	name := strings.TrimSpace(request.Name)
-	if name == "" || utf8.RuneCountInString(name) > 255 {
-		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "name must be 1-255 characters", "")
+	name, ok := webworkspace.NormalizeProjectDisplayName(request.Name)
+	if !ok {
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "name must use user-project format with 1-24 letters, digits or underscores per part", "")
 		return
 	}
 	project, err := webworkspace.RenameOwnedProject(user.Id, projectID, name)
@@ -222,7 +221,7 @@ func CreateWebWorkspaceProject(c *gin.Context) {
 		writeWebWorkspaceError(c, http.StatusConflict, webWorkspaceCodeProjectLimit, "web workspace project limit reached", "")
 		return
 	case errors.Is(err, webworkspace.ErrInvalidProjectName):
-		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "name must be 1-64 characters", "")
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "name must use user-project format with 1-24 letters, digits or underscores per part", "")
 		return
 	case errors.Is(err, webworkspace.ErrProjectCreationInProgress):
 		writeWebWorkspaceError(c, http.StatusConflict, webWorkspaceCodeProjectCreationInProgress, "a project creation is already running", "")
@@ -303,6 +302,8 @@ func writeWebWorkspaceResourceError(c *gin.Context, err error) {
 
 func writeWebWorkspaceProjectDeletionError(c *gin.Context, err error) {
 	switch {
+	case errors.Is(err, webworkspace.ErrLastProjectRequired):
+		writeWebWorkspaceError(c, http.StatusConflict, webWorkspaceCodeLastProjectRequired, "at least one project must remain", "")
 	case errors.Is(err, webworkspace.ErrAgentProjectDeletionTimeout):
 		writeWebWorkspaceError(c, http.StatusGatewayTimeout, webWorkspaceCodeProjectDeletionTimeout, "provider project deletion timed out", "")
 	case errors.Is(err, webworkspace.ErrAgentProjectDeletionUnavailable), errors.Is(err, webworkspace.ErrAgentRuntimeNotFound):
@@ -356,6 +357,7 @@ const (
 	webWorkspaceCodeSessionNotFound       = "WEB_WORKSPACE_SESSION_NOT_FOUND"
 	webWorkspaceCodeSessionRequired       = "WEB_WORKSPACE_SESSION_REQUIRED"
 	webWorkspaceCodeProjectLimit          = "WEB_WORKSPACE_PROJECT_LIMIT"
+	webWorkspaceCodeLastProjectRequired   = "WEB_WORKSPACE_LAST_PROJECT_REQUIRED"
 	webWorkspaceCodeTicketInvalid         = "WEB_WORKSPACE_TICKET_INVALID"
 	webWorkspaceCodeNavigationTimeout     = "WEB_WORKSPACE_NAVIGATION_TIMEOUT"
 	webWorkspaceCodeNavigationUnavailable = "WEB_WORKSPACE_NAVIGATION_UNAVAILABLE"

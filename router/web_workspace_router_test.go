@@ -211,8 +211,8 @@ func TestWebWorkspaceRouterCrossUserAccessDenied(t *testing.T) {
 	// A foreign resource and an unknown one must be indistinguishable.
 	assert.Equal(t, unknownGet.Body.String(), foreignGet.Body.String())
 
-	foreignPatch := doWebWorkspaceRequest(fixture.engine, http.MethodPatch, foreignProject, tokenA, `{"name":"stolen"}`)
-	unknownPatch := doWebWorkspaceRequest(fixture.engine, http.MethodPatch, unknownProject, tokenA, `{"name":"stolen"}`)
+	foreignPatch := doWebWorkspaceRequest(fixture.engine, http.MethodPatch, foreignProject, tokenA, `{"name":"stolen-project"}`)
+	unknownPatch := doWebWorkspaceRequest(fixture.engine, http.MethodPatch, unknownProject, tokenA, `{"name":"stolen-project"}`)
 	assert.Equal(t, http.StatusNotFound, foreignPatch.Code)
 	assert.Equal(t, unknownPatch.Body.String(), foreignPatch.Body.String())
 
@@ -260,7 +260,7 @@ func TestWebWorkspaceRouterIgnoresForgedIdentifiers(t *testing.T) {
 		http.MethodPatch,
 		fmt.Sprintf("/api/web-workspace/projects/%d", fixture.projectA.Id),
 		tokenA,
-		fmt.Sprintf(`{"name":"Project A renamed","workspace_id":%d}`, fixture.workspaceB.Id),
+		fmt.Sprintf(`{"name":"Project-A_Renamed","workspace_id":%d}`, fixture.workspaceB.Id),
 	)
 	assert.Equal(t, http.StatusOK, rename.Code)
 
@@ -270,7 +270,7 @@ func TestWebWorkspaceRouterIgnoresForgedIdentifiers(t *testing.T) {
 
 	var own model.WebProject
 	require.NoError(t, model.DB.First(&own, fixture.projectA.Id).Error)
-	assert.Equal(t, "Project A renamed", own.Name)
+	assert.Equal(t, "Project-A_Renamed", own.Name)
 }
 
 func TestWebWorkspaceRouterOwnProjectLifecycle(t *testing.T) {
@@ -286,14 +286,15 @@ func TestWebWorkspaceRouterOwnProjectLifecycle(t *testing.T) {
 	assert.Equal(t, http.StatusOK, conversations.Code)
 	assert.Contains(t, conversations.Body.String(), `"items":[]`)
 
-	rename := doWebWorkspaceRequest(fixture.engine, http.MethodPatch, ownProject, tokenA, `{"name":"  Project A renamed  "}`)
+	rename := doWebWorkspaceRequest(fixture.engine, http.MethodPatch, ownProject, tokenA, `{"name":"  Project-A_Renamed  "}`)
 	assert.Equal(t, http.StatusOK, rename.Code)
-	assert.Contains(t, rename.Body.String(), `"name":"Project A renamed"`)
+	assert.Contains(t, rename.Body.String(), `"name":"Project-A_Renamed"`)
 
 	invalidRename := doWebWorkspaceRequest(fixture.engine, http.MethodPatch, ownProject, tokenA, `{"name":"   "}`)
 	assert.Equal(t, http.StatusBadRequest, invalidRename.Code)
 	assert.Equal(t, "WEB_WORKSPACE_INVALID_REQUEST", decodeWebWorkspaceError(t, invalidRename).Code)
 
+	require.NoError(t, model.DB.Create(&model.WebProject{WorkspaceId: fixture.workspaceA.Id, Provider: "chatgpt", ExternalProjectId: "ext-router-a-2", Name: "Second-Project"}).Error)
 	deleteRecorder := doWebWorkspaceRequest(fixture.engine, http.MethodDelete, ownProject, tokenA, "")
 	assert.Equal(t, http.StatusOK, deleteRecorder.Code)
 
@@ -382,7 +383,7 @@ func TestWebWorkspaceRouterProjectMutationsPushOwnership(t *testing.T) {
 	tokenA := webWorkspaceBearer(t, fixture.userA)
 	ownProject := fmt.Sprintf("/api/web-workspace/projects/%d", fixture.projectA.Id)
 
-	rename := doWebWorkspaceRequest(fixture.engine, http.MethodPatch, ownProject, tokenA, `{"name":"Renamed A"}`)
+	rename := doWebWorkspaceRequest(fixture.engine, http.MethodPatch, ownProject, tokenA, `{"name":"Renamed-A"}`)
 	require.Equal(t, http.StatusOK, rename.Code, rename.Body.String())
 	snapshot, ok := fixture.agent.ownershipOf(fixture.workspaceA.Id)
 	require.True(t, ok)
@@ -391,17 +392,18 @@ func TestWebWorkspaceRouterProjectMutationsPushOwnership(t *testing.T) {
 	require.NoError(t, model.DB.First(&renamed, fixture.projectA.Id).Error)
 	assert.Equal(t, renamed.UpdatedAt, snapshot.Generation)
 
+	require.NoError(t, model.DB.Create(&model.WebProject{WorkspaceId: fixture.workspaceA.Id, Provider: "chatgpt", ExternalProjectId: "ext-router-a-2", Name: "Second-Project"}).Error)
 	deleteRecorder := doWebWorkspaceRequest(fixture.engine, http.MethodDelete, ownProject, tokenA, "")
 	require.Equal(t, http.StatusOK, deleteRecorder.Code, deleteRecorder.Body.String())
 	snapshot, ok = fixture.agent.ownershipOf(fixture.workspaceA.Id)
 	require.True(t, ok)
-	assert.Empty(t, snapshot.Projects)
-	assert.Zero(t, snapshot.Generation)
+	assert.Equal(t, []string{"ext-router-a-2"}, snapshot.Projects)
+	assert.NotZero(t, snapshot.Generation)
 
 	// A rejected ownership push is never reported as a successful mutation.
 	fixture.settings.AgentBaseURL = ""
 	foreignOwn := fmt.Sprintf("/api/web-workspace/projects/%d", fixture.projectB.Id)
-	failing := doWebWorkspaceRequest(fixture.engine, http.MethodPatch, foreignOwn, webWorkspaceBearer(t, fixture.userB), `{"name":"Renamed B"}`)
+	failing := doWebWorkspaceRequest(fixture.engine, http.MethodPatch, foreignOwn, webWorkspaceBearer(t, fixture.userB), `{"name":"Renamed-B"}`)
 	assert.Equal(t, http.StatusServiceUnavailable, failing.Code)
 	assert.Equal(t, "WEB_WORKSPACE_AGENT_UNAVAILABLE", decodeWebWorkspaceError(t, failing).Code)
 }

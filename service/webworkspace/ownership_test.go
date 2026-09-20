@@ -26,6 +26,12 @@ func openWebWorkspaceSQLiteTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	// Keep the in-memory schema on one connection so concurrent service calls
+	// share the same database during deletion serialization tests.
+	sqlDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
 	require.NoError(t, db.AutoMigrate(&model.User{}, &model.WebWorkspace{}, &model.WebProject{}, &model.WebConversation{}))
 	return db
 }
@@ -110,13 +116,16 @@ func runWebWorkspaceOwnershipChecks(t *testing.T, db *gorm.DB) {
 	require.NoError(t, err)
 	assert.Empty(t, otherConversations)
 
-	_, err = RenameOwnedProject(userA.Id, projectB.Id, "stolen")
+	_, err = RenameOwnedProject(userA.Id, projectB.Id, "stolen-project")
 	assert.ErrorIs(t, err, ErrResourceNotFound)
 	assert.ErrorIs(t, DeleteOwnedProject(userA.Id, projectB.Id), ErrResourceNotFound)
 
-	renamed, err := RenameOwnedProject(userA.Id, projectA.Id, "Project A renamed")
+	_, err = RenameOwnedProject(userA.Id, projectA.Id, "Project A renamed")
+	assert.ErrorIs(t, err, ErrInvalidProjectName)
+
+	renamed, err := RenameOwnedProject(userA.Id, projectA.Id, "Project-A_Renamed")
 	require.NoError(t, err)
-	assert.Equal(t, "Project A renamed", renamed.Name)
+	assert.Equal(t, "Project-A_Renamed", renamed.Name)
 
 	require.NoError(t, DeleteOwnedProject(userA.Id, projectA.Id))
 	_, err = GetOwnedProject(userA.Id, projectA.Id)

@@ -2,6 +2,7 @@ package webworkspace
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -421,6 +422,7 @@ func TestWebWorkspaceDeleteOwnedProjectWithProviderDeletesProviderBeforeLocal(t 
 	project := &model.WebProject{WorkspaceId: workspace.Id, Provider: DefaultProvider, ExternalProjectId: syncTestProjectA, Name: "Project A"}
 	require.NoError(t, db.Create(project).Error)
 	require.NoError(t, db.Create(&model.WebConversation{ProjectId: project.Id, Provider: DefaultProvider, ExternalConversationId: syncTestConversation, Title: "Conversation"}).Error)
+	require.NoError(t, db.Create(&model.WebProject{WorkspaceId: workspace.Id, Provider: DefaultProvider, ExternalProjectId: syncTestProjectB, Name: "Project B"}).Error)
 
 	require.NoError(t, DeleteOwnedProjectWithProvider(context.Background(), user.Id, project.Id))
 
@@ -434,11 +436,62 @@ func TestWebWorkspaceDeleteOwnedProjectWithProviderDeletesProviderBeforeLocal(t 
 	assert.EqualValues(t, 0, countWebWorkspaceRows(t, db, &model.WebConversation{}, "project_id = ?", project.Id))
 }
 
+func TestWebWorkspaceDeleteOwnedProjectWithProviderKeepsLastProject(t *testing.T) {
+	db, agent, user, workspace := setupWebWorkspaceSyncTest(t)
+	project := &model.WebProject{WorkspaceId: workspace.Id, Provider: DefaultProvider, ExternalProjectId: syncTestProjectA, Name: "Project-A"}
+	require.NoError(t, db.Create(project).Error)
+
+	err := DeleteOwnedProjectWithProvider(context.Background(), user.Id, project.Id)
+	assert.ErrorIs(t, err, ErrLastProjectRequired)
+	assert.Empty(t, agent.projectDeletes())
+
+	retained, err := GetOwnedProject(user.Id, project.Id)
+	require.NoError(t, err)
+	assert.Equal(t, project.Id, retained.Id)
+}
+
+func TestWebWorkspaceDeleteOwnedProjectWithProviderSerializesLastProject(t *testing.T) {
+	db, _, user, workspace := setupWebWorkspaceSyncTest(t)
+	first := &model.WebProject{WorkspaceId: workspace.Id, Provider: DefaultProvider, ExternalProjectId: syncTestProjectA, Name: "First-Project"}
+	second := &model.WebProject{WorkspaceId: workspace.Id, Provider: DefaultProvider, ExternalProjectId: syncTestProjectB, Name: "Second-Project"}
+	require.NoError(t, db.Create(first).Error)
+	require.NoError(t, db.Create(second).Error)
+
+	results := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, projectID := range []int{first.Id, second.Id} {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			results <- DeleteOwnedProjectWithProvider(context.Background(), user.Id, id)
+		}(projectID)
+	}
+	wg.Wait()
+	close(results)
+
+	successes := 0
+	lastProjectErrors := 0
+	for err := range results {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrLastProjectRequired):
+			lastProjectErrors++
+		default:
+			t.Fatalf("unexpected delete result: %v", err)
+		}
+	}
+	assert.Equal(t, 1, successes)
+	assert.Equal(t, 1, lastProjectErrors)
+	assert.EqualValues(t, 1, countWebWorkspaceRows(t, db, &model.WebProject{}, "workspace_id = ?", workspace.Id))
+}
+
 func TestWebWorkspaceDeleteOwnedProjectWithProviderRetainsLocalOnProviderFailure(t *testing.T) {
 	db, agent, user, workspace := setupWebWorkspaceSyncTest(t)
 	project := &model.WebProject{WorkspaceId: workspace.Id, Provider: DefaultProvider, ExternalProjectId: syncTestProjectA, Name: "Project A"}
 	require.NoError(t, db.Create(project).Error)
 	require.NoError(t, db.Create(&model.WebConversation{ProjectId: project.Id, Provider: DefaultProvider, ExternalConversationId: syncTestConversation, Title: "Conversation"}).Error)
+	require.NoError(t, db.Create(&model.WebProject{WorkspaceId: workspace.Id, Provider: DefaultProvider, ExternalProjectId: syncTestProjectB, Name: "Project B"}).Error)
 	agent.setFailProjectDelete(true)
 
 	err := DeleteOwnedProjectWithProvider(context.Background(), user.Id, project.Id)
@@ -614,11 +667,11 @@ func TestWebWorkspaceApplyObservationsKeepsForeignProjectOwnership(t *testing.T)
 func TestWebWorkspaceIssueProjectPermitRequiresLiveSession(t *testing.T) {
 	_, agent, user, workspace := setupWebWorkspaceSyncTest(t)
 
-	_, err := IssueProjectPermit(context.Background(), user.Id, 0, "New Project")
+	_, err := IssueProjectPermit(context.Background(), user.Id, 0, "New-Project")
 	assert.ErrorIs(t, err, ErrSessionRequired)
 
 	sessions.put(Session{Id: "stopped-session", UserId: user.Id, WorkspaceId: workspace.Id, State: AgentStateStopped})
-	_, err = IssueProjectPermit(context.Background(), user.Id, 0, "New Project")
+	_, err = IssueProjectPermit(context.Background(), user.Id, 0, "New-Project")
 	assert.ErrorIs(t, err, ErrSessionRequired)
 	assert.Empty(t, agent.issuedPermits())
 }
@@ -628,11 +681,11 @@ func TestWebWorkspaceIssueProjectPermitEnforcesProjectLimit(t *testing.T) {
 	putWebWorkspaceTestSession(t, user, workspace)
 	require.NoError(t, db.Create(&model.WebProject{WorkspaceId: workspace.Id, Provider: DefaultProvider, ExternalProjectId: syncTestProjectA, Name: "Project A"}).Error)
 
-	_, err := IssueProjectPermit(context.Background(), user.Id, 1, "New Project")
+	_, err := IssueProjectPermit(context.Background(), user.Id, 1, "New-Project")
 	assert.ErrorIs(t, err, ErrProjectLimitReached)
 	assert.Empty(t, agent.issuedPermits())
 
-	permit, err := IssueProjectPermit(context.Background(), user.Id, 0, "New Project")
+	permit, err := IssueProjectPermit(context.Background(), user.Id, 0, "New-Project")
 	require.NoError(t, err)
 	assert.NotEmpty(t, permit.PermitId)
 	assert.Equal(t, workspace.Id, permit.WorkspaceId)
@@ -647,7 +700,7 @@ func TestWebWorkspaceIssueProjectPermitAuditsIssuedPermit(t *testing.T) {
 	putWebWorkspaceTestSession(t, user, workspace)
 	lines := captureWebWorkspaceAudit(t)
 
-	permit, err := IssueProjectPermit(context.Background(), user.Id, 0, "New Project")
+	permit, err := IssueProjectPermit(context.Background(), user.Id, 0, "New-Project")
 	require.NoError(t, err)
 	require.NotEmpty(t, permit.PermitId)
 	assertAuditContains(t, lines, "event=permit_issued")
@@ -692,7 +745,7 @@ func TestWebWorkspaceIssueProjectPermitFailsClosedWhenAgentRejects(t *testing.T)
 	putWebWorkspaceTestSession(t, user, workspace)
 	agent.setFailPermits(true)
 
-	_, err := IssueProjectPermit(context.Background(), user.Id, 0, "New Project")
+	_, err := IssueProjectPermit(context.Background(), user.Id, 0, "New-Project")
 	assert.ErrorIs(t, err, ErrAgentRejected)
 
 	permits.mutex.RLock()
@@ -872,18 +925,18 @@ func TestWebWorkspaceIssueProjectPermitValidatesDisplayName(t *testing.T) {
 	_, agent, user, workspace := setupWebWorkspaceSyncTest(t)
 	putWebWorkspaceTestSession(t, user, workspace)
 
-	for _, name := range []string{"", "   ", strings.Repeat("\u4ee3", 65)} {
+	for _, name := range []string{"", "   ", "Quarterly Review", "a-b-c", "a-", "-b", strings.Repeat("\u4ee3", 25) + "-b", strings.Repeat("\u4ee3", 65)} {
 		_, err := IssueProjectPermit(context.Background(), user.Id, 0, name)
 		assert.ErrorIs(t, err, ErrInvalidProjectName)
 	}
 	assert.Empty(t, agent.issuedPermits())
 
-	permit, err := IssueProjectPermit(context.Background(), user.Id, 0, "  Quarterly Review  ")
+	permit, err := IssueProjectPermit(context.Background(), user.Id, 0, "  Quarterly-Review  ")
 	require.NoError(t, err)
 	require.NotEmpty(t, permit.PermitId)
 	issued := agent.issuedPermits()
 	require.Len(t, issued, 1)
-	assert.Equal(t, "Quarterly Review", issued[0].Request.DisplayName)
+	assert.Equal(t, "Quarterly-Review", issued[0].Request.DisplayName)
 	assert.Equal(t, permit.PermitId, issued[0].Request.PermitId)
 }
 
@@ -896,7 +949,7 @@ func TestWebWorkspaceIssueProjectPermitRefusesWhileCreationRuns(t *testing.T) {
 		UpdatedAt: 1,
 	})
 
-	_, err := IssueProjectPermit(context.Background(), user.Id, 0, "Second project")
+	_, err := IssueProjectPermit(context.Background(), user.Id, 0, "Second-Project")
 	assert.ErrorIs(t, err, ErrProjectCreationInProgress)
 	assert.Empty(t, agent.issuedPermits())
 
@@ -907,7 +960,7 @@ func TestWebWorkspaceIssueProjectPermitRefusesWhileCreationRuns(t *testing.T) {
 		Error:     "ERR_PROJECT_UI_NOT_FOUND",
 		UpdatedAt: 2,
 	})
-	permit, err := IssueProjectPermit(context.Background(), user.Id, 0, "Second project")
+	permit, err := IssueProjectPermit(context.Background(), user.Id, 0, "Second-Project")
 	require.NoError(t, err)
 	require.NotEmpty(t, permit.PermitId)
 	assert.Len(t, agent.issuedPermits(), 1)
