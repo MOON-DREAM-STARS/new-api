@@ -180,6 +180,7 @@ log "x11vnc ready pid=$X11VNC_PID port=$WW_VNC_PORT"
 log "starting chromium with profile=$WW_WORKSPACE_DIR/profile guard_mode=$WW_GUARD_MODE"
 chromium --no-sandbox \
     --test-type \
+    --password-store=basic \
     --user-data-dir="$WW_WORKSPACE_DIR/profile" \
     --display="$WW_DISPLAY" \
     --no-first-run \
