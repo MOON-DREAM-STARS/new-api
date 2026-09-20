@@ -42,10 +42,14 @@ Dockerfile 为多阶段构建：`golang:1.26.1-alpine` 阶段只复制 `go.mod`�
 --remote-debugging-address=127.0.0.1        CDP 只监听 loopback，禁止 publish
 --deny-permission-prompts                   自动拒绝权限提示（clipboard 等）
 --no-sandbox --test-type --password-store=basic --user-data-dir=... --display=... --window-size=<W,H> --window-position=0,0 --app="$WW_START_URL"
+--disable-gpu --disable-software-rasterizer --disable-dev-shm-usage --renderer-process-limit=1
+--disable-component-update --disable-sync --metrics-recording-only --no-pings --disable-breakpad
+--force-device-scale-factor=1 --js-flags=--max-old-space-size=256
 ```
 
-Chromium 使用 `--password-store=basic`：Provider cookie、localStorage 及其加密密钥随 workspace `profile/` 持久化，不依赖容器内 keyring/portal。因此 runtime 容器重建或重启后 Provider 登录态应继续可用；profile 的 `0700`/`0600` 权限与 workspace 隔离同时也是登录态保护边界。New API 的本机浏览器登录 cookie 不在此 profile 中。
+其中 `--disable-gpu`、`--disable-software-rasterizer` 与 `--disable-features=...Vulkan` 固定软件渲染路径；其余低资源参数限制 renderer、后台更新、崩溃上报和 V8 堆大小。`--disable-background-networking` 未启用：本机 smoke test 中它会让 ChatGPT 主页面停留在空白页，保留现有代理与 Guard 策略即可。
 
+Chromium 使用 `--password-store=basic`：Provider cookie、localStorage 及其加密密钥随 workspace `profile/` 持久化，不依赖容器内 keyring/portal。因此 runtime 容器重建或重启后 Provider 登录态应继续可用；profile 的 `0700`/`0600` 权限与 workspace 隔离同时也是登录态保护边界。New API 的本机浏览器登录 cookie 不在此 profile 中。
 
 运行时窗口是 Provider 的应用窗口（`--app`）：只显示页面内容，没有标签页、地址栏、书签栏和 `--no-sandbox` 警告条。`--start-maximized` 在没有窗口管理器的 Xvfb 中不会生效，因此窗口尺寸由 `--window-size="$WW_SCREEN_WIDTH,$WW_SCREEN_HEIGHT"` 显式对齐屏幕。`--test-type` 只抑制上述警告条，不改变网络与导航策略：起始 URL 之外的每次 navigation 与请求仍由 workspace-guard 与 egress proxy 按同一份策略表拦截。
 
@@ -71,7 +75,7 @@ guard 与 CDP 断连、命令通道出错、启动 15s 预算内无法连接、�
 
 1. 校验 `WW_PROXY_SERVER` 与 `WW_GUARD_MODE`，非法即退出 1；
 2. 启动 Xvfb，并等待对应 X11 socket 就绪；
-3. 启动 `x11vnc`（`-rfbport "$WW_VNC_PORT" -forever -shared -nopw -nolookup -noxdamage -quiet -bg`，不带 `-clip`，VNC 剪贴板保持关闭），并等待该端口就绪；
+3. 启动 `x11vnc`（`-rfbport "$WW_VNC_PORT" -forever -shared -nopw -nolookup -deferupdate 50 -wait 30 -quiet -bg`，使用 X DAMAGE，不带 `-clip`，VNC 剪贴板保持关闭），并等待该端口就绪；
 4. 启动 Chromium 应用窗口（后台，`--user-data-dir=$WW_WORKSPACE_DIR/profile`，起始 URL 为 `$WW_START_URL`）；
 5. 启动 `workspace-guard`（后台），随后 watchdog 同时监视两者：guard 退出 → 清理并以 1 退出；Chromium 退出 → 按 Chromium 的退出码清理并退出。
 
@@ -85,5 +89,5 @@ guard 与 CDP 断连、命令通道出错、启动 15s 预算内无法连接、�
 - 宿主 workspace 目录必须可由 uid/gid `10001` 写入（或在创建容器前调整为 `10001:10001`）；否则入口脚本无法创建 `profile/`、`cache/`、`tmp/`，Chromium 无法启动。
 - 推荐由 Agent 设置 `--read-only`、`--tmpfs /tmp:rw,size=256m,mode=1777`、`--tmpfs /run:rw,size=16m,mode=755`、`--shm-size=512m`、`--cap-drop ALL`、`--security-opt no-new-privileges`、Memory/CPU/Pids 限制，并且只将该 workspace 的目录 bind mount 到 `/workspace`。
 - Chromium 使用 `--no-sandbox`：在丢弃 capabilities 的容器内，这避免依赖 setuid sandbox；安全边界主要由只读 rootfs、capability 丢弃、资源限制、私有网络、guard 与 egress proxy 承担。不得在缺少这些边界的宿主环境中直接运行。
-- Chromium 需要可写的 `/dev/shm`；验收运行使用 `--shm-size=512m`。若部署环境无法提供足够大小，需要在后续镜像/启动配置中显式增加 `--disable-dev-shm-usage` 并重新验收；本镜像的默认 Chromium 命令不包含该 flag。
+- Chromium 需要可写的工作目录；入口脚本已显式使用 `--disable-dev-shm-usage`，因此 `/dev/shm` 不足时会退回到容器可写的临时目录。若后续调整该 flag，必须在相同资源限制下重新做真实 smoke test 与带宽验收。
 - guard 与 egress proxy 共用同一份 `internal/policy` 白名单：浏览器层拦截 navigation/请求/弹窗/下载/剪贴板，网络层负责 DNS 解析与私网地址拒绝；两层都不能单独视为完整的 Project ownership 边界。
