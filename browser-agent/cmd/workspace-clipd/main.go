@@ -330,22 +330,37 @@ func (c *x11Clipboard) Copy(ctx context.Context) (string, []byte, *clipError) {
 	if err := runXDoTool(ctx, c.display, "ctrl+c"); err != nil {
 		return "", nil, errClipX11Failed
 	}
-	targets := clipboardTargets(ctx, c.display)
-	return selectCopyMIMEWithCandidates(copyCandidatesForTargets(targets), func(mime string) ([]byte, error) {
+	targets, owned := clipboardTargets(ctx, c.display)
+	return copyFromClipboard(targets, owned, func(mime string) ([]byte, error) {
 		readCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
 		return runCommandOutputLimited(readCtx, c.display, "xclip", "-selection", "clipboard", "-o", "-t", mime)
 	})
 }
 
-func clipboardTargets(ctx context.Context, display string) []string {
+// copyFromClipboard reads the owned CLIPBOARD selection. An unowned selection is
+// a normal empty clipboard rather than a failure: the caller must leave the
+// local clipboard untouched instead of reporting a gateway error, which is what
+// pressing Ctrl+C without a selection does.
+func copyFromClipboard(targets []string, owned bool, read func(string) ([]byte, error)) (string, []byte, *clipError) {
+	if !owned {
+		return "text/plain", []byte{}, nil
+	}
+	return selectCopyMIMEWithCandidates(copyCandidatesForTargets(targets), read)
+}
+
+// clipboardTargets reports the advertised ICCCM targets and whether the
+// CLIPBOARD selection has an owner at all. A failed TARGETS probe means nothing
+// currently owns the selection.
+func clipboardTargets(ctx context.Context, display string) ([]string, bool) {
 	readCtx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	payload, err := runCommandOutputLimited(readCtx, display, "xclip", "-selection", "clipboard", "-o", "-t", "TARGETS")
 	if err != nil {
-		return nil
+		return nil, false
 	}
-	return strings.Fields(string(payload))
+	targets := strings.Fields(string(payload))
+	return targets, len(targets) > 0
 }
 
 func copyCandidatesForTargets(targets []string) []string {

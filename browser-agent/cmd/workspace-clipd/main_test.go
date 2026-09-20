@@ -58,6 +58,45 @@ func TestParseRequestLine(t *testing.T) {
 	}
 }
 
+func TestCopyFromClipboardEmptySelection(t *testing.T) {
+	readCalls := 0
+	read := func(string) ([]byte, error) {
+		readCalls++
+		return nil, errClipXclipFailed
+	}
+
+	mime, payload, clipErr := copyFromClipboard(nil, false, read)
+	if clipErr != nil {
+		t.Fatalf("copyFromClipboard() error = %v, want nil", clipErr)
+	}
+	if mime != "text/plain" || len(payload) != 0 {
+		t.Fatalf("copyFromClipboard() = %q with %d bytes, want empty text/plain", mime, len(payload))
+	}
+	if readCalls != 0 {
+		t.Fatalf("copyFromClipboard() read the selection %d times, want 0 when no owner exists", readCalls)
+	}
+}
+
+func TestCopyFromClipboardOwnedSelection(t *testing.T) {
+	targets := []string{"TARGETS", "UTF8_STRING"}
+
+	mime, payload, clipErr := copyFromClipboard(targets, true, func(string) ([]byte, error) {
+		return []byte("hi"), nil
+	})
+	if clipErr != nil {
+		t.Fatalf("copyFromClipboard() error = %v, want nil", clipErr)
+	}
+	if mime != "text/plain" || string(payload) != "hi" {
+		t.Fatalf("copyFromClipboard() = %q %q, want text/plain hi", mime, string(payload))
+	}
+
+	if _, _, clipErr := copyFromClipboard(targets, true, func(string) ([]byte, error) {
+		return nil, errClipXclipFailed
+	}); clipErr != errClipXclipFailed {
+		t.Fatalf("copyFromClipboard() error = %v, want %s", clipErr, errClipXclipFailed)
+	}
+}
+
 func TestCopyCandidatesForTargets(t *testing.T) {
 	tests := []struct {
 		name    string

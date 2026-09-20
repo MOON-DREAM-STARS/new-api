@@ -175,6 +175,24 @@ describe('useClipboardBridge', () => {
     await waitFor(() => expect(copyClipboard).toHaveBeenCalledTimes(1))
   })
 
+  test('leaves the local clipboard untouched when the remote selection is empty', async () => {
+    copyClipboard.mockResolvedValue({
+      mime: 'text/plain',
+      data: new Blob([], { type: 'text/plain' }),
+    })
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    installClipboard({ writeText })
+
+    render(<Harness />)
+    const remote = screen.getByTestId('remote-surface')
+    remote.focus()
+    fireEvent.keyDown(remote, { key: 'c', ctrlKey: true })
+
+    await waitFor(() => expect(copyClipboard).toHaveBeenCalledTimes(1))
+    expect(writeText).not.toHaveBeenCalled()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
   test('renders the permission notice and keeps toolbar actions available', async () => {
     copyClipboard.mockResolvedValue({
       mime: 'text/plain',

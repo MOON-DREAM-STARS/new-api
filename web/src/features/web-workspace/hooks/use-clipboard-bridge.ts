@@ -147,7 +147,14 @@ export function useClipboardBridge(
   const copyRemoteSelection = useCallback(async () => {
     if (!enabled || !sessionId) return false
     try {
-      await writeLocalClipboard(await copyWebWorkspaceClipboard(sessionId))
+      const payload = await copyWebWorkspaceClipboard(sessionId)
+      // An empty remote selection is not an error: keep the local clipboard and
+      // stay silent instead of overwriting it with nothing.
+      if (payload.data.size === 0) {
+        setErrorMessageKey(null)
+        return false
+      }
+      await writeLocalClipboard(payload)
       setErrorMessageKey(null)
       return true
     } catch (error) {
