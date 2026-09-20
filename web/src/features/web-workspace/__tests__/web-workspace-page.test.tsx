@@ -265,6 +265,58 @@ describe('WebWorkspace page', () => {
     expect(startPosts[0]?.url).toBe(SESSION_PATH)
   })
 
+  test('does not auto-start an already live session', async () => {
+    mockWorkspaceGets(runningSession)
+    const startPosts: Array<{ url: string; data: unknown }> = []
+    apiClient.post = async (url, data) => {
+      startPosts.push({ url, data })
+      return ok(runningSession)
+    }
+
+    renderPage(<WebWorkspace />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Connected')).toBeTruthy()
+    })
+    expect(
+      startPosts.filter((post) => post.url === SESSION_PATH)
+    ).toHaveLength(0)
+  })
+
+  test('does not retry an auto-start failure', async () => {
+    mockWorkspaceGets({
+      ...runningSession,
+      session_id: 'session-stopped-failure',
+      state: 'STOPPED',
+      page: null,
+    })
+    let startPosts = 0
+    apiClient.post = async (url) => {
+      if (url !== SESSION_PATH) return ok(runningSession)
+      startPosts += 1
+      return Promise.reject({
+        response: {
+          status: 503,
+          data: {
+            success: false,
+            code: 'WEB_WORKSPACE_AGENT_UNAVAILABLE',
+          },
+        },
+      })
+    }
+
+    renderPage(<WebWorkspace />)
+
+    await waitFor(() => {
+      expect(startPosts).toBe(1)
+    })
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    expect(startPosts).toBe(1)
+    expect(
+      await screen.findByText('Could not start the remote browser.')
+    ).toBeTruthy()
+  })
+
   test('renders real projects, the centered project strip and the real session state', async () => {
     apiClient.get = async (url) => {
       if (url === CONFIG_PATH) return ok({ enabled: true, entitled: true })
