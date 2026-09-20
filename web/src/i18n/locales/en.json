@@ -7369,10 +7369,9 @@
     "Enter a name and the system creates it automatically in the remote browser.": "Enter a name and the system creates it automatically in the remote browser.",
     "Automatic project creation failed": "Automatic project creation failed",
     "Creating the project in the remote browser...": "Creating the project in the remote browser...",
-    "Automatic creation failed. Create the project in the side panel of the full remote browser; cropping is restored automatically once the guard observes it.": "Automatic creation failed. Create the project in the side panel of the full remote browser; cropping is restored automatically once the guard observes it.",
     "Enter a project name of 1-64 characters.": "Enter a project name of 1-64 characters.",
-    "Create the project manually in the side panel. The remote browser is showing the full window; the system registers it automatically once the guard observes it.": "Create the project manually in the side panel. The remote browser is showing the full window; the system registers it automatically once the guard observes it.",
     "A project creation is already running. Finish it or wait for it to fail before starting another.": "A project creation is already running. Finish it or wait for it to fail before starting another.",
-    "Create project": "Create project"
+    "Create project": "Create project",
+    "Please contact an administrator to manually enable project creation permission.": "Please contact an administrator to manually enable project creation permission."
   }
 }

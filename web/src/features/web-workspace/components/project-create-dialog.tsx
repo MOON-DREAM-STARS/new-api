@@ -64,7 +64,7 @@ function isValidProjectName(value: string): boolean {
 /**
  * Project creation starts with a real permit. The guard then operates the
  * provider UI and the dialog follows the real session state until the guard
- * either registers the project or asks the operator to finish manually.
+ * either registers the project or reports a terminal failure.
  */
 export function ProjectCreateDialog(props: ProjectCreateDialogProps) {
   const { t } = useTranslation()
@@ -89,8 +89,8 @@ export function ProjectCreateDialog(props: ProjectCreateDialogProps) {
     (projectCreation?.permit_id === observedPermitId ? projectCreation : null)
   const creating = Boolean(permit) || sessionRunning
   useWebWorkspaceProjects(open && creating)
-  const creationFailed = trackedCreation?.state === 'FAILED'
-  const creationError = creationFailed ? trackedCreation.error : ''
+  const creationFailed = projectCreation?.state === 'FAILED'
+  const creationError = creationFailed ? projectCreation.error : ''
   const trimmedName = name.trim()
   const isNameValid = isValidProjectName(name)
   // The field starts empty, so the hint only appears after the operator has
@@ -99,16 +99,17 @@ export function ProjectCreateDialog(props: ProjectCreateDialogProps) {
   const rawError = permitMutation.error
     ? classifyWebWorkspaceError(permitMutation.error)
     : null
-  const conflictInProgress =
-    rawError?.kind === 'project_creation_in_progress'
+  const conflictInProgress = rawError?.kind === 'project_creation_in_progress'
   const error = conflictInProgress ? null : rawError
   const sessionChecking = open && sessionQuery.isLoading && !permit
   const checkingCreation =
     conflictInProgress && (sessionQuery.isLoading || sessionQuery.isFetching)
   const isBusy =
-    permitMutation.isPending || startSessionMutation.isPending || sessionChecking
+    permitMutation.isPending ||
+    startSessionMutation.isPending ||
+    sessionChecking
   const showCreateAction =
-    !permit && !error && !creating && !checkingCreation
+    !permit && !error && !creating && !checkingCreation && !creationFailed
 
   useEffect(() => {
     if (!open || !sessionRunning || !projectCreation) return
@@ -162,7 +163,7 @@ export function ProjectCreateDialog(props: ProjectCreateDialogProps) {
   }
 
   const requestPermit = () => {
-    if (!isNameValid || isBusy) return
+    if (!isNameValid || isBusy || creationFailed) return
     permitMutation.mutate({ name: trimmedName })
   }
 
@@ -227,7 +228,7 @@ export function ProjectCreateDialog(props: ProjectCreateDialogProps) {
         <AlertTitle>{t('Automatic project creation failed')}</AlertTitle>
         <AlertDescription>
           {t(
-            'Create the project manually in the side panel. The remote browser is showing the full window; the system registers it automatically once the guard observes it.'
+            'Please contact an administrator to manually enable project creation permission.'
           )}
         </AlertDescription>
         <p className='text-muted-foreground font-mono text-xs'>
@@ -235,18 +236,6 @@ export function ProjectCreateDialog(props: ProjectCreateDialogProps) {
             error: creationError || t('Unknown'),
           })}
         </p>
-        <Button
-          type='button'
-          size='sm'
-          variant='outline'
-          disabled={!isNameValid || isBusy}
-          onClick={requestPermit}
-        >
-          {permitMutation.isPending ? (
-            <Spinner className='size-4 motion-reduce:animate-none' />
-          ) : null}
-          {t('Retry')}
-        </Button>
       </Alert>
     )
   } else if (creating) {
@@ -307,7 +296,8 @@ export function ProjectCreateDialog(props: ProjectCreateDialogProps) {
               disabled={
                 permitMutation.isPending ||
                 startSessionMutation.isPending ||
-                (creating && !creationFailed)
+                creating ||
+                creationFailed
               }
               onChange={(event) => {
                 setNameTouched(true)

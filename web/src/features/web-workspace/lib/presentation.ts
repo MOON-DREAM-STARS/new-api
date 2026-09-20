@@ -47,12 +47,13 @@ export type FrameSize = {
 /**
  * Native region of a provider page that must not be presented.
  *
- * `cropLeft` is the width of the provider chrome on the left edge of the
- * framebuffer in remote pixels; `minVisibleWidth` is a floor that keeps a
- * mis-measured profile from cropping away the whole page.
+ * `cropLeft` and `cropTop` are the provider chrome sizes on the left and top
+ * edges of the framebuffer in remote pixels; `minVisibleWidth` is a floor that
+ * keeps a mis-measured profile from cropping away the whole page.
  */
 export type PresentationProfile = {
   cropLeft: number
+  cropTop: number
   minVisibleWidth: number
 }
 
@@ -64,6 +65,7 @@ export type PresentationProfile = {
  */
 export const CHATGPT_PRESENTATION_PROFILE: PresentationProfile = {
   cropLeft: 260,
+  cropTop: 52,
   minVisibleWidth: 480,
 }
 
@@ -126,7 +128,6 @@ export type PresentationInput = {
   provider: string | null | undefined
   screen: RemoteScreenSize | null | undefined
   frame: FrameSize | null | undefined
-  revealProviderChrome?: boolean | null
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -164,36 +165,15 @@ export function computePresentation(
 
   const screen = input.screen as RemoteScreenSize
   const frame = input.frame as FrameSize
-  if (input.revealProviderChrome) {
-    // Fallback and login mode must expose the entire provider window. Fit the
-    // whole framebuffer into the frame (contain) instead of cropping it to
-    // fill the frame (cover); the renderer centres the letterboxed stage.
-    const scale = Math.min(
-      frame.width / screen.width,
-      frame.height / screen.height
-    )
-    if (!Number.isFinite(scale) || scale <= 0) {
-      return { status: 'unavailable', reason: 'invalid-geometry' }
-    }
-    const stageWidth = screen.width * scale
-    const stageHeight = screen.height * scale
-    return {
-      status: 'ready',
-      transform: {
-        crop: { x: 0, y: 0, width: screen.width, height: screen.height },
-        scale,
-        offsetX: Math.round((frame.width - stageWidth) / 2),
-        offsetY: Math.round((frame.height - stageHeight) / 2),
-        stageWidth,
-        stageHeight,
-      },
-    }
-  }
-
   const maxCropLeft = Math.max(0, screen.width - profile.minVisibleWidth)
   const cropLeft = clamp(Math.round(profile.cropLeft), 0, maxCropLeft)
+  const cropTop = clamp(
+    Math.round(profile.cropTop),
+    0,
+    Math.max(0, screen.height - 1)
+  )
   const visibleWidth = screen.width - cropLeft
-  const visibleHeight = screen.height
+  const visibleHeight = screen.height - cropTop
   if (visibleWidth <= 0 || visibleHeight <= 0) {
     return { status: 'unavailable', reason: 'invalid-geometry' }
   }
@@ -209,14 +189,16 @@ export function computePresentation(
   const cropWidth = Math.min(visibleWidth, frame.width / scale)
   const cropHeight = Math.min(visibleHeight, frame.height / scale)
   // The presented region is centred inside the provider-free part of the
-  // framebuffer, so the native rail stays hidden and a crop that does not fill
-  // the visible width leaves the same margin on both sides.
+  // framebuffer, so the native rail and top chrome stay hidden and a crop that
+  // does not fill the visible area leaves equal margins.
   const cropX = cropLeft + Math.round((visibleWidth - cropWidth) / 2)
-  const cropY = clamp(
-    Math.round((visibleHeight - cropHeight) / 2),
-    0,
-    Math.max(0, visibleHeight - cropHeight)
-  )
+  const cropY =
+    cropTop +
+    clamp(
+      Math.round((visibleHeight - cropHeight) / 2),
+      0,
+      Math.max(0, visibleHeight - cropHeight)
+    )
 
   return {
     status: 'ready',
@@ -233,10 +215,11 @@ export function computePresentation(
 /**
  * Derives the remote screen size that fits the measured frame.
  *
- * The height follows the frame within 720p..1440p, and the width adds the
- * cropped provider rail so that the presented region keeps the frame aspect
- * ratio at 1:1 scale. Returns null when the frame cannot be measured, which
- * keeps the agent default instead of proposing a guessed size.
+ * The visible area after the provider rail and top chrome are cropped follows
+ * the frame aspect ratio at 1:1 scale. The returned framebuffer height includes
+ * the cropped top chrome, while the existing width and height bounds continue
+ * to apply to the full framebuffer. Returns null when the frame cannot be
+ * measured, which keeps the agent default instead of proposing a guessed size.
  */
 export function remoteScreenSizeForFrame(
   frame: FrameSize | null | undefined,
@@ -258,39 +241,55 @@ export function remoteScreenSizeForFrame(
     REMOTE_SCREEN_MIN_HEIGHT,
     REMOTE_SCREEN_MAX_HEIGHT
   )
+  const cropLeft = clamp(
+    Math.round(profile.cropLeft),
+    0,
+    Math.max(0, maxWidth - 1)
+  )
+  const cropTop = clamp(
+    Math.round(profile.cropTop),
+    0,
+    Math.max(0, maxHeight - 1)
+  )
+  const maxVisibleWidth = Math.max(profile.minVisibleWidth, maxWidth - cropLeft)
+  const maxVisibleHeight = Math.max(1, maxHeight - cropTop)
+  const minVisibleHeight = Math.min(
+    Math.max(1, REMOTE_SCREEN_MIN_HEIGHT - cropTop),
+    maxVisibleHeight
+  )
 
-  let height = clamp(
+  let visibleHeight = clamp(
     Math.round(measured.height),
-    REMOTE_SCREEN_MIN_HEIGHT,
-    maxHeight
+    minVisibleHeight,
+    maxVisibleHeight
   )
-  const maxVisibleWidth = Math.max(
-    profile.minVisibleWidth,
-    maxWidth - profile.cropLeft
-  )
-  let visibleWidth = height * aspect
+  let visibleWidth = visibleHeight * aspect
   if (visibleWidth > maxVisibleWidth) {
     visibleWidth = maxVisibleWidth
     // Preserve the frame aspect ratio when the width budget is the limiting
     // factor. Very wide frames may therefore fall below 720p, but never below
-    // the agent's own 360px minimum.
-    height = Math.max(360, Math.round(visibleWidth / aspect))
+    // the agent's own 360px minimum framebuffer height.
+    visibleHeight = Math.max(Math.max(1, 360 - cropTop), visibleWidth / aspect)
   }
+
+  let height = Math.round(cropTop + visibleHeight)
   if (height > maxHeight) {
     height = maxHeight
-    visibleWidth = height * aspect
+    visibleHeight = height - cropTop
+    visibleWidth = visibleHeight * aspect
   }
 
-  let width = Math.round(profile.cropLeft + visibleWidth)
+  let width = Math.round(cropLeft + visibleWidth)
   if (width > maxWidth) {
     width = maxWidth
-    visibleWidth = Math.max(0, width - profile.cropLeft)
-    height = Math.max(360, Math.round(visibleWidth / aspect))
+    visibleWidth = Math.max(0, width - cropLeft)
+    visibleHeight = Math.max(Math.max(1, 360 - cropTop), visibleWidth / aspect)
+    height = Math.round(cropTop + visibleHeight)
   }
   width = clamp(width, REMOTE_SCREEN_MIN_WIDTH, maxWidth)
+  height = clamp(height, Math.min(360, maxHeight), maxHeight)
   return { width, height }
 }
-
 /**
  * Maps a pointer position inside the frame to remote framebuffer pixels.
  *

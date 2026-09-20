@@ -67,11 +67,7 @@ vi.mock('../hooks/use-desktop-viewport', () => ({
 const reconnect = vi.fn()
 
 const remoteSurfaceState = vi.hoisted(() => ({
-  status: 'connected' as
-    | 'connecting'
-    | 'connected'
-    | 'reconnecting'
-    | 'failed',
+  status: 'connected' as 'connecting' | 'connected' | 'reconnecting' | 'failed',
 }))
 
 const surfaceOptions = vi.hoisted(() => ({ enabled: true, sessionId: '' }))
@@ -273,6 +269,35 @@ describe('WebWorkspace page', () => {
     expect(screen.getByTestId('web-workspace-surface-frame')).toBeTruthy()
     // The remote browser stays the primary surface: no Card based dashboard.
     expect(screen.queryByText('Browser session')).toBeNull()
+  })
+
+  test('keeps the provider crop and shows administrator guidance when creation fails', async () => {
+    mockWorkspaceGets({
+      ...runningSession,
+      project_creation: {
+        permit_id: 'permit-failed',
+        state: 'FAILED',
+        error: 'ERR_PROJECT_UI_NOT_FOUND',
+        updated_at: 2,
+      },
+    })
+
+    renderPage(<WebWorkspace />)
+
+    expect(
+      await screen.findByText(
+        'Please contact an administrator to manually enable project creation permission.'
+      )
+    ).toBeTruthy()
+    const surface = screen.getByTestId('web-workspace-surface')
+    const stage = surface.parentElement
+    expect(stage).not.toBeNull()
+    expect(stage?.style.transform).toMatch(/translate3d\([^,]+,\s*-\d/)
+    expect(
+      screen.queryByText(
+        'Automatic creation failed. Create the project in the side panel of the full remote browser; cropping is restored automatically once the guard observes it.'
+      )
+    ).toBeNull()
   })
 
   test('shows remote page retry health with the real attempts and error code', async () => {
@@ -484,8 +509,7 @@ describe('WebWorkspace page', () => {
       }
       throw new Error(`unexpected request ${url}`)
     }
-    apiClient.post = async () =>
-      fail(409, 'WEB_WORKSPACE_CAPACITY_REACHED')
+    apiClient.post = async () => fail(409, 'WEB_WORKSPACE_CAPACITY_REACHED')
 
     renderPage(<WebWorkspace />)
 
@@ -589,7 +613,7 @@ describe('WebWorkspace page', () => {
     await waitFor(() => {
       expect(posts[0]).toEqual({
         url: SESSION_PATH,
-        data: { screen_width: 1860, screen_height: 860 },
+        data: { screen_width: 1860, screen_height: 912 },
       })
     })
   })
@@ -696,14 +720,18 @@ describe('WebWorkspace page', () => {
     })
     expect((backButton as HTMLButtonElement).disabled).toBe(true)
     expect(
-      (screen.getByRole('button', {
-        name: 'Browser forward',
-      }) as HTMLButtonElement).disabled
+      (
+        screen.getByRole('button', {
+          name: 'Browser forward',
+        }) as HTMLButtonElement
+      ).disabled
     ).toBe(true)
     expect(
-      (screen.getByRole('button', {
-        name: 'Refresh page',
-      }) as HTMLButtonElement).disabled
+      (
+        screen.getByRole('button', {
+          name: 'Refresh page',
+        }) as HTMLButtonElement
+      ).disabled
     ).toBe(true)
   })
 
@@ -718,14 +746,18 @@ describe('WebWorkspace page', () => {
     })
     expect((backButton as HTMLButtonElement).disabled).toBe(true)
     expect(
-      (screen.getByRole('button', {
-        name: 'Browser forward',
-      }) as HTMLButtonElement).disabled
+      (
+        screen.getByRole('button', {
+          name: 'Browser forward',
+        }) as HTMLButtonElement
+      ).disabled
     ).toBe(true)
     expect(
-      (screen.getByRole('button', {
-        name: 'Refresh page',
-      }) as HTMLButtonElement).disabled
+      (
+        screen.getByRole('button', {
+          name: 'Refresh page',
+        }) as HTMLButtonElement
+      ).disabled
     ).toBe(true)
   })
 
