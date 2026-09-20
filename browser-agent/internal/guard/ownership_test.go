@@ -241,6 +241,25 @@ func TestGuardConsumesOnePermitForOneProject(t *testing.T) {
 		run.assertRunning(200 * time.Millisecond)
 	})
 
+	t.Run("permit records the operator-facing display name", func(t *testing.T) {
+		logs := &logBuffer{}
+		f := newFakeCDP(t)
+		dir := t.TempDir()
+		writeOwnership(t, dir, 0, nil, nil)
+		writePermitWithName(t, dir, "permit-name-00000001", "test0", 5*time.Minute)
+
+		startGuardWithState(t, f, policy.ModeLocked, logs, dir)
+		attachPage(t, f, "session-1", "target-1")
+
+		sendDocument(t, f, "session-1", "request-1", projectURL(testProjectID))
+		expectContinue(t, f, "session-1", "request-1")
+
+		records := awaitObservations(t, dir, 1)
+		require.Len(t, records, 1)
+		requireKeys(t, records[0], "event", "permit_id", "external_project_id", "slug", "display_name", "observed_at")
+		assert.Equal(t, "test0", records[0]["display_name"])
+	})
+
 	t.Run("permit allows a project without a slug", func(t *testing.T) {
 		logs := &logBuffer{}
 		f := newFakeCDP(t)

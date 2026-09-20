@@ -114,6 +114,7 @@ func Run(ctx context.Context, cfg Config) error {
 	g.pageHealth = newPageHealthController(client, g.navigation, cfg.StartURL, cfg.retryDelays, cfg.contentProbeDelays, cfg.contentProbeTimeout, logger)
 	g.navigation.onReload = g.pageHealth.reload
 	g.projectCreation = newProjectCreationController(stateDir, cfg.Mode, client, g.navigation, g.pageHealth, logger, cfg.creationTimings)
+	g.projectDeletion = newProjectDeletionController(stateDir, client, g.navigation, logger)
 	defer func() {
 		cancelRun()
 		g.waitBackground()
@@ -126,6 +127,7 @@ func Run(ctx context.Context, cfg Config) error {
 	g.runBackground(func() { g.pollNavigationState(runCtx) })
 	g.runBackground(func() { g.pageHealth.run(runCtx) })
 	g.runBackground(func() { g.projectCreation.run(runCtx) })
+	g.runBackground(func() { g.projectDeletion.run(runCtx) })
 	logger.Info("browser guard active", "event", "guard_active", "component", "guard", "mode", string(cfg.Mode))
 
 	select {
@@ -272,6 +274,8 @@ type guard struct {
 	navigation      *navigationController
 	pageHealth      *pageHealthController
 	projectCreation *projectCreationController
+	projectDeletion *projectDeletionController
+	startupTargetID string
 
 	backgroundMu     sync.Mutex
 	backgroundWG     sync.WaitGroup
@@ -308,6 +312,9 @@ func (g *guard) install(ctx context.Context) error {
 	if err := g.client.call(ctx, "", "Target.setDiscoverTargets", map[string]any{"discover": true}); err != nil {
 		return fmt.Errorf("enable target discovery: %w", err)
 	}
+	if err := g.discoverStartupTarget(ctx); err != nil {
+		return fmt.Errorf("discover startup target: %w", err)
+	}
 	if err := g.client.call(ctx, "", "Target.setAutoAttach", map[string]any{
 		"autoAttach":             true,
 		"waitForDebuggerOnStart": true,
@@ -339,6 +346,9 @@ func (g *guard) handleEvent(ctx context.Context, sessionID, method string, param
 		g.refreshNavigation(ctx, sessionID)
 		return nil
 	case "Page.navigatedWithinDocument":
+		if err := g.onNavigatedWithinDocument(ctx, sessionID, params); err != nil {
+			return err
+		}
 		g.refreshNavigation(ctx, sessionID)
 		return nil
 	case "Page.loadEventFired":
@@ -375,6 +385,30 @@ func (g *guard) handleEvent(ctx context.Context, sessionID, method string, param
 // Fetch interception instead, so both paths stay covered. Interception is armed
 // before the target continues; the resume and the optional Page domain are
 // requested afterwards, off the event loop, and neither can fail the guard.
+func (g *guard) discoverStartupTarget(ctx context.Context) error {
+	result, err := g.client.callResult(ctx, "", "Target.getTargets", nil)
+	if err != nil {
+		return err
+	}
+	var response struct {
+		TargetInfos []struct {
+			TargetID string `json:"targetId"`
+			Type     string `json:"type"`
+			URL      string `json:"url"`
+		} `json:"targetInfos"`
+	}
+	if err := json.Unmarshal(result, &response); err != nil {
+		return fmt.Errorf("parse Target.getTargets: %w", err)
+	}
+	for _, target := range response.TargetInfos {
+		if target.Type == "page" && target.TargetID != "" && target.URL != "" && target.URL != "about:blank" {
+			g.startupTargetID = target.TargetID
+			return nil
+		}
+	}
+	return nil
+}
+
 func (g *guard) onAttachedToTarget(ctx context.Context, params json.RawMessage) error {
 	var event struct {
 		SessionID  string `json:"sessionId"`
@@ -392,6 +426,7 @@ func (g *guard) onAttachedToTarget(ctx context.Context, params json.RawMessage) 
 		return errors.New("attached target without a session id")
 	}
 	isPage := event.TargetInfo.Type == "page"
+	probeStartup := isPage && event.TargetInfo.TargetID != "" && event.TargetInfo.TargetID == g.startupTargetID
 	if isPage {
 		g.navigation.setSession(event.SessionID)
 		initialURL := strings.TrimSpace(event.TargetInfo.URL)
@@ -421,9 +456,9 @@ func (g *guard) onAttachedToTarget(ctx context.Context, params json.RawMessage) 
 	// requested after the resume for the same reason: interception is Fetch
 	// based and --deny-permission-prompts remains the clipboard fallback.
 	if event.WaitingForDebugger {
-		g.runBackground(func() { g.resumeThenEnablePage(ctx, event.SessionID, isPage) })
+		g.runBackground(func() { g.resumeThenEnablePage(ctx, event.SessionID, isPage, probeStartup) })
 	} else if isPage {
-		g.runBackground(func() { g.enablePageDomain(ctx, event.SessionID) })
+		g.runBackground(func() { g.enablePageDomainAndProbe(ctx, event.SessionID, probeStartup) })
 	}
 	return nil
 }
@@ -431,10 +466,17 @@ func (g *guard) onAttachedToTarget(ctx context.Context, params json.RawMessage) 
 // resumeThenEnablePage releases one target Chromium attached while it was
 // waiting for the debugger and then arms the optional page domain, in that
 // order, off the event loop and without failing the guard.
-func (g *guard) resumeThenEnablePage(ctx context.Context, sessionID string, page bool) {
+func (g *guard) resumeThenEnablePage(ctx context.Context, sessionID string, page bool, probeStartup bool) {
 	g.resumeTarget(ctx, sessionID)
 	if page {
-		g.enablePageDomain(ctx, sessionID)
+		g.enablePageDomainAndProbe(ctx, sessionID, probeStartup)
+	}
+}
+
+func (g *guard) enablePageDomainAndProbe(ctx context.Context, sessionID string, probeStartup bool) {
+	g.enablePageDomain(ctx, sessionID)
+	if probeStartup {
+		g.pageHealth.probeCurrentPage(ctx, sessionID)
 	}
 }
 
@@ -611,6 +653,39 @@ func (g *guard) onFrameNavigated(ctx context.Context, sessionID string, params j
 	return nil
 }
 
+// onNavigatedWithinDocument applies the same address and ownership policy to a
+// client-side navigation. Unlike a document request, the navigation has
+// already happened, so a denied target is immediately recovered to the trusted
+// start URL; failure to recover stops the guard instead of leaving it open.
+func (g *guard) onNavigatedWithinDocument(ctx context.Context, sessionID string, params json.RawMessage) error {
+	var event struct {
+		FrameID string `json:"frameId"`
+		URL     string `json:"url"`
+	}
+	if err := json.Unmarshal(params, &event); err != nil {
+		return fmt.Errorf("parse Page.navigatedWithinDocument: %w", err)
+	}
+	if event.FrameID == "" || event.URL == "" {
+		return nil
+	}
+	mainFrameID, ok := g.pageHealth.mainFrameIDForSession(sessionID)
+	if !ok || event.FrameID != mainFrameID {
+		return nil
+	}
+	host, reason, allowed := g.evaluateNavigation(event.URL)
+	if allowed {
+		return nil
+	}
+	g.auditPolicyDeny(host, "Document", reason)
+	startURL := strings.TrimSpace(g.pageHealth.startURL)
+	if startURL == "" {
+		return errors.New("denied same-document navigation has no recovery URL")
+	}
+	if err := g.client.call(ctx, sessionID, "Page.navigate", map[string]any{"url": startURL}); err != nil {
+		return fmt.Errorf("recover denied same-document navigation: %w", err)
+	}
+	return nil
+}
 func (g *guard) auditPolicyDeny(host, resourceType, reason string) {
 	g.logger.Info("policy_deny",
 		"event", "policy_deny",

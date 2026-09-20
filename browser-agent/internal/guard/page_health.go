@@ -226,6 +226,13 @@ func (p *pageHealthController) observeLoadingFailed(sessionID string, params jso
 	mainDocument := !known || p.mainFrameID == "" || frameID == p.mainFrameID
 	p.mu.Unlock()
 	if mainDocument {
+		// Chrome reports ERR_ABORTED when a document navigation is superseded
+		// by another navigation (for example, an in-app redirect). The old
+		// request being canceled is not a page failure: the replacement
+		// navigation or the current document owns the page now.
+		if normalizePageError(event.ErrorText) == "ERR_ABORTED" {
+			return
+		}
 		p.recordFailure(sessionID, event.ErrorText)
 	}
 }
@@ -246,6 +253,14 @@ func (p *pageHealthController) observeLoadingFinished(sessionID string, params j
 }
 
 func (p *pageHealthController) observeLoadEvent(ctx context.Context, sessionID string) {
+	p.probeCurrentPage(ctx, sessionID)
+}
+
+// probeCurrentPage checks the already-attached main page without waiting for
+// another Page.loadEventFired. This covers a target whose initial navigation
+// was superseded before the Page domain was enabled, which would otherwise
+// leave Chromium at about:blank with no event to trigger recovery.
+func (p *pageHealthController) probeCurrentPage(ctx context.Context, sessionID string) {
 	if !p.isMainSession(sessionID) {
 		return
 	}
@@ -466,6 +481,20 @@ func (p *pageHealthController) reload(ctx context.Context, sessionID string) (bo
 		return true, err
 	}
 	return true, nil
+}
+
+// mainFrameIDForSession reports the main frame id after the initial document
+// navigation has been observed. Unknown state is never treated as a main frame.
+func (p *pageHealthController) mainFrameIDForSession(sessionID string) (string, bool) {
+	if p == nil || sessionID == "" {
+		return "", false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.mainSessionID != sessionID || p.mainFrameID == "" {
+		return "", false
+	}
+	return p.mainFrameID, true
 }
 
 // snapshot is the latest published page state. Callers that only observe the

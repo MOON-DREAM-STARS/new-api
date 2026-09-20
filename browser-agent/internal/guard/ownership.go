@@ -243,7 +243,7 @@ func (s *providerState) evaluateProjectNavigation(resource chatgpt.Resource) ver
 		)
 		return verdict{Reason: reasonPermitNotRecorded}
 	}
-	s.observeProjectCreated(resource.ProjectID, resource.Slug, permit.PermitID)
+	s.observeProjectCreated(resource.ProjectID, resource.Slug, permit.DisplayName, permit.PermitID)
 	return verdict{Allowed: true}
 }
 

@@ -102,6 +102,32 @@ func TestNavigationBackExecutesCommandAndDeduplicatesByID(t *testing.T) {
 	run.assertRunning(200 * time.Millisecond)
 }
 
+func TestNavigationProjectOpenNavigatesToAuthorizedProviderProject(t *testing.T) {
+	dir := t.TempDir()
+	f := newFakeCDP(t)
+	run := startGuardWithState(t, f, policy.ModeLocked, &logBuffer{}, dir)
+	attachPage(t, f, "session-1", "target-1")
+	consumeInitialNavigation(t, f, dir)
+
+	writeNavigationCommand(t, dir, navigationCommand{
+		ID:          1,
+		Action:      "project",
+		ProjectID:   testProjectID,
+		RequestedAt: 100,
+	})
+	navigateCommand := f.awaitIn("session-1", "Page.navigate")
+	var params struct {
+		URL string `json:"url"`
+	}
+	decodeParams(t, navigateCommand, &params)
+	assert.Equal(t, "https://chatgpt.com/g/"+testProjectID+"/project", params.URL)
+
+	f.silenceNext("Page.getNavigationHistory")
+	historyCommand := f.awaitIn("session-1", "Page.getNavigationHistory")
+	respondNavigationHistory(t, f, historyCommand, 1, 10, 20)
+	run.assertRunning(200 * time.Millisecond)
+}
+
 func TestNavigationStateAndUnknownActionWriteReceipts(t *testing.T) {
 	dir := t.TempDir()
 	f := newFakeCDP(t)
@@ -149,6 +175,78 @@ func TestNavigationEventRefreshWritesStatusWithoutStoppingGuard(t *testing.T) {
 	run.assertRunning(300 * time.Millisecond)
 }
 
+func TestSameDocumentProjectNavigationConsumesPermit(t *testing.T) {
+	dir := t.TempDir()
+	writeOwnership(t, dir, 0, nil, nil)
+	writePermit(t, dir, "permit-same-doc", 5*time.Minute)
+	f := newFakeCDP(t)
+	run := startGuardWithPageHealth(t, f, &logBuffer{}, dir, "https://chatgpt.com/", nil)
+	attachPage(t, f, "session-1", "target-1")
+	f.awaitIn("session-1", "Network.enable")
+	sendMainFrameSuccess(t, f)
+
+	projectURL := "https://chatgpt.com/g/" + testProjectID + "-same-doc/project"
+	f.send("Page.navigatedWithinDocument", "session-1", map[string]any{
+		"frameId": "frame-main",
+		"url":     projectURL,
+	})
+
+	require.Eventually(t, func() bool {
+		return permitConsumedByDir(dir, "permit-same-doc")
+	}, 2*time.Second, 10*time.Millisecond)
+	records := awaitObservations(t, dir, 1)
+	assert.Equal(t, "project_created", records[0]["event"])
+	assert.Equal(t, testProjectID, records[0]["external_project_id"])
+	assert.Equal(t, "permit-same-doc", records[0]["permit_id"])
+	run.assertRunning(100 * time.Millisecond)
+}
+
+func TestSameDocumentSubframeNavigationDoesNotConsumePermit(t *testing.T) {
+	dir := t.TempDir()
+	writeOwnership(t, dir, 0, nil, nil)
+	writePermit(t, dir, "permit-same-doc", 5*time.Minute)
+	f := newFakeCDP(t)
+	run := startGuardWithPageHealth(t, f, &logBuffer{}, dir, "https://chatgpt.com/", nil)
+	attachPage(t, f, "session-1", "target-1")
+	f.awaitIn("session-1", "Network.enable")
+	sendMainFrameSuccess(t, f)
+
+	f.send("Page.navigatedWithinDocument", "session-1", map[string]any{
+		"frameId": "frame-child",
+		"url":     "https://chatgpt.com/g/" + testProjectID + "/project",
+	})
+	f.drain(100 * time.Millisecond)
+
+	assert.False(t, permitConsumedByDir(dir, "permit-same-doc"))
+	assert.Empty(t, readObservations(t, dir))
+	run.assertRunning(100 * time.Millisecond)
+}
+
+func TestDeniedSameDocumentNavigationRecoversToStartURL(t *testing.T) {
+	dir := t.TempDir()
+	writeOwnership(t, dir, 0, nil, nil)
+	logs := &logBuffer{}
+	f := newFakeCDP(t)
+	run := startGuardWithPageHealth(t, f, logs, dir, "https://chatgpt.com/", nil)
+	attachPage(t, f, "session-1", "target-1")
+	f.awaitIn("session-1", "Network.enable")
+	sendMainFrameSuccess(t, f)
+
+	f.send("Page.navigatedWithinDocument", "session-1", map[string]any{
+		"frameId": "frame-main",
+		"url":     "https://chatgpt.com/g/" + testProjectID + "/project",
+	})
+
+	navigate := f.awaitIn("session-1", "Page.navigate")
+	var params struct {
+		URL string `json:"url"`
+	}
+	decodeParams(t, navigate, &params)
+	assert.Equal(t, "https://chatgpt.com/", params.URL)
+	entry := logs.awaitEntry(t, "policy_deny")
+	assert.Equal(t, reasonProjectNotRegistered, entry["reason"])
+	run.assertRunning(100 * time.Millisecond)
+}
 func TestNavigationPolicyStillBlocksDocumentRequests(t *testing.T) {
 	dir := t.TempDir()
 	f := newFakeCDP(t)
