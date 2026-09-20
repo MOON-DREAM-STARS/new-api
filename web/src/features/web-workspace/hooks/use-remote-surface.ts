@@ -68,9 +68,6 @@ function buildKasmClientUrl(sessionId: string, ticket: string): string {
     // "websockify" segment. The ticket remains in the path so KasmVNC's
     // relative assets and websocket request stay authorized.
     path: `api/web-workspace/session/${sessionPath}/kasm/t/${ticketPath}/websockify`,
-    clipboard_up: '1',
-    clipboard_down: '1',
-    clipboard_seamless: '1',
   })
   return `${base}?${params.toString()}`
 }

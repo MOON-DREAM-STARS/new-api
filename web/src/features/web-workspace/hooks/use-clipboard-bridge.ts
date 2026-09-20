@@ -51,9 +51,10 @@ export type ClipboardBridgeController = {
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof Element)) return false
+  const element = target as { closest?: (selector: string) => Element | null } | null
+  if (!element || typeof element.closest !== 'function') return false
   return Boolean(
-    target.closest(
+    element.closest(
       'input, textarea, select, [contenteditable="true"], [role="textbox"], [role="dialog"]'
     )
   )
@@ -175,6 +176,8 @@ export function useClipboardBridge(
   useEffect(() => {
     if (!enabled || !sessionId) return undefined
 
+    const container = containerRef.current
+    const documents = new Set<Document>()
     const handleKeyDown = (event: KeyboardEvent) => {
       if (
         event.defaultPrevented ||
@@ -197,9 +200,49 @@ export function useClipboardBridge(
         void pasteIntoRemote()
       }
     }
+    const attachDocument = (doc: Document | null) => {
+      if (!doc || documents.has(doc)) return
+      documents.add(doc)
+      doc.addEventListener('keydown', handleKeyDown, true)
+    }
+    const attachIframe = (frame: HTMLIFrameElement | null) => {
+      if (!frame) return
+      try {
+        attachDocument(frame.contentDocument)
+      } catch {
+        // A cross-origin document cannot be bridged; keep the toolbar fallback.
+      }
+    }
 
-    document.addEventListener('keydown', handleKeyDown, true)
-    return () => document.removeEventListener('keydown', handleKeyDown, true)
+    attachDocument(document)
+    let iframe = container?.querySelector('iframe') as HTMLIFrameElement | null
+    let onLoad = () => attachIframe(iframe)
+    iframe?.addEventListener('load', onLoad)
+    attachIframe(iframe)
+
+    const observer = container
+      ? new MutationObserver(() => {
+          const next = container.querySelector('iframe') as HTMLIFrameElement | null
+          if (next === iframe) {
+            attachIframe(iframe)
+            return
+          }
+          iframe?.removeEventListener('load', onLoad)
+          iframe = next
+          onLoad = () => attachIframe(iframe)
+          iframe?.addEventListener('load', onLoad)
+          attachIframe(iframe)
+        })
+      : null
+    if (container) observer?.observe(container, { childList: true, subtree: true })
+
+    return () => {
+      documents.forEach((doc) =>
+        doc.removeEventListener('keydown', handleKeyDown, true)
+      )
+      observer?.disconnect()
+      iframe?.removeEventListener('load', onLoad)
+    }
   }, [containerRef, copyRemoteSelection, enabled, pasteIntoRemote, sessionId])
 
   return { errorMessageKey, copyRemoteSelection, pasteIntoRemote }

@@ -97,6 +97,24 @@ function Harness() {
   )
 }
 
+function IframeHarness() {
+  const surfaceRef = useRef<HTMLDivElement>(null)
+  const bridge = useClipboardBridge({
+    sessionId: 'session-1',
+    enabled: true,
+    containerRef: surfaceRef,
+  })
+
+  return (
+    <div ref={surfaceRef} data-testid='remote-surface'>
+      <iframe data-testid='remote-frame' title='Remote frame' />
+      {bridge.errorMessageKey ? (
+        <span role='alert'>{bridge.errorMessageKey}</span>
+      ) : null}
+    </div>
+  )
+}
+
 afterEach(() => {
   copyClipboard.mockReset()
   pasteClipboard.mockReset()
@@ -132,6 +150,28 @@ describe('useClipboardBridge', () => {
 
     localInput.focus()
     fireEvent.keyDown(localInput, { key: 'c', ctrlKey: true })
+    await waitFor(() => expect(copyClipboard).toHaveBeenCalledTimes(1))
+  })
+
+  test('intercepts shortcuts inside the same-origin Kasm iframe', async () => {
+    copyClipboard.mockResolvedValue({
+      mime: 'text/plain',
+      data: new Blob(['remote'], { type: 'text/plain' }),
+    })
+    installClipboard({
+      writeText: vi.fn().mockResolvedValue(undefined),
+    })
+
+    render(<IframeHarness />)
+    const frame = screen.getByTestId('remote-frame') as HTMLIFrameElement
+    await waitFor(() => expect(frame.contentDocument).toBeTruthy())
+    frame.focus()
+    const event = new KeyboardEvent('keydown', {
+      key: 'c',
+      ctrlKey: true,
+      bubbles: true,
+    })
+    frame.contentDocument!.dispatchEvent(event)
     await waitFor(() => expect(copyClipboard).toHaveBeenCalledTimes(1))
   })
 
