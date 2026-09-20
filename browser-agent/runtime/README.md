@@ -41,8 +41,11 @@ Dockerfile 为多阶段构建：`golang:1.26.1-alpine` 阶段只复制 `go.mod`�
 --remote-debugging-port=9222                仅运行期内 CDP
 --remote-debugging-address=127.0.0.1        CDP 只监听 loopback，禁止 publish
 --deny-permission-prompts                   自动拒绝权限提示（clipboard 等）
---no-sandbox --test-type --user-data-dir=... --display=... --window-size=<W,H> --window-position=0,0 --app="$WW_START_URL"
+--no-sandbox --test-type --password-store=basic --user-data-dir=... --display=... --window-size=<W,H> --window-position=0,0 --app="$WW_START_URL"
 ```
+
+Chromium 使用 `--password-store=basic`：Provider cookie、localStorage 及其加密密钥随 workspace `profile/` 持久化，不依赖容器内 keyring/portal。因此 runtime 容器重建或重启后 Provider 登录态应继续可用；profile 的 `0700`/`0600` 权限与 workspace 隔离同时也是登录态保护边界。New API 的本机浏览器登录 cookie 不在此 profile 中。
+
 
 运行时窗口是 Provider 的应用窗口（`--app`）：只显示页面内容，没有标签页、地址栏、书签栏和 `--no-sandbox` 警告条。`--start-maximized` 在没有窗口管理器的 Xvfb 中不会生效，因此窗口尺寸由 `--window-size="$WW_SCREEN_WIDTH,$WW_SCREEN_HEIGHT"` 显式对齐屏幕。`--test-type` 只抑制上述警告条，不改变网络与导航策略：起始 URL 之外的每次 navigation 与请求仍由 workspace-guard 与 egress proxy 按同一份策略表拦截。
 

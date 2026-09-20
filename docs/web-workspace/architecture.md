@@ -348,6 +348,8 @@ expires_at
 | User 删除 / Admin 禁用 | 按保留策略处理，不得静默、不可恢复地删除用户数据 |
 | 存储清理 | 只清理明确归属且允许清理的 Workspace 目录；不触碰其他 Workspace |
 
+Chromium 在 runtime 中使用 `--password-store=basic`：Provider cookie、localStorage 及其加密密钥随 `profile/` 持久化，容器重建或 runtime 重启后不会因此要求重新登录。New API 的登录 cookie 属于操作者本机浏览器，不在该 profile 中；显式 Provider 登出、会话过期或 Provider 主动失效仍会结束登录态。
+
 ## 8. 浏览器运行时（Browser Runtime）
 
 - Chromium 运行在服务器端 Linux；本地 PC 不运行、也不控制 Chromium。
