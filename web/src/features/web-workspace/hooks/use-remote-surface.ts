@@ -68,6 +68,11 @@ function buildKasmClientUrl(sessionId: string, ticket: string): string {
     // "websockify" segment. The ticket remains in the path so KasmVNC's
     // relative assets and websocket request stay authorized.
     path: `api/web-workspace/session/${sessionPath}/kasm/t/${ticketPath}/websockify`,
+    // KasmVNC defaults these to enabled when embedded. Force them off so the
+    // authenticated X11 clipd bridge is the only clipboard path.
+    clipboard_up: '0',
+    clipboard_down: '0',
+    clipboard_seamless: '0',
   })
   return `${base}?${params.toString()}`
 }
