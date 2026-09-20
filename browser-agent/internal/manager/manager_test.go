@@ -86,6 +86,25 @@ func workspaceChownHandover() func(root *os.Root, name string, uid int, gid int)
 	return func(*os.Root, string, int, int) error { return nil }
 }
 
+func newHarnessWithMaxActive(t *testing.T, maxActive int) *harness {
+	t.Helper()
+	dataRoot := t.TempDir()
+	driver := runtimetest.NewFakeDriver()
+	display := &runtimetest.FakeDisplay{}
+	clock := newTestClock()
+	mgr := New(driver, display, Options{
+		DataRoot:          dataRoot,
+		EgressProxyURL:    "http://ws-agent:8731",
+		IdleTimeout:       10 * time.Minute,
+		ScanInterval:      time.Minute,
+		MaxActiveRuntimes: maxActive,
+		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Now:               clock.Now,
+		Chown:             workspaceChownHandover(),
+	})
+	return &harness{mgr: mgr, driver: driver, display: display, clock: clock, dataRoot: dataRoot}
+}
+
 func TestStartCreatesRuntimeAndWorkspaceMount(t *testing.T) {
 	h := newHarness(t)
 
@@ -295,6 +314,100 @@ func TestReconcileAdoptsRunningAndRemovesStopped(t *testing.T) {
 	spec := h.driver.LastCreateSpec()
 	assert.Contains(t, spec.Env, "WW_PROVIDER=chatgpt")
 	assert.Contains(t, spec.Env, "WW_SCREEN_WIDTH=1920")
+}
+
+func TestStartEnforcesGlobalActiveRuntimeCap(t *testing.T) {
+	h := newHarnessWithMaxActive(t, 1)
+	ctx := context.Background()
+
+	_, err := h.mgr.Start(ctx, 1, StartOptions{Provider: "chatgpt"})
+	require.NoError(t, err)
+
+	_, err = h.mgr.Start(ctx, 2, StartOptions{Provider: "chatgpt"})
+	require.ErrorIs(t, err, ErrCapacityReached)
+
+	// Restarting the runtime that already owns the slot does not consume a
+	// second slot.
+	_, err = h.mgr.Restart(ctx, 1, StartOptions{})
+	require.NoError(t, err)
+
+	_, err = h.mgr.Stop(ctx, 1)
+	require.NoError(t, err)
+	_, err = h.mgr.Start(ctx, 2, StartOptions{Provider: "chatgpt"})
+	require.NoError(t, err)
+}
+
+func TestConcurrentStartReservesGlobalActiveRuntimeCap(t *testing.T) {
+	h := newHarnessWithMaxActive(t, 1)
+	ctx := context.Background()
+
+	start := make(chan struct{})
+	type startResult struct {
+		snapshot Snapshot
+		err      error
+	}
+	results := make(chan startResult, 2)
+	for _, workspaceID := range []int64{1, 2} {
+		workspaceID := workspaceID
+		go func() {
+			<-start
+			snapshot, err := h.mgr.Start(ctx, workspaceID, StartOptions{Provider: "chatgpt"})
+			results <- startResult{snapshot: snapshot, err: err}
+		}()
+	}
+	close(start)
+
+	var started, refused int
+	for range 2 {
+		result := <-results
+		switch {
+		case result.err == nil:
+			started++
+			require.Equal(t, StateRunning, result.snapshot.State)
+		case errors.Is(result.err, ErrCapacityReached):
+			refused++
+		default:
+			t.Fatalf("unexpected start result: %v", result.err)
+		}
+	}
+	assert.Equal(t, 1, started)
+	assert.Equal(t, 1, refused)
+	assert.Equal(t, 1, h.driver.ContainerCount())
+}
+
+func TestStartFailureReleasesGlobalActiveRuntimeCap(t *testing.T) {
+	h := newHarnessWithMaxActive(t, 1)
+	ctx := context.Background()
+
+	h.driver.ExitOnStart = true
+	_, err := h.mgr.Start(ctx, 1, StartOptions{Provider: "chatgpt"})
+	require.Error(t, err)
+
+	h.driver.ExitOnStart = false
+	_, err = h.mgr.Start(ctx, 2, StartOptions{Provider: "chatgpt"})
+	require.NoError(t, err)
+}
+
+func TestRestartCapacityReservationSurvivesStop(t *testing.T) {
+	h := newHarnessWithMaxActive(t, 1)
+	ctx := context.Background()
+
+	_, err := h.mgr.Start(ctx, 1, StartOptions{Provider: "chatgpt"})
+	require.NoError(t, err)
+
+	lock := h.mgr.lockFor(1)
+	lock.Lock()
+	h.mgr.holdRestartCapacity(1)
+	_, _, err = h.mgr.stopLocked(ctx, 1, true)
+	lock.Unlock()
+	require.NoError(t, err)
+
+	_, err = h.mgr.Start(ctx, 2, StartOptions{Provider: "chatgpt"})
+	require.ErrorIs(t, err, ErrCapacityReached)
+
+	snapshot, err := h.mgr.Restart(ctx, 1, StartOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, StateRunning, snapshot.State)
 }
 
 func TestOpenDisplayStreamRequiresLiveRuntime(t *testing.T) {

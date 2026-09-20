@@ -31,6 +31,7 @@ func TestLoadDefaults(t *testing.T) {
 	assert.Equal(t, int64(1073741824), cfg.MemoryBytes)
 	assert.Equal(t, int64(1000000000), cfg.NanoCPUs)
 	assert.Equal(t, int64(256), cfg.PidsLimit)
+	assert.Equal(t, 0, cfg.MaxActiveRuntimes)
 	assert.Equal(t, 600*time.Second, cfg.IdleTimeout)
 	assert.Equal(t, 15*time.Second, cfg.IdleScanInterval)
 }
@@ -56,6 +57,7 @@ func TestLoadCustomValues(t *testing.T) {
 		"WEB_WORKSPACE_RUNTIME_MEMORY_BYTES": "2147483648",
 		"WEB_WORKSPACE_RUNTIME_CPUS":         "2.5",
 		"WEB_WORKSPACE_RUNTIME_PIDS":         "512",
+		"WEB_WORKSPACE_MAX_ACTIVE_RUNTIMES":  "1",
 		"WEB_WORKSPACE_IDLE_TIMEOUT_SECONDS": "120",
 		"WEB_WORKSPACE_IDLE_SCAN_SECONDS":    "5",
 	}))
@@ -72,6 +74,7 @@ func TestLoadCustomValues(t *testing.T) {
 	assert.Equal(t, int64(2147483648), cfg.MemoryBytes)
 	assert.Equal(t, int64(2500000000), cfg.NanoCPUs)
 	assert.Equal(t, int64(512), cfg.PidsLimit)
+	assert.Equal(t, 1, cfg.MaxActiveRuntimes)
 	assert.Equal(t, 120*time.Second, cfg.IdleTimeout)
 	assert.Equal(t, 5*time.Second, cfg.IdleScanInterval)
 }
@@ -99,6 +102,9 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 		},
 		"negative pids": {
 			"WEB_WORKSPACE_RUNTIME_PIDS": "-1",
+		},
+		"negative max active runtimes": {
+			"WEB_WORKSPACE_MAX_ACTIVE_RUNTIMES": "-1",
 		},
 		"zero idle timeout": {
 			"WEB_WORKSPACE_IDLE_TIMEOUT_SECONDS": "0",

@@ -62,12 +62,13 @@ func run(logger *slog.Logger) error {
 	}
 
 	mgr := manager.New(driver, driver, manager.Options{
-		DataRoot:       cfg.DataRoot,
-		HostDataRoot:   cfg.HostDataRoot,
-		EgressProxyURL: cfg.EgressProxyURL,
-		IdleTimeout:    cfg.IdleTimeout,
-		ScanInterval:   cfg.IdleScanInterval,
-		Logger:         logger,
+		DataRoot:          cfg.DataRoot,
+		HostDataRoot:      cfg.HostDataRoot,
+		EgressProxyURL:    cfg.EgressProxyURL,
+		IdleTimeout:       cfg.IdleTimeout,
+		ScanInterval:      cfg.IdleScanInterval,
+		MaxActiveRuntimes: cfg.MaxActiveRuntimes,
+		Logger:            logger,
 	})
 
 	proxy := egress.New(egress.Options{
