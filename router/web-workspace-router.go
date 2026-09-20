@@ -30,14 +30,24 @@ func SetWebWorkspaceRouter(apiRouter *gin.RouterGroup) {
 		webWorkspaceRoute.POST("/session/:id/navigation", controller.NavigateWebWorkspaceSession)
 		webWorkspaceRoute.POST("/session/:id/activity", controller.TouchWebWorkspaceActivity)
 		webWorkspaceRoute.POST("/session/:id/stream-ticket", controller.CreateWebWorkspaceStreamTicket)
+		webWorkspaceRoute.GET("/session/:id/file-chooser", controller.GetWebWorkspaceFileChooser)
+		webWorkspaceRoute.POST("/session/:id/file-chooser/:chooser_id/files", controller.UploadWebWorkspaceFileChooserFiles)
+		webWorkspaceRoute.POST("/session/:id/file-chooser/:chooser_id/cancel", controller.CancelWebWorkspaceFileChooser)
+		webWorkspaceRoute.POST("/session/:id/clipboard/copy", controller.CopyWebWorkspaceClipboard)
+		webWorkspaceRoute.POST("/session/:id/clipboard/paste", controller.PasteWebWorkspaceClipboard)
+		webWorkspaceRoute.POST("/session/:id/input/text", controller.InsertWebWorkspaceInputText)
+		webWorkspaceRoute.POST("/session/:id/input/key", controller.DispatchWebWorkspaceInputKey)
+		webWorkspaceRoute.GET("/session/:id/input/caret", controller.GetWebWorkspaceInputCaret)
 	}
 
-	// The stream attach authenticates with a single-use ticket instead of a
-	// bearer header, because browser WebSocket clients cannot set headers. The
-	// ticket is bound to the user, workspace and session, and the gateway is
-	// the only path to the Browser Agent.
-	webWorkspaceStreamRoute := apiRouter.Group("/web-workspace")
+	// Stream and KasmVNC attaches authenticate with a short-lived ticket instead
+	// of a bearer header, because browser WebSocket clients and iframe documents
+	// cannot set headers. Each ticket is bound to the user, workspace and session;
+	// the Kasm asset path also carries the ticket so relative assets are covered.
+	webWorkspaceTicketRoute := apiRouter.Group("/web-workspace")
 	{
-		webWorkspaceStreamRoute.GET("/session/:id/stream", controller.WebWorkspaceStream)
+		webWorkspaceTicketRoute.GET("/session/:id/stream", controller.WebWorkspaceStream)
+		webWorkspaceTicketRoute.GET("/session/:id/kasm/*rest", controller.WebWorkspaceKasm)
+		webWorkspaceTicketRoute.POST("/session/:id/kasm/*rest", controller.WebWorkspaceKasm)
 	}
 }

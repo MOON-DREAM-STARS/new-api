@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
@@ -361,6 +362,18 @@ const (
 	webWorkspaceCodeTicketInvalid         = "WEB_WORKSPACE_TICKET_INVALID"
 	webWorkspaceCodeNavigationTimeout     = "WEB_WORKSPACE_NAVIGATION_TIMEOUT"
 	webWorkspaceCodeNavigationUnavailable = "WEB_WORKSPACE_NAVIGATION_UNAVAILABLE"
+	webWorkspaceCodeFileChooserExpired    = "WEB_WORKSPACE_FILE_CHOOSER_EXPIRED"
+	webWorkspaceCodeFileTooLarge          = "WEB_WORKSPACE_FILE_TOO_LARGE"
+	webWorkspaceCodeFileLimitExceeded     = "WEB_WORKSPACE_FILE_LIMIT_EXCEEDED"
+	webWorkspaceCodeFileInjectFailed      = "WEB_WORKSPACE_FILE_INJECT_FAILED"
+	webWorkspaceCodeFileBridgeBusy        = "WEB_WORKSPACE_FILE_BRIDGE_BUSY"
+	webWorkspaceCodeClipboardUnavailable  = "WEB_WORKSPACE_CLIPBOARD_UNAVAILABLE"
+	webWorkspaceCodeClipboardTooLarge     = "WEB_WORKSPACE_CLIPBOARD_PAYLOAD_TOO_LARGE"
+	webWorkspaceCodeClipboardMIMEBad      = "WEB_WORKSPACE_CLIPBOARD_MIME_UNSUPPORTED"
+	webWorkspaceCodeClipboardFailed       = "WEB_WORKSPACE_CLIPBOARD_FAILED"
+	webWorkspaceCodeInputUnavailable      = "WEB_WORKSPACE_INPUT_UNAVAILABLE"
+	webWorkspaceCodeInputTimeout          = "WEB_WORKSPACE_INPUT_TIMEOUT"
+	webWorkspaceCodeInputRejected         = "WEB_WORKSPACE_INPUT_REJECTED"
 
 	// webWorkspaceCodeProjectCreationInProgress refuses a second creation while
 	// the guard is still running one for the same workspace.
@@ -548,6 +561,243 @@ func TouchWebWorkspaceActivity(c *gin.Context) {
 	common.ApiSuccess(c, toWebWorkspaceSessionDto(session))
 }
 
+// GetWebWorkspaceFileChooser long-polls the caller's pending local chooser. The
+// response never contains a CDP identifier, session id or staging path.
+func GetWebWorkspaceFileChooser(c *gin.Context) {
+	user := requireWebWorkspaceEntitlement(c)
+	if user == nil {
+		return
+	}
+	sessionId := c.Param("id")
+	if sessionId == "" {
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid session id", "")
+		return
+	}
+	waitMs := 25000
+	if raw := strings.TrimSpace(c.Query("wait_ms")); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 0 || value > 30000 {
+			writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid wait_ms", "")
+			return
+		}
+		waitMs = value
+	}
+	chooser, err := webworkspace.WaitFileChooser(c.Request.Context(), user.Id, sessionId, time.Duration(waitMs)*time.Millisecond)
+	if err != nil {
+		writeWebWorkspaceFileChooserError(c, err)
+		return
+	}
+	if chooser == nil {
+		common.ApiSuccess(c, nil)
+		return
+	}
+	common.ApiSuccess(c, dto.WebWorkspaceFileChooserDto{
+		ChooserID: chooser.ChooserID,
+		Mode:      chooser.Mode,
+		CreatedAt: chooser.CreatedAt,
+		ExpiresAt: chooser.ExpiresAt,
+	})
+}
+
+// UploadWebWorkspaceFileChooserFiles streams the browser multipart body to the
+// agent. The control plane never parses, buffers or rewrites the file payload.
+func UploadWebWorkspaceFileChooserFiles(c *gin.Context) {
+	user := requireWebWorkspaceEntitlement(c)
+	if user == nil {
+		return
+	}
+	sessionId := c.Param("id")
+	chooserID := c.Param("chooser_id")
+	contentType := strings.TrimSpace(c.GetHeader("Content-Type"))
+	if sessionId == "" || chooserID == "" || !strings.HasPrefix(strings.ToLower(contentType), "multipart/form-data") {
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid file chooser upload", "")
+		return
+	}
+	result, err := webworkspace.UploadFileChooserFiles(c.Request.Context(), user.Id, sessionId, chooserID, contentType, c.Request.Body)
+	if err != nil {
+		writeWebWorkspaceFileChooserError(c, err)
+		return
+	}
+	common.ApiSuccess(c, toWebWorkspaceFileChooserResultDto(result))
+}
+
+// CancelWebWorkspaceFileChooser dismisses the caller's pending local chooser.
+func CancelWebWorkspaceFileChooser(c *gin.Context) {
+	user := requireWebWorkspaceEntitlement(c)
+	if user == nil {
+		return
+	}
+	sessionId := c.Param("id")
+	chooserID := c.Param("chooser_id")
+	if sessionId == "" || chooserID == "" {
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid file chooser request", "")
+		return
+	}
+	result, err := webworkspace.CancelFileChooser(c.Request.Context(), user.Id, sessionId, chooserID)
+	if err != nil {
+		writeWebWorkspaceFileChooserError(c, err)
+		return
+	}
+	common.ApiSuccess(c, toWebWorkspaceFileChooserResultDto(result))
+}
+
+// CopyWebWorkspaceClipboard returns the remote selection as raw bytes with its
+// MIME type. It deliberately does not wrap the payload in an API envelope.
+func CopyWebWorkspaceClipboard(c *gin.Context) {
+	user := requireWebWorkspaceEntitlement(c)
+	if user == nil {
+		return
+	}
+	sessionId := c.Param("id")
+	if sessionId == "" {
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid clipboard request", "")
+		return
+	}
+	mimeType, payload, err := webworkspace.CopyClipboard(c.Request.Context(), user.Id, sessionId)
+	if err != nil {
+		writeWebWorkspaceClipboardError(c, err)
+		return
+	}
+	c.Data(http.StatusOK, mimeType, payload)
+}
+
+// PasteWebWorkspaceClipboard accepts one raw clipboard body and pastes it into
+// the remote browser after ownership has been checked.
+func PasteWebWorkspaceClipboard(c *gin.Context) {
+	user := requireWebWorkspaceEntitlement(c)
+	if user == nil {
+		return
+	}
+	sessionId := c.Param("id")
+	mimeType := strings.TrimSpace(c.GetHeader("Content-Type"))
+	if sessionId == "" || mimeType == "" {
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid clipboard request", "")
+		return
+	}
+	if err := webworkspace.PasteClipboard(c.Request.Context(), user.Id, sessionId, mimeType, c.Request.Body); err != nil {
+		writeWebWorkspaceClipboardError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{})
+}
+
+// InsertWebWorkspaceInputText forwards one committed local text value to the
+// caller's remote browser session.
+func InsertWebWorkspaceInputText(c *gin.Context) {
+	user := requireWebWorkspaceEntitlement(c)
+	if user == nil {
+		return
+	}
+	sessionId := c.Param("id")
+	if sessionId == "" {
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid input request", "")
+		return
+	}
+	var request dto.WebWorkspaceInputTextRequest
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid input request", "")
+		return
+	}
+	if err := webworkspace.InsertInputText(c.Request.Context(), user.Id, sessionId, request.Text); err != nil {
+		writeWebWorkspaceInputError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"ok": true})
+}
+
+// DispatchWebWorkspaceInputKey forwards one approved key to the caller's remote
+// browser session.
+func DispatchWebWorkspaceInputKey(c *gin.Context) {
+	user := requireWebWorkspaceEntitlement(c)
+	if user == nil {
+		return
+	}
+	sessionId := c.Param("id")
+	if sessionId == "" {
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid input request", "")
+		return
+	}
+	var request dto.WebWorkspaceInputKeyRequest
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid input request", "")
+		return
+	}
+	if err := webworkspace.DispatchInputKey(c.Request.Context(), user.Id, sessionId, request.Key, request.Modifiers); err != nil {
+		writeWebWorkspaceInputError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"ok": true})
+}
+
+// GetWebWorkspaceInputCaret returns the remote caret rectangle. A null caret is
+// a successful response and tells the client to use its center fallback.
+func GetWebWorkspaceInputCaret(c *gin.Context) {
+	user := requireWebWorkspaceEntitlement(c)
+	if user == nil {
+		return
+	}
+	sessionId := c.Param("id")
+	if sessionId == "" {
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid input request", "")
+		return
+	}
+	caret, err := webworkspace.ProbeInputCaret(c.Request.Context(), user.Id, sessionId)
+	if err != nil {
+		writeWebWorkspaceInputError(c, err)
+		return
+	}
+	var response dto.WebWorkspaceInputCaretResponse
+	if caret != nil {
+		response.Caret = &dto.WebWorkspaceInputCaretDto{
+			X:      caret.X,
+			Y:      caret.Y,
+			Width:  caret.Width,
+			Height: caret.Height,
+		}
+	}
+	common.ApiSuccess(c, response)
+}
+
+// WebWorkspaceKasm proxies the KasmVNC web client and its websocket through
+// the same-origin API route. The document, relative assets and websocket all
+// carry a short-lived ticket in a path segment because an iframe cannot attach
+// the user's Authorization header. The ticket still binds the request to one
+// user, workspace and session; the websocket upgrade consumes it.
+func WebWorkspaceKasm(c *gin.Context) {
+	sessionId := c.Param("id")
+	if sessionId == "" {
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid session id", "")
+		return
+	}
+	ticketToken, rest, ok := webworkspace.ParseKasmTicketPath(c.Param("rest"))
+	if !ok {
+		writeWebWorkspaceError(c, http.StatusForbidden, webWorkspaceCodeTicketInvalid, "invalid kasm ticket", "")
+		return
+	}
+	var ticket webworkspace.StreamTicket
+	var err error
+	if rest == "/websockify" || rest == "/websockify/" {
+		ticket, err = webworkspace.ConsumeStreamTicket(ticketToken, sessionId)
+	} else {
+		ticket, err = webworkspace.ValidateStreamTicket(ticketToken, sessionId)
+	}
+	if err != nil {
+		writeWebWorkspaceError(c, http.StatusForbidden, webWorkspaceCodeTicketInvalid, "invalid kasm ticket", "")
+		return
+	}
+	session, err := webworkspace.GetSession(ticket.UserId, sessionId)
+	if err != nil || session.WorkspaceId != ticket.WorkspaceId {
+		writeWebWorkspaceError(c, http.StatusNotFound, webWorkspaceCodeSessionNotFound, "web workspace session not found", "")
+		return
+	}
+	proxy, err := webworkspace.NewKasmReverseProxy(ticket.UserId, sessionId, rest)
+	if err != nil {
+		writeWebWorkspaceSessionError(c, err)
+		return
+	}
+	proxy.ServeHTTP(c.Writer, c.Request)
+}
+
 // CreateWebWorkspaceStreamTicket issues a single-use ticket that the client
 // redeems on the WSS stream endpoint.
 func CreateWebWorkspaceStreamTicket(c *gin.Context) {
@@ -693,6 +943,63 @@ func writeWebWorkspaceSessionError(c *gin.Context, err error) {
 	}
 }
 
+func writeWebWorkspaceFileChooserError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, webworkspace.ErrFileChooserExpired):
+		writeWebWorkspaceError(c, http.StatusGone, webWorkspaceCodeFileChooserExpired, "the local file chooser expired", "")
+	case errors.Is(err, webworkspace.ErrFileTooLarge):
+		writeWebWorkspaceError(c, http.StatusRequestEntityTooLarge, webWorkspaceCodeFileTooLarge, "the selected file is too large", "")
+	case errors.Is(err, webworkspace.ErrFileLimitExceeded):
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeFileLimitExceeded, "the file selection exceeds the bridge limit", "")
+	case errors.Is(err, webworkspace.ErrFileInjectFailed):
+		writeWebWorkspaceError(c, http.StatusUnprocessableEntity, webWorkspaceCodeFileInjectFailed, "the browser could not attach the selected files", "")
+	case errors.Is(err, webworkspace.ErrFileBridgeBusy):
+		writeWebWorkspaceError(c, http.StatusConflict, webWorkspaceCodeFileBridgeBusy, "another file chooser is already pending", "")
+	case errors.Is(err, webworkspace.ErrInvalidFileChooser):
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid file chooser request", "")
+	case errors.Is(err, webworkspace.ErrSessionNotFound), errors.Is(err, webworkspace.ErrAgentRuntimeNotFound):
+		writeWebWorkspaceError(c, http.StatusNotFound, webWorkspaceCodeSessionNotFound, "web workspace session not found", "")
+	case errors.Is(err, webworkspace.ErrAgentUnavailable), errors.Is(err, webworkspace.ErrAgentRejected):
+		writeWebWorkspaceError(c, http.StatusServiceUnavailable, webWorkspaceCodeAgentUnavailable, "web workspace agent unavailable", "")
+	default:
+		writeWebWorkspaceInternalError(c)
+	}
+}
+
+func writeWebWorkspaceClipboardError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, webworkspace.ErrClipboardPayloadTooLarge):
+		writeWebWorkspaceError(c, http.StatusRequestEntityTooLarge, webWorkspaceCodeClipboardTooLarge, "the clipboard payload is too large", "")
+	case errors.Is(err, webworkspace.ErrClipboardMIMEUnsupported):
+		writeWebWorkspaceError(c, http.StatusUnsupportedMediaType, webWorkspaceCodeClipboardMIMEBad, "the clipboard MIME type is unsupported", "")
+	case errors.Is(err, webworkspace.ErrClipboardUnavailable), errors.Is(err, webworkspace.ErrAgentUnavailable):
+		writeWebWorkspaceError(c, http.StatusServiceUnavailable, webWorkspaceCodeClipboardUnavailable, "the remote clipboard is unavailable", "")
+	case errors.Is(err, webworkspace.ErrClipboardFailed), errors.Is(err, webworkspace.ErrAgentRejected):
+		writeWebWorkspaceError(c, http.StatusBadGateway, webWorkspaceCodeClipboardFailed, "the remote clipboard operation failed", "")
+	case errors.Is(err, webworkspace.ErrInvalidClipboard):
+		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid clipboard request", "")
+	case errors.Is(err, webworkspace.ErrSessionNotFound), errors.Is(err, webworkspace.ErrAgentRuntimeNotFound):
+		writeWebWorkspaceError(c, http.StatusNotFound, webWorkspaceCodeSessionNotFound, "web workspace session not found", "")
+	default:
+		writeWebWorkspaceInternalError(c)
+	}
+}
+
+func writeWebWorkspaceInputError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, webworkspace.ErrInputTimeout):
+		writeWebWorkspaceError(c, http.StatusGatewayTimeout, webWorkspaceCodeInputTimeout, "the remote input timed out", "")
+	case errors.Is(err, webworkspace.ErrInputUnavailable), errors.Is(err, webworkspace.ErrAgentUnavailable):
+		writeWebWorkspaceError(c, http.StatusServiceUnavailable, webWorkspaceCodeInputUnavailable, "the remote input is unavailable", "")
+	case errors.Is(err, webworkspace.ErrInputRejected):
+		writeWebWorkspaceError(c, http.StatusUnprocessableEntity, webWorkspaceCodeInputRejected, "the remote input was rejected", "")
+	case errors.Is(err, webworkspace.ErrSessionNotFound), errors.Is(err, webworkspace.ErrAgentRuntimeNotFound):
+		writeWebWorkspaceError(c, http.StatusNotFound, webWorkspaceCodeSessionNotFound, "web workspace session not found", "")
+	default:
+		writeWebWorkspaceInternalError(c)
+	}
+}
+
 func writeWebWorkspaceNavigationError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, webworkspace.ErrInvalidNavigationAction):
@@ -712,6 +1019,17 @@ func writeWebWorkspaceNavigationError(c *gin.Context, err error) {
 	}
 }
 
+func toWebWorkspaceFileChooserResultDto(result *webworkspace.FileChooserResult) dto.WebWorkspaceFileChooserResultDto {
+	if result == nil {
+		return dto.WebWorkspaceFileChooserResultDto{}
+	}
+	return dto.WebWorkspaceFileChooserResultDto{
+		ChooserID: result.ChooserID,
+		State:     result.State,
+		Error:     result.Error,
+		UpdatedAt: result.UpdatedAt,
+	}
+}
 func toWebWorkspaceSessionDto(session *webworkspace.Session) dto.WebWorkspaceSessionDto {
 	result := dto.WebWorkspaceSessionDto{
 		SessionId:      session.Id,
@@ -722,6 +1040,7 @@ func toWebWorkspaceSessionDto(session *webworkspace.Session) dto.WebWorkspaceSes
 		IdleDeadlineAt: session.IdleDeadlineAt,
 		StreamBytesOut: session.StreamBytesOut,
 		StreamBytesIn:  session.StreamBytesIn,
+		IMEState:       webworkspace.NormalizeIMEState(session.IMEState),
 	}
 	if session.Navigation != nil {
 		result.Navigation = &dto.WebWorkspaceNavigationDto{

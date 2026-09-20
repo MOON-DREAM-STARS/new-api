@@ -25,6 +25,26 @@ func TestWebWorkspaceStreamTicketIsSingleUse(t *testing.T) {
 	assert.ErrorIs(t, err, ErrStreamTicketInvalid)
 }
 
+func TestWebWorkspaceStreamTicketValidatesWithoutConsumingForAssets(t *testing.T) {
+	tickets = ticketStore{entries: make(map[string]StreamTicket)}
+	session := &Session{Id: "session-kasm", UserId: 9, WorkspaceId: 13, State: AgentStateRunning}
+
+	token, _, err := IssueStreamTicket(session)
+	require.NoError(t, err)
+
+	entry, err := ValidateStreamTicket(token, session.Id)
+	require.NoError(t, err)
+	assert.Equal(t, session.UserId, entry.UserId)
+	assert.Equal(t, session.WorkspaceId, entry.WorkspaceId)
+
+	// Asset validation must not burn the ticket; the websocket upgrade still
+	// consumes it exactly once.
+	_, err = ConsumeStreamTicket(token, session.Id)
+	require.NoError(t, err)
+	_, err = ValidateStreamTicket(token, session.Id)
+	assert.ErrorIs(t, err, ErrStreamTicketInvalid)
+}
+
 func TestWebWorkspaceStreamTicketRejectsMismatchAndExpiry(t *testing.T) {
 	tickets = ticketStore{entries: make(map[string]StreamTicket)}
 	session := &Session{Id: "session-2", UserId: 8, WorkspaceId: 12, State: AgentStateRunning}

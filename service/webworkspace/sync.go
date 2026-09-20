@@ -434,7 +434,15 @@ func applyProjectRenamed(tx *gorm.DB, workspaceId int, observation Observation) 
 	if err != nil {
 		return false, err
 	}
-	name := projectDisplayName("", observation.Slug, externalId)
+	// Only a real slug is a rename. An observation without a slug carries no
+	// operator-facing name, so falling back to the external id here would
+	// replace a good stored name with the raw provider id.
+	slug := strings.TrimSpace(observation.Slug)
+	if slug == "" {
+		webWorkspaceAudit("project_renamed", fmt.Sprintf("workspace_id=%d", workspaceId), "result=ignored")
+		return false, nil
+	}
+	name := projectDisplayName("", slug, externalId)
 	if name == project.Name {
 		return false, nil
 	}
