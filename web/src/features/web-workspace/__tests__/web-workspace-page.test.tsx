@@ -35,6 +35,15 @@ import { useAuthStore } from '@/stores/auth-store'
 import type { RemoteSurfaceController } from '../hooks/use-remote-surface'
 import { WEB_WORKSPACE_PROVIDER_QUERY_KEY } from '../hooks/use-web-workspace-provider'
 import { WebWorkspace } from '../index'
+import { readLastProjectId } from '../lib/last-project'
+
+vi.mock('../lib/last-project', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/last-project')>()
+  return {
+    ...actual,
+    readLastProjectId: vi.fn(actual.readLastProjectId),
+  }
+})
 
 vi.mock('@/components/layout', () => {
   type SlotProps = { children?: React.ReactNode }
@@ -652,6 +661,9 @@ describe('WebWorkspace page', () => {
 
   test('auto-opens the last project and falls back to the latest project', async () => {
     const originalAuth = useAuthStore.getState().auth
+    const readLastProject = vi.mocked(readLastProjectId)
+    const originalReadLastProject = readLastProject.getMockImplementation()
+    readLastProject.mockReturnValue(1)
     useAuthStore.setState({
       auth: {
         ...originalAuth,
@@ -715,6 +727,9 @@ describe('WebWorkspace page', () => {
         )
       })
     } finally {
+      if (originalReadLastProject) {
+        readLastProject.mockImplementation(originalReadLastProject)
+      }
       window.localStorage.removeItem('web-workspace:last-project:1')
       useAuthStore.setState({ auth: originalAuth })
     }
