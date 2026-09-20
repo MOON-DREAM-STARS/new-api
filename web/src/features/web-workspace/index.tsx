@@ -374,6 +374,20 @@ export function WebWorkspace() {
   return (
     <SectionPageLayout fixedContent>
       <SectionPageLayout.Title>{t('Web Workspace')}</SectionPageLayout.Title>
+      {immersive.immersive ? null : (
+        <SectionPageLayout.Center>
+          <ProjectRail
+            projects={projects}
+            selectedProjectId={selectedProjectId}
+            isLoading={projectsQuery.isPending}
+            isError={projectsQuery.isError}
+            canCreate={isLive}
+            onSelect={openProject}
+            onCreate={() => setCreateOpen(true)}
+            onOpenManager={() => setDrawerOpen(true)}
+          />
+        </SectionPageLayout.Center>
+      )}
       <SectionPageLayout.Actions>
         <WorkspaceToolbar
           connection={connection}
@@ -385,7 +399,6 @@ export function WebWorkspace() {
               bytes: formatByteSize(session?.stream_bytes_out ?? 0),
             }
           )}
-          currentProjectName={selectedProject?.name ?? null}
           sessionMode={session?.mode ?? null}
           isLive={isLive}
           isBusy={isBusy}
@@ -407,20 +420,10 @@ export function WebWorkspace() {
         />
       </SectionPageLayout.Actions>
       <SectionPageLayout.Content>
-        <div className='relative flex h-full min-h-0 gap-3'>
-          <ProjectRail
-            projects={projects}
-            selectedProjectId={selectedProjectId}
-            isLoading={projectsQuery.isPending}
-            isError={projectsQuery.isError}
-            connection={connection}
-            canCreate={isLive}
-            immersive={immersive.immersive}
-            onSelect={openProject}
-            onCreate={() => setCreateOpen(true)}
-            onOpenManager={() => setDrawerOpen(true)}
-          />
-
+        <div
+          data-testid='web-workspace-content'
+          className='relative flex h-full min-h-0'
+        >
           <RemoteBrowserViewport
             provider={provider}
             sessionId={session?.session_id ?? null}

@@ -42,6 +42,9 @@ vi.mock('@/components/layout', () => {
     (props: SlotProps) => <div>{props.children}</div>,
     {
       Title: (props: SlotProps) => <h2>{props.children}</h2>,
+      Center: (props: SlotProps) => (
+        <div data-testid='section-center'>{props.children}</div>
+      ),
       Actions: (props: SlotProps) => <div>{props.children}</div>,
       Content: (props: SlotProps) => <div>{props.children}</div>,
     }
@@ -229,7 +232,7 @@ describe('WebWorkspace page', () => {
     ).toBeTruthy()
   })
 
-  test('renders real projects, the compact rail and the real session state', async () => {
+  test('renders real projects, the centered project strip and the real session state', async () => {
     apiClient.get = async (url) => {
       if (url === CONFIG_PATH) return ok({ enabled: true, entitled: true })
       if (url === SESSION_PATH) return ok(runningSession)
@@ -266,6 +269,28 @@ describe('WebWorkspace page', () => {
       expect(screen.getByText('Connected')).toBeTruthy()
     })
     expect(screen.getByLabelText('acceptance project')).toBeTruthy()
+    const projectsNav = screen.getByLabelText('Projects')
+    expect(projectsNav.className).toContain('overflow-x-auto')
+    expect(projectsNav.className).toContain('no-scrollbar')
+    expect(projectsNav.firstElementChild?.className).not.toContain('mx-auto')
+    expect(screen.getByLabelText('acceptance project').className).toContain(
+      'rounded-lg'
+    )
+    expect(
+      projectsNav.contains(screen.getByRole('button', { name: 'New project' }))
+    ).toBe(true)
+    expect(
+      within(screen.getByTestId('section-center')).getByLabelText(
+        'acceptance project'
+      )
+    ).toBeTruthy()
+    expect(
+      screen.getByTestId('web-workspace-content').contains(projectsNav)
+    ).toBe(false)
+    expect(screen.getByRole('button', { name: 'New project' })).toBeEnabled()
+    expect(
+      screen.getByRole('button', { name: 'Project settings' })
+    ).toBeInTheDocument()
     expect(screen.getByTestId('web-workspace-surface')).toBeTruthy()
     expect(screen.getByTestId('web-workspace-surface-frame')).toBeTruthy()
     // The remote browser stays the primary surface: no Card based dashboard.
@@ -929,6 +954,7 @@ describe('WebWorkspace page', () => {
     const immersiveControls = await screen.findByTestId(
       'web-workspace-immersive-controls'
     )
+    expect(screen.queryByLabelText('Projects')).toBeNull()
     expect(
       within(immersiveControls).getByRole('button', { name: 'Browser back' })
     ).toBeTruthy()

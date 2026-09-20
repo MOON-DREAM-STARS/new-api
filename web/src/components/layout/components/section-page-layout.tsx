@@ -39,6 +39,11 @@ function SectionPageLayoutActions(_props: SlotProps) {
 }
 SectionPageLayoutActions.displayName = 'SectionPageLayout.Actions'
 
+function SectionPageLayoutCenter(_props: SlotProps) {
+  return null
+}
+SectionPageLayoutCenter.displayName = 'SectionPageLayout.Center'
+
 function SectionPageLayoutContent(_props: SlotProps) {
   return null
 }
@@ -60,6 +65,7 @@ export function SectionPageLayout(props: SectionPageLayoutProps) {
   )
 
   let title: ReactNode = null
+  let center: ReactNode = null
   let actions: ReactNode = null
   let content: ReactNode = null
   let breadcrumb: ReactNode = null
@@ -68,6 +74,8 @@ export function SectionPageLayout(props: SectionPageLayoutProps) {
     if (!isValidElement(node)) return
     const child = node as ReactElement<SlotProps>
     if (child.type === SectionPageLayoutTitle) title = child.props.children
+    else if (child.type === SectionPageLayoutCenter)
+      center = child.props.children
     else if (child.type === SectionPageLayoutActions)
       actions = child.props.children
     else if (child.type === SectionPageLayoutContent)
@@ -84,10 +92,17 @@ export function SectionPageLayout(props: SectionPageLayoutProps) {
             <div className='mb-2 sm:mb-3'>{breadcrumb}</div>
           )}
           <div className='flex flex-wrap items-center justify-between gap-x-3 gap-y-2 sm:gap-x-4'>
-            <div className='min-w-0 flex-1'>
-              <h2 className='truncate text-base font-bold tracking-tight sm:text-lg'>
-                {title}
-              </h2>
+            <div className='flex min-w-0 flex-1 items-center gap-x-3 sm:gap-x-4'>
+              <div
+                className={
+                  center != null ? 'min-w-0 shrink-0' : 'min-w-0 flex-1'
+                }
+              >
+                <h2 className='truncate text-base font-bold tracking-tight sm:text-lg'>
+                  {title}
+                </h2>
+              </div>
+              {center != null && <div className='min-w-0 flex-1'>{center}</div>}
             </div>
             {actions != null && (
               <div className='flex shrink-0 flex-wrap items-center justify-end gap-2 sm:gap-x-4'>
@@ -119,4 +134,5 @@ export function SectionPageLayout(props: SectionPageLayoutProps) {
 SectionPageLayout.Title = SectionPageLayoutTitle
 SectionPageLayout.Actions = SectionPageLayoutActions
 SectionPageLayout.Content = SectionPageLayoutContent
+SectionPageLayout.Center = SectionPageLayoutCenter
 SectionPageLayout.Breadcrumb = SectionPageLayoutBreadcrumb

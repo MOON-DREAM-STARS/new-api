@@ -52,8 +52,8 @@ type ProjectDrawerProps = {
 
 /**
  * Full project management, opened on demand. It overlays the remote browser
- * instead of permanently narrowing it: the rail stays 64px wide and this
- * dialog carries the complete names and the real create/rename/delete flows.
+ * instead of permanently narrowing it; the header project strip remains the
+ * quick navigation surface and this dialog carries the create/rename/delete flows.
  */
 export function ProjectDrawer(props: ProjectDrawerProps) {
   const { t } = useTranslation()
