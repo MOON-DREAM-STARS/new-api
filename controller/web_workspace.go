@@ -50,9 +50,12 @@ func GetWebWorkspaceConfig(c *gin.Context) {
 			entitled = webworkspace.CheckEntitlement(user).Allowed
 		}
 	}
+	maxScreenWidth, maxScreenHeight := system_setting.NormalizeWebWorkspaceScreenBounds(settings)
 	common.ApiSuccess(c, dto.WebWorkspaceConfig{
-		Enabled:  settings.Enabled,
-		Entitled: entitled,
+		Enabled:         settings.Enabled,
+		Entitled:        entitled,
+		MaxScreenWidth:  maxScreenWidth,
+		MaxScreenHeight: maxScreenHeight,
 	})
 }
 
@@ -167,9 +170,9 @@ func UpdateWebWorkspaceProject(c *gin.Context) {
 	common.ApiSuccess(c, toWebProjectDto(project))
 }
 
-// DeleteWebWorkspaceProject removes the local project mapping and its
-// conversation mappings, then revokes the project in the guard's ownership
-// document. The provider-side project itself is never touched here.
+// DeleteWebWorkspaceProject deletes the provider-side project through the
+// runtime guard, then removes the local mapping and its conversations and
+// revokes the project in the guard's ownership document.
 func DeleteWebWorkspaceProject(c *gin.Context) {
 	user := requireWebWorkspaceEntitlement(c)
 	if user == nil {
@@ -184,8 +187,8 @@ func DeleteWebWorkspaceProject(c *gin.Context) {
 		writeWebWorkspaceResourceError(c, err)
 		return
 	}
-	if err := webworkspace.DeleteOwnedProject(user.Id, projectID); err != nil {
-		writeWebWorkspaceResourceError(c, err)
+	if err := webworkspace.DeleteOwnedProjectWithProvider(c.Request.Context(), user.Id, projectID); err != nil {
+		writeWebWorkspaceProjectDeletionError(c, err)
 		return
 	}
 	if err := webworkspace.PushOwnership(c.Request.Context(), project.WorkspaceId); err != nil {
@@ -298,6 +301,21 @@ func writeWebWorkspaceResourceError(c *gin.Context, err error) {
 	writeWebWorkspaceInternalError(c)
 }
 
+func writeWebWorkspaceProjectDeletionError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, webworkspace.ErrAgentProjectDeletionTimeout):
+		writeWebWorkspaceError(c, http.StatusGatewayTimeout, webWorkspaceCodeProjectDeletionTimeout, "provider project deletion timed out", "")
+	case errors.Is(err, webworkspace.ErrAgentProjectDeletionUnavailable), errors.Is(err, webworkspace.ErrAgentRuntimeNotFound):
+		writeWebWorkspaceError(c, http.StatusConflict, webWorkspaceCodeProjectDeletionUnavailable, "provider project deletion is unavailable", "")
+	case errors.Is(err, webworkspace.ErrAgentProjectDeletionRejected):
+		writeWebWorkspaceError(c, http.StatusUnprocessableEntity, webWorkspaceCodeProjectDeletionRejected, "provider project deletion failed", "")
+	case errors.Is(err, webworkspace.ErrAgentUnavailable), errors.Is(err, webworkspace.ErrAgentRejected):
+		writeWebWorkspaceError(c, http.StatusServiceUnavailable, webWorkspaceCodeAgentUnavailable, "web workspace agent unavailable", "")
+	default:
+		writeWebWorkspaceResourceError(c, err)
+	}
+}
+
 func writeWebWorkspaceInternalError(c *gin.Context) {
 	writeWebWorkspaceError(c, http.StatusInternalServerError, webWorkspaceCodeInternalError, "web workspace is temporarily unavailable", "")
 }
@@ -344,7 +362,13 @@ const (
 
 	// webWorkspaceCodeProjectCreationInProgress refuses a second creation while
 	// the guard is still running one for the same workspace.
-	webWorkspaceCodeProjectCreationInProgress = "WEB_WORKSPACE_PROJECT_CREATION_IN_PROGRESS"
+	webWorkspaceCodeProjectCreationInProgress  = "WEB_WORKSPACE_PROJECT_CREATION_IN_PROGRESS"
+	webWorkspaceCodeProjectDeletionTimeout     = "WEB_WORKSPACE_PROJECT_DELETION_TIMEOUT"
+	webWorkspaceCodeProjectDeletionUnavailable = "WEB_WORKSPACE_PROJECT_DELETION_UNAVAILABLE"
+	webWorkspaceCodeProjectDeletionRejected    = "WEB_WORKSPACE_PROJECT_DELETION_REJECTED"
+	// webWorkspaceCodeCapacityReached reports that the agent's global
+	// active-runtime cap is full.
+	webWorkspaceCodeCapacityReached = "WEB_WORKSPACE_CAPACITY_REACHED"
 )
 
 // StartWebWorkspaceSession starts (or reuses) the caller's browser runtime. The
@@ -477,7 +501,7 @@ func NavigateWebWorkspaceSession(c *gin.Context) {
 		writeWebWorkspaceError(c, http.StatusBadRequest, webWorkspaceCodeInvalidRequest, "invalid request body", "")
 		return
 	}
-	session, err := webworkspace.NavigateSession(c.Request.Context(), user.Id, sessionId, request.Action)
+	session, err := webworkspace.NavigateSession(c.Request.Context(), user.Id, sessionId, request.Action, request.ProjectID)
 	if err != nil {
 		writeWebWorkspaceNavigationError(c, err)
 		return
@@ -656,6 +680,8 @@ func writeWebWorkspaceSessionError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, webworkspace.ErrSessionNotFound), errors.Is(err, webworkspace.ErrAgentRuntimeNotFound):
 		writeWebWorkspaceError(c, http.StatusNotFound, webWorkspaceCodeSessionNotFound, "web workspace session not found", "")
+	case errors.Is(err, webworkspace.ErrCapacityReached):
+		writeWebWorkspaceError(c, http.StatusConflict, webWorkspaceCodeCapacityReached, "web workspace capacity reached", "")
 	case errors.Is(err, webworkspace.ErrAgentUnavailable), errors.Is(err, webworkspace.ErrAgentRejected):
 		writeWebWorkspaceError(c, http.StatusServiceUnavailable, webWorkspaceCodeAgentUnavailable, "web workspace agent unavailable", "")
 	case errors.Is(err, webworkspace.ErrResourceNotFound):
@@ -675,6 +701,8 @@ func writeWebWorkspaceNavigationError(c *gin.Context, err error) {
 		writeWebWorkspaceError(c, http.StatusConflict, webWorkspaceCodeNavigationUnavailable, "web workspace navigation unavailable", "")
 	case errors.Is(err, webworkspace.ErrSessionNotFound), errors.Is(err, webworkspace.ErrAgentRuntimeNotFound):
 		writeWebWorkspaceError(c, http.StatusNotFound, webWorkspaceCodeSessionNotFound, "web workspace session not found", "")
+	case errors.Is(err, webworkspace.ErrResourceNotFound):
+		writeWebWorkspaceError(c, http.StatusNotFound, webWorkspaceCodeResourceNotFound, "web workspace resource not found", "")
 	case errors.Is(err, webworkspace.ErrAgentUnavailable), errors.Is(err, webworkspace.ErrAgentRejected):
 		writeWebWorkspaceError(c, http.StatusServiceUnavailable, webWorkspaceCodeAgentUnavailable, "web workspace agent unavailable", "")
 	default:

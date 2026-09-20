@@ -303,13 +303,26 @@ func RestartSession(ctx context.Context, userId int, sessionId string, mode stri
 
 // NavigateSession sends one validated navigation command through the agent and
 // writes the returned snapshot back into the caller's session.
-func NavigateSession(ctx context.Context, userId int, sessionId string, action string) (*Session, error) {
+func NavigateSession(ctx context.Context, userId int, sessionId string, action string, projectID int) (*Session, error) {
 	session, err := GetSession(userId, sessionId)
 	if err != nil {
 		return nil, err
 	}
+	var externalProjectID string
 	switch action {
 	case "back", "forward", "reload", "state":
+	case "project":
+		if projectID <= 0 {
+			return nil, ErrInvalidNavigationAction
+		}
+		project, projectErr := GetOwnedProject(userId, projectID)
+		if projectErr != nil {
+			return nil, projectErr
+		}
+		if project.WorkspaceId != session.WorkspaceId {
+			return nil, ErrResourceNotFound
+		}
+		externalProjectID = project.ExternalProjectId
 	default:
 		return nil, ErrInvalidNavigationAction
 	}
@@ -317,7 +330,12 @@ func NavigateSession(ctx context.Context, userId int, sessionId string, action s
 	if err != nil {
 		return nil, err
 	}
-	navigation, err := client.NavigateRuntime(ctx, session.WorkspaceId, action)
+	var navigation *AgentNavigation
+	if action == "project" {
+		navigation, err = client.NavigateProject(ctx, session.WorkspaceId, externalProjectID)
+	} else {
+		navigation, err = client.NavigateRuntime(ctx, session.WorkspaceId, action)
+	}
 	if err != nil {
 		return nil, err
 	}
