@@ -144,7 +144,7 @@ done
 log "Xvfb ready at $display_socket"
 
 log "starting x11vnc"
-x11vnc -display "$WW_DISPLAY" -rfbport "$WW_VNC_PORT" -forever -shared -nopw -nolookup -noxdamage -quiet -bg -o /tmp/x11vnc.log
+x11vnc -display "$WW_DISPLAY" -rfbport "$WW_VNC_PORT" -forever -shared -nopw -nolookup -deferupdate 50 -wait 30 -quiet -bg -o /tmp/x11vnc.log
 
 i=0
 while [ -z "$X11VNC_PID" ]; do
@@ -180,12 +180,23 @@ log "x11vnc ready pid=$X11VNC_PID port=$WW_VNC_PORT"
 log "starting chromium with profile=$WW_WORKSPACE_DIR/profile guard_mode=$WW_GUARD_MODE"
 chromium --no-sandbox \
     --test-type \
+    --disable-gpu \
+    --disable-software-rasterizer \
+    --disable-dev-shm-usage \
+    --renderer-process-limit=1 \
+    --disable-component-update \
+    --disable-sync \
+    --metrics-recording-only \
+    --no-pings \
+    --disable-breakpad \
+    --force-device-scale-factor=1 \
+    --js-flags=--max-old-space-size=256 \
     --password-store=basic \
     --user-data-dir="$WW_WORKSPACE_DIR/profile" \
     --display="$WW_DISPLAY" \
     --no-first-run \
     --no-default-browser-check \
-    --disable-features=TranslateUI \
+    --disable-features=TranslateUI,PasswordManager,PasswordManagerOnboarding,AutofillServerCommunication,Vulkan \
     --window-size="${WW_SCREEN_WIDTH},${WW_SCREEN_HEIGHT}" \
     --window-position=0,0 \
     --proxy-server="$WW_PROXY_SERVER" \
