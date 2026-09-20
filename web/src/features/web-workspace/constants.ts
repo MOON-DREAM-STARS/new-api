@@ -40,6 +40,8 @@ export const WEB_WORKSPACE_PROJECTS_QUERY_KEY = [
 /** The capability probe is cheap; keep it fresh for a few minutes. */
 export const WEB_WORKSPACE_CONFIG_STALE_TIME_MS = 5 * 60 * 1000
 
+/** Long-poll window for one pending local file chooser. */
+export const WEB_WORKSPACE_FILE_CHOOSER_WAIT_MS = 25000
 /** Session polling interval while the page is visible. */
 export const WEB_WORKSPACE_SESSION_POLL_INTERVAL_MS = 5000
 
@@ -85,7 +87,21 @@ export const WEB_WORKSPACE_ERROR_CODES = {
   projectDeletionUnavailable: 'WEB_WORKSPACE_PROJECT_DELETION_UNAVAILABLE',
   projectDeletionRejected: 'WEB_WORKSPACE_PROJECT_DELETION_REJECTED',
   capacityReached: 'WEB_WORKSPACE_CAPACITY_REACHED',
+  navigationTimeout: 'WEB_WORKSPACE_NAVIGATION_TIMEOUT',
+  navigationUnavailable: 'WEB_WORKSPACE_NAVIGATION_UNAVAILABLE',
   ticketInvalid: 'WEB_WORKSPACE_TICKET_INVALID',
+  fileChooserExpired: 'WEB_WORKSPACE_FILE_CHOOSER_EXPIRED',
+  fileTooLarge: 'WEB_WORKSPACE_FILE_TOO_LARGE',
+  fileLimitExceeded: 'WEB_WORKSPACE_FILE_LIMIT_EXCEEDED',
+  fileInjectFailed: 'WEB_WORKSPACE_FILE_INJECT_FAILED',
+  fileBridgeBusy: 'WEB_WORKSPACE_FILE_BRIDGE_BUSY',
+  clipboardUnavailable: 'WEB_WORKSPACE_CLIPBOARD_UNAVAILABLE',
+  clipboardPayloadTooLarge: 'WEB_WORKSPACE_CLIPBOARD_PAYLOAD_TOO_LARGE',
+  clipboardMimeUnsupported: 'WEB_WORKSPACE_CLIPBOARD_MIME_UNSUPPORTED',
+  clipboardFailed: 'WEB_WORKSPACE_CLIPBOARD_FAILED',
+  inputUnavailable: 'WEB_WORKSPACE_INPUT_UNAVAILABLE',
+  inputTimeout: 'WEB_WORKSPACE_INPUT_TIMEOUT',
+  inputRejected: 'WEB_WORKSPACE_INPUT_REJECTED',
 } as const
 
 /** i18n keys (English source strings) for each runtime state label. */

@@ -19,7 +19,10 @@ For commercial licensing, please contact support@quantumnous.com
 import {
   ArrowLeft,
   ArrowRight,
+  ClipboardCopy,
+  ClipboardPaste,
   Ellipsis,
+  Keyboard,
   Maximize2,
   Minimize2,
   RefreshCw,
@@ -115,6 +118,8 @@ type WorkspaceToolbarProps = {
   navigation: WebWorkspaceNavigation | null
   isNavigationAvailable: boolean
   isNavigationPending: boolean
+  inputMode: 'remote' | 'local'
+  inputEnabled: boolean
   immersive: boolean
   onStart: () => void
   onReconnect: () => void
@@ -124,7 +129,10 @@ type WorkspaceToolbarProps = {
   onNavigateBack: () => void
   onNavigateForward: () => void
   onNavigateReload: () => void
+  onCopyRemoteSelection: () => void
+  onPasteIntoRemote: () => void
   onToggleImmersive: () => void
+  onToggleInputMode: () => void
 }
 
 /**
@@ -195,6 +203,29 @@ export function WorkspaceToolbar(props: WorkspaceToolbarProps) {
         type='button'
         size='icon-sm'
         variant='ghost'
+        aria-label={t('Copy remote selection')}
+        title={t('Copy remote selection')}
+        disabled={!props.isLive || props.isBusy}
+        onClick={props.onCopyRemoteSelection}
+      >
+        <ClipboardCopy aria-hidden='true' />
+      </Button>
+      <Button
+        type='button'
+        size='icon-sm'
+        variant='ghost'
+        aria-label={t('Paste into remote')}
+        title={t('Paste into remote')}
+        disabled={!props.isLive || props.isBusy}
+        onClick={props.onPasteIntoRemote}
+      >
+        <ClipboardPaste aria-hidden='true' />
+      </Button>
+
+      <Button
+        type='button'
+        size='icon-sm'
+        variant='ghost'
         aria-label={
           props.immersive ? t('Exit immersive mode') : t('Immersive mode')
         }
@@ -206,6 +237,24 @@ export function WorkspaceToolbar(props: WorkspaceToolbarProps) {
         ) : (
           <Maximize2 aria-hidden='true' />
         )}
+      </Button>
+
+      <Button
+        type='button'
+        size='sm'
+        variant={props.inputMode === 'local' ? 'secondary' : 'ghost'}
+        aria-pressed={props.inputMode === 'local'}
+        aria-label={
+          props.inputMode === 'local' ? t('Remote keyboard') : t('Local input')
+        }
+        title={
+          props.inputMode === 'local' ? t('Remote keyboard') : t('Local input')
+        }
+        disabled={!props.inputEnabled || props.isBusy}
+        onClick={props.onToggleInputMode}
+      >
+        <Keyboard aria-hidden='true' />
+        {props.inputMode === 'local' ? t('Remote keyboard') : t('Local input')}
       </Button>
 
       <DropdownMenu>

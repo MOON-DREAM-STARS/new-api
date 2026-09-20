@@ -72,6 +72,7 @@ const reconnect = vi.fn()
 
 const remoteSurfaceState = vi.hoisted(() => ({
   status: 'connected' as 'connecting' | 'connected' | 'reconnecting' | 'failed',
+  screen: { width: 1860, height: 912 },
 }))
 
 const surfaceOptions = vi.hoisted(() => ({ enabled: true, sessionId: '' }))
@@ -85,11 +86,14 @@ vi.mock('../hooks/use-remote-surface', () => ({
     surfaceOptions.sessionId = options.sessionId
     return {
       containerRef: { current: null } as RefObject<HTMLDivElement | null>,
-      screen: { width: 1280, height: 720 },
+      screen: remoteSurfaceState.screen,
       status: remoteSurfaceState.status,
       attempt: 0,
       maxAttempts: 5,
       errorMessageKey: null,
+      getIframe: () => null,
+      getCanvasMetrics: () => null,
+      focusSurface: () => undefined,
       reconnect,
     }
   },
@@ -131,6 +135,7 @@ afterEach(() => {
   apiClient.delete = originalDelete
   reconnect.mockReset()
   remoteSurfaceState.status = 'connected'
+  remoteSurfaceState.screen = { width: 1860, height: 912 }
   surfaceOptions.enabled = true
   surfaceOptions.sessionId = ''
   Object.defineProperty(Document.prototype, 'hidden', {
@@ -295,6 +300,19 @@ describe('WebWorkspace page', () => {
     expect(screen.getByTestId('web-workspace-surface-frame')).toBeTruthy()
     // The remote browser stays the primary surface: no Card based dashboard.
     expect(screen.queryByText('Browser session')).toBeNull()
+  })
+
+  test('does not show an obsolete remote IME notice when local input is available', async () => {
+    mockWorkspaceGets({ ...runningSession, ime_state: 'UNAVAILABLE' })
+
+    renderPage(<WebWorkspace />)
+
+    expect(
+      screen.queryByText('Input method is unavailable in the remote browser.')
+    ).toBeNull()
+    expect(
+      await screen.findByRole('button', { name: 'Local input' })
+    ).toBeInTheDocument()
   })
 
   test('falls back to the latest project when no remembered project exists', async () => {
@@ -750,6 +768,31 @@ describe('WebWorkspace page', () => {
       expect((posted.data as { mode?: string }).mode).toBe('LOCKED')
     })
   })
+  test('remaps a stale runtime once to the measured screen size', async () => {
+    remoteSurfaceState.screen = { width: 1280, height: 720 }
+    mockWorkspaceGets(runningSession)
+    const restartPosts: Array<{ url: string; data: unknown }> = []
+    apiClient.post = async (url, data) => {
+      restartPosts.push({ url, data })
+      return ok(runningSession)
+    }
+
+    renderPage(<WebWorkspace />)
+
+    await waitFor(() => {
+      expect(restartPosts[0]?.url).toBe(
+        `${SESSION_PATH}/${runningSession.session_id}/restart`
+      )
+      expect(restartPosts[0]?.data).toEqual(
+        expect.objectContaining({
+          screen_width: 1860,
+          screen_height: 912,
+        })
+      )
+    })
+    expect(restartPosts).toHaveLength(1)
+  })
+
   test('proposes the measured remote screen size when starting', async () => {
     const posts: Array<{ url: string; data: unknown }> = []
     apiClient.get = async (url) => {
@@ -872,6 +915,83 @@ describe('WebWorkspace page', () => {
         data: { action: 'project', project_id: 1 },
       })
     })
+  })
+
+  test('keeps the remote surface mounted and overlays a failed project navigation', async () => {
+    mockWorkspaceGets(runningSession)
+    apiClient.post = async (url) => {
+      if (url === `${SESSION_PATH}/${runningSession.session_id}/navigation`) {
+        return fail(504, 'WEB_WORKSPACE_NAVIGATION_TIMEOUT')
+      }
+      return ok(runningSession)
+    }
+
+    renderPage(<WebWorkspace />)
+
+    const projectButton = await screen.findByRole('button', {
+      name: 'acceptance project',
+    })
+    projectButton.click()
+
+    // The real failure is surfaced on top of the still-mounted Kasm surface:
+    // the stream stays visible (no full-cover teardown state) and Retry is
+    // offered instead of remounting the client.
+    expect(
+      await screen.findByText('Could not open the selected project.')
+    ).toBeTruthy()
+    expect(
+      screen.getByText(
+        'The remote provider is taking longer than expected to open the project. Try again in a moment.'
+      )
+    ).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
+    // The pre-navigation cover is gone and the mounted stream is not hidden.
+    expect(screen.queryByText('Opening your project...')).toBeNull()
+    const surface = screen.getByTestId('web-workspace-surface')
+    expect(surface).toBeTruthy()
+    expect(
+      surface.closest("[aria-hidden='true']")
+    ).toBeNull()
+  })
+
+  test('reports the real guard page cause instead of a generic project error', async () => {
+    mockWorkspaceGets({
+      ...runningSession,
+      page: {
+        state: 'FAILED',
+        error: 'ERR_POLICY_PROJECT_NOT_REGISTERED',
+        attempts: 0,
+        updated_at: 5,
+      },
+    })
+    apiClient.post = async (url) => {
+      if (url === `${SESSION_PATH}/${runningSession.session_id}/navigation`) {
+        return fail(409, 'WEB_WORKSPACE_NAVIGATION_UNAVAILABLE')
+      }
+      return ok(runningSession)
+    }
+
+    renderPage(<WebWorkspace />)
+
+    const projectButton = await screen.findByRole('button', {
+      name: 'acceptance project',
+    })
+    projectButton.click()
+
+    // The guard's real page state and error code outrank the classified
+    // client-side message, so the operator sees why the page is not usable.
+    expect(
+      await screen.findByText(
+        'Error code: ERR_POLICY_PROJECT_NOT_REGISTERED'
+      )
+    ).toBeTruthy()
+    expect(
+      screen.queryByText(
+        'The selected project could not be opened. Refresh the project list and try again.'
+      )
+    ).toBeNull()
+    // The Kasm surface stays mounted behind the overlay.
+    expect(screen.getByTestId('web-workspace-surface')).toBeTruthy()
   })
 
   test('marks the operator-opened sign-in window', async () => {
