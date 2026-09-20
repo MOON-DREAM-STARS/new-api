@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/QuantumNous/new-api/browser-agent/internal/policy"
+	"github.com/QuantumNous/new-api/browser-agent/internal/runtime"
 )
 
 const testFileChooserID = "chooser-0000000000000001"
@@ -54,6 +55,36 @@ func TestFileChooserEventCreatesPendingState(t *testing.T) {
 	assert.Equal(t, "session-1", state.SessionID)
 	assert.Greater(t, state.ExpiresAt, state.CreatedAt)
 	run.assertRunning(100 * time.Millisecond)
+}
+
+func TestValidFileChooserCommandFilePathRules(t *testing.T) {
+	prefix := runtime.WorkspaceMountTarget + "/uploads/.bridge/" + testFileChooserID + "/"
+	tests := []struct {
+		name  string
+		files []string
+		want  bool
+	}{
+		{name: "plain name", files: []string{prefix + "report.txt"}, want: true},
+		{name: "double dot inside name", files: []string{prefix + "report..v2.txt"}, want: true},
+		{name: "traversal", files: []string{prefix + "../report.txt"}, want: false},
+		{name: "nested path", files: []string{prefix + "nested/report.txt"}, want: false},
+		{name: "empty name", files: []string{prefix}, want: false},
+		{name: "other chooser directory", files: []string{runtime.WorkspaceMountTarget + "/uploads/.bridge/chooser-0000000000000002/report.txt"}, want: false},
+		{name: "outside the workspace", files: []string{"/workspace/profile/Default/Cookies"}, want: false},
+		{name: "no files", files: nil, want: false},
+		{name: "too many files", files: []string{prefix + "a", prefix + "b", prefix + "c", prefix + "d", prefix + "e", prefix + "f"}, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			command := fileChooserCommand{
+				ID:        1,
+				ChooserID: testFileChooserID,
+				Action:    fileChooserActionAttach,
+				Files:     test.files,
+			}
+			assert.Equal(t, test.want, validFileChooserCommand(command))
+		})
+	}
 }
 
 func TestFileChooserAttachCommandSetsFilesAndWritesDone(t *testing.T) {
