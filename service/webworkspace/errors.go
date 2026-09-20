@@ -7,6 +7,11 @@ import "errors"
 // API layer maps a single error to a single deny response.
 var ErrResourceNotFound = errors.New("web workspace resource not found")
 
+// ErrAgentInvalidRequest means the agent refused the shape of the request
+// itself. It has to stay distinguishable from ErrAgentRejected so the API layer
+// can answer with a client error instead of reporting the agent as unavailable.
+var ErrAgentInvalidRequest = errors.New("web workspace agent rejected the request shape")
+
 // File chooser bridge errors are stable control-plane classifications. The
 // agent reports the underlying cause without exposing a path or CDP identifier.
 var (

@@ -202,6 +202,31 @@ func TestFileChooserUploadRejectsDifferentPendingChooser(t *testing.T) {
 	assert.Equal(t, 0, source.index)
 }
 
+func TestFileChooserCancelReportsExpiredForFinishedChooser(t *testing.T) {
+	workspaceID := int64(107)
+	h := startFileChooserRuntime(t, workspaceID)
+	guardPath := guardStateDir(WorkspaceDir(h.dataRoot, workspaceID))
+	require.NoError(t, os.MkdirAll(guardPath, 0o700))
+	now := time.Now().Unix()
+	payload, err := json.Marshal(map[string]any{
+		"id":              0,
+		"chooser_id":      managerFileChooserID,
+		"state":           fileChooserStateDone,
+		"error":           "",
+		"mode":            fileChooserModeSingle,
+		"backend_node_id": 11,
+		"session_id":      "session-1",
+		"created_at":      now,
+		"expires_at":      now + 300,
+		"updated_at":      now,
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(guardPath, fileChooserStateName), payload, 0o644))
+
+	_, err = h.mgr.CancelFileChooser(context.Background(), workspaceID, managerOtherChooserID)
+	require.ErrorIs(t, err, ErrFileChooserExpired)
+}
+
 func TestNavigationIsNotBlockedByFileChooserLongPoll(t *testing.T) {
 	workspaceID := int64(106)
 	h := startFileChooserRuntime(t, workspaceID)
