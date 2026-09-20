@@ -47,6 +47,7 @@ import {
   renameProjectFormSchema,
   type RenameProjectFormValues,
 } from '../lib/project-form'
+import { composeProjectName, splitProjectName } from '../lib/project-name'
 import type { WebProject } from '../types'
 
 type ProjectRenameDialogProps = {
@@ -63,20 +64,25 @@ function ProjectRenameForm(props: {
 }) {
   const { t } = useTranslation()
   const renameMutation = useRenameWebWorkspaceProject()
+  const parsed = splitProjectName(props.project.name)
   const form = useForm<RenameProjectFormValues>({
     resolver: zodResolver(renameProjectFormSchema),
-    defaultValues: { name: props.project.name },
+    defaultValues: parsed ?? { userName: '', projectName: '' },
   })
 
   const error = renameMutation.error
     ? classifyWebWorkspaceError(renameMutation.error)
     : null
+  const finalName = composeProjectName(
+    form.watch('userName'),
+    form.watch('projectName')
+  )
 
   const handleSubmit = form.handleSubmit(async (values) => {
     try {
       await renameMutation.mutateAsync({
         id: props.project.id,
-        name: values.name,
+        name: composeProjectName(values.userName, values.projectName),
       })
       props.onOpenChange(false)
     } catch (failure) {
@@ -97,19 +103,44 @@ function ProjectRenameForm(props: {
         }}
         className='grid gap-4'
       >
+        {!parsed ? (
+          <p className='text-muted-foreground text-xs'>
+            {t('Current name: {{name}}', { name: props.project.name })}
+          </p>
+        ) : null}
+
         <FormField
           control={form.control}
-          name='name'
+          name='userName'
           render={({ field }) => (
             <FormItem>
-              <FormLabel>{t('Project name')}</FormLabel>
+              <FormLabel>{t('User name')}</FormLabel>
               <FormControl>
-                <Input autoFocus maxLength={255} {...field} />
+                <Input autoFocus maxLength={24} {...field} />
               </FormControl>
               <FormMessage />
             </FormItem>
           )}
         />
+        <FormField
+          control={form.control}
+          name='projectName'
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>{t('Project name')}</FormLabel>
+              <FormControl>
+                <Input maxLength={24} {...field} />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <p className='text-muted-foreground text-xs'>
+          {t('Final project name: {{name}}', {
+            name: finalName === '-' ? '—' : finalName,
+          })}
+        </p>
+
         {error ? (
           <Alert variant='destructive' role='alert'>
             <AlertTitle>

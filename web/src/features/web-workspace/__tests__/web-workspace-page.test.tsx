@@ -30,6 +30,7 @@ import type { ReactNode, RefObject } from 'react'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import { api } from '@/lib/api'
+import { useAuthStore } from '@/stores/auth-store'
 
 import type { RemoteSurfaceController } from '../hooks/use-remote-surface'
 import { WEB_WORKSPACE_PROVIDER_QUERY_KEY } from '../hooks/use-web-workspace-provider'
@@ -271,6 +272,75 @@ describe('WebWorkspace page', () => {
     expect(screen.queryByText('Browser session')).toBeNull()
   })
 
+  test('falls back to the latest project when no remembered project exists', async () => {
+    const originalAuth = useAuthStore.getState().auth
+    useAuthStore.setState({
+      auth: {
+        ...originalAuth,
+        user: {
+          id: 2,
+          username: 'workspace-user-2',
+          role: 1,
+        },
+      },
+    })
+    const navigationPosts: Array<{ data: unknown }> = []
+    apiClient.get = async (url) => {
+      if (url === CONFIG_PATH) return ok({ enabled: true, entitled: true })
+      if (url === SESSION_PATH) return ok(runningSession)
+      if (url === PROJECTS_PATH) {
+        return ok({
+          items: [
+            {
+              id: 1,
+              provider: 'chatgpt',
+              name: 'First-Project',
+              created_at: 1,
+              updated_at: 1,
+            },
+            {
+              id: 2,
+              provider: 'chatgpt',
+              name: 'Latest-Project',
+              created_at: 2,
+              updated_at: 2,
+            },
+          ],
+        })
+      }
+      if (url === STATUS_PATH) {
+        return ok({
+          entitled: true,
+          workspace: {
+            provider: 'chatgpt',
+            status: 1,
+            created_at: 1,
+            last_active_at: 1,
+          },
+        })
+      }
+      throw new Error(`unexpected request ${url}`)
+    }
+    apiClient.post = async (_url, data) => {
+      navigationPosts.push({ data })
+      return ok(runningSession)
+    }
+
+    try {
+      renderPage(<WebWorkspace />)
+      await waitFor(() => {
+        expect(navigationPosts).toEqual(
+          expect.arrayContaining([
+            { data: { action: 'project', project_id: 2 } },
+          ])
+        )
+      })
+    } finally {
+      window.localStorage.removeItem('web-workspace:last-project:2')
+      useAuthStore.setState({ auth: originalAuth })
+    }
+  })
+
   test('keeps the provider crop and shows administrator guidance when creation fails', async () => {
     mockWorkspaceGets({
       ...runningSession,
@@ -349,7 +419,11 @@ describe('WebWorkspace page', () => {
     reloadButton.click()
 
     await waitFor(() => {
-      expect(posts).toEqual([
+      expect(
+        posts.filter(
+          (post) => (post.data as { action?: string }).action !== 'project'
+        )
+      ).toEqual([
         {
           url: `${SESSION_PATH}/${runningSession.session_id}/navigation`,
           data: { action: 'reload' },
@@ -446,9 +520,81 @@ describe('WebWorkspace page', () => {
 
     const { container } = renderPage(<WebWorkspace />)
 
-    expect(await screen.findByText('No projects yet.')).toBeTruthy()
+    expect(await screen.findByText('Create your first project')).toBeTruthy()
+    expect(screen.getByLabelText('User name')).toBeTruthy()
+    expect(screen.getByLabelText('Project name')).toBeTruthy()
     expect(container.textContent).not.toContain('A0')
     expect(screen.queryByLabelText('A0')).toBeNull()
+  })
+
+  test('auto-opens the last project and falls back to the latest project', async () => {
+    const originalAuth = useAuthStore.getState().auth
+    useAuthStore.setState({
+      auth: {
+        ...originalAuth,
+        user: {
+          id: 1,
+          username: 'workspace-user',
+          role: 1,
+        },
+      },
+    })
+    window.localStorage.setItem('web-workspace:last-project:1', '1')
+    const navigationPosts: Array<{ data: unknown }> = []
+    apiClient.get = async (url) => {
+      if (url === CONFIG_PATH) return ok({ enabled: true, entitled: true })
+      if (url === SESSION_PATH) return ok(runningSession)
+      if (url === PROJECTS_PATH) {
+        return ok({
+          items: [
+            {
+              id: 1,
+              provider: 'chatgpt',
+              name: 'First-Project',
+              created_at: 1,
+              updated_at: 1,
+            },
+            {
+              id: 2,
+              provider: 'chatgpt',
+              name: 'Latest-Project',
+              created_at: 2,
+              updated_at: 2,
+            },
+          ],
+        })
+      }
+      if (url === STATUS_PATH) {
+        return ok({
+          entitled: true,
+          workspace: {
+            provider: 'chatgpt',
+            status: 1,
+            created_at: 1,
+            last_active_at: 1,
+          },
+        })
+      }
+      throw new Error(`unexpected request ${url}`)
+    }
+    apiClient.post = async (_url, data) => {
+      navigationPosts.push({ data })
+      return ok(runningSession)
+    }
+
+    try {
+      renderPage(<WebWorkspace />)
+      await waitFor(() => {
+        expect(navigationPosts).toEqual(
+          expect.arrayContaining([
+            { data: { action: 'project', project_id: 1 } },
+          ])
+        )
+      })
+    } finally {
+      window.localStorage.removeItem('web-workspace:last-project:1')
+      useAuthStore.setState({ auth: originalAuth })
+    }
   })
 
   test('shows the workspace empty state and starts a session on demand', async () => {
@@ -652,22 +798,31 @@ describe('WebWorkspace page', () => {
 
     backButton.click()
     await waitFor(() => {
-      expect(navigationPosts[0]).toEqual({
-        url: `${SESSION_PATH}/${runningSession.session_id}/navigation`,
-        data: { action: 'back' },
-      })
+      expect(
+        navigationPosts.some(
+          (post) => (post.data as { action?: string }).action === 'back'
+        )
+      ).toBe(true)
       expect((forwardButton as HTMLButtonElement).disabled).toBe(false)
     })
 
     forwardButton.click()
     await waitFor(() => {
-      expect(navigationPosts[1]?.data).toEqual({ action: 'forward' })
+      expect(
+        navigationPosts.some(
+          (post) => (post.data as { action?: string }).action === 'forward'
+        )
+      ).toBe(true)
       expect((reloadButton as HTMLButtonElement).disabled).toBe(false)
     })
 
     reloadButton.click()
     await waitFor(() => {
-      expect(navigationPosts[2]?.data).toEqual({ action: 'reload' })
+      expect(
+        navigationPosts.some(
+          (post) => (post.data as { action?: string }).action === 'reload'
+        )
+      ).toBe(true)
     })
   })
 

@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQueryClient } from '@tanstack/react-query'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -34,6 +34,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Spinner } from '@/components/ui/spinner'
 
+import { fetchWebWorkspaceProjects, type WebWorkspaceScreenSize } from '../api'
 import {
   WEB_WORKSPACE_PROJECT_CREATION_POLL_INTERVAL_MS,
   WEB_WORKSPACE_PROJECTS_QUERY_KEY,
@@ -48,17 +49,34 @@ import {
   useWebWorkspaceSession,
 } from '../hooks/use-web-workspace-session'
 import { classifyWebWorkspaceError, isPolicyDenied } from '../lib/errors'
+import {
+  composeProjectName,
+  isValidProjectNameSegment,
+  PROJECT_NAME_SEGMENT_MAX_LENGTH,
+} from '../lib/project-name'
+import { isLiveSessionState } from '../lib/session'
+import type { WebProject } from '../types'
 
 type ProjectCreateDialogProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
+  /** First-project mode cannot be dismissed before a project exists. */
+  required?: boolean
+  /** Screen size used when the dialog starts a session on the operator's behalf. */
+  screenSize?: WebWorkspaceScreenSize | null
+  onCreated?: (project: WebProject) => void
 }
 
-const PROJECT_NAME_MAX_LENGTH = 64
-
-function isValidProjectName(value: string): boolean {
-  const length = [...value.trim()].length
-  return length >= 1 && length <= PROJECT_NAME_MAX_LENGTH
+function findCreatedProject(
+  projects: WebProject[],
+  baselineIds: number[],
+  expectedName: string
+): WebProject | null {
+  const baseline = new Set(baselineIds)
+  const added = projects.filter((project) => !baseline.has(project.id))
+  const exact = added.find((project) => project.name === expectedName)
+  if (exact) return exact
+  return added.length === 1 ? added[0] : null
 }
 
 /**
@@ -68,16 +86,27 @@ function isValidProjectName(value: string): boolean {
  */
 export function ProjectCreateDialog(props: ProjectCreateDialogProps) {
   const { t } = useTranslation()
-  const { open, onOpenChange } = props
+  const { open, onOpenChange, required = false } = props
   const queryClient = useQueryClient()
   const permitMutation = useCreateWebWorkspaceProjectPermit()
   const startSessionMutation = useStartWebWorkspaceSession()
-  const [name, setName] = useState('')
-  const [nameTouched, setNameTouched] = useState(false)
+  const [userName, setUserName] = useState('')
+  const [projectName, setProjectName] = useState('')
+  const [userNameTouched, setUserNameTouched] = useState(false)
+  const [projectNameTouched, setProjectNameTouched] = useState(false)
   const [observedPermitId, setObservedPermitId] = useState<string | null>(null)
+  const [resolvingCreated, setResolvingCreated] = useState(false)
+  const [resolveError, setResolveError] = useState(false)
+  const [resolveRetryToken, setResolveRetryToken] = useState(0)
+  const baselineProjectIds = useRef<number[]>([])
+  const resolveAttemptsRef = useRef(0)
+  const resolvedPermitIdRef = useRef<string | null>(null)
+  const onCreatedRef = useRef(props.onCreated)
+  onCreatedRef.current = props.onCreated
 
   const permit = permitMutation.data ?? null
   const sessionQuery = useWebWorkspaceSession({ enabled: open })
+  const sessionLive = isLiveSessionState(sessionQuery.data?.state)
   const projectCreation = sessionQuery.data?.project_creation ?? null
   const sessionRunning = projectCreation?.state === 'RUNNING'
   const matchingCreation =
@@ -88,16 +117,18 @@ export function ProjectCreateDialog(props: ProjectCreateDialogProps) {
     matchingCreation ??
     (projectCreation?.permit_id === observedPermitId ? projectCreation : null)
   const creating = Boolean(permit) || sessionRunning
-  useWebWorkspaceProjects(open && creating)
-  const creationFailed = projectCreation?.state === 'FAILED'
-  const creationError = creationFailed ? projectCreation.error : ''
-  const trimmedName = name.trim()
-  const isNameValid = isValidProjectName(name)
-  // The field starts empty, so the hint only appears after the operator has
-  // interacted with it instead of on open.
-  const showNameError = nameTouched && !isNameValid
-  const rawError = permitMutation.error
-    ? classifyWebWorkspaceError(permitMutation.error)
+  const projectsQuery = useWebWorkspaceProjects(open && creating)
+  const creationFailed = trackedCreation?.state === 'FAILED'
+  const creationError = creationFailed ? (trackedCreation.error ?? '') : ''
+  const combinedName = composeProjectName(userName, projectName)
+  const userNameValid = isValidProjectNameSegment(userName)
+  const projectNameValid = isValidProjectNameSegment(projectName)
+  const isNameValid = userNameValid && projectNameValid
+  const showUserNameError = userNameTouched && !userNameValid
+  const showProjectNameError = projectNameTouched && !projectNameValid
+  const mutationError = permitMutation.error ?? startSessionMutation.error
+  const rawError = mutationError
+    ? classifyWebWorkspaceError(mutationError)
     : null
   const conflictInProgress = rawError?.kind === 'project_creation_in_progress'
   const error = conflictInProgress ? null : rawError
@@ -107,9 +138,16 @@ export function ProjectCreateDialog(props: ProjectCreateDialogProps) {
   const isBusy =
     permitMutation.isPending ||
     startSessionMutation.isPending ||
-    sessionChecking
+    sessionChecking ||
+    resolvingCreated
   const showCreateAction =
-    !permit && !error && !creating && !checkingCreation && !creationFailed
+    !permit &&
+    !error &&
+    !creating &&
+    !checkingCreation &&
+    !creationFailed &&
+    !resolvingCreated &&
+    !resolveError
 
   useEffect(() => {
     if (!open || !sessionRunning || !projectCreation) return
@@ -119,17 +157,76 @@ export function ProjectCreateDialog(props: ProjectCreateDialogProps) {
   useEffect(() => {
     if (open) return
     setObservedPermitId(null)
+    resolvedPermitIdRef.current = null
+    resolveAttemptsRef.current = 0
+    setResolvingCreated(false)
+    setResolveError(false)
   }, [open])
 
   useEffect(() => {
     if (!open || trackedCreation?.state !== 'CREATED') return
-    void queryClient.invalidateQueries({
-      queryKey: WEB_WORKSPACE_PROJECTS_QUERY_KEY,
-    })
-    permitMutation.reset()
-    setObservedPermitId(null)
-    onOpenChange(false)
-  }, [onOpenChange, open, permitMutation, queryClient, trackedCreation])
+    const permitId = trackedCreation.permit_id
+    if (resolvedPermitIdRef.current === permitId) return
+    if (resolveAttemptsRef.current >= 5) {
+      setResolvingCreated(false)
+      setResolveError(true)
+      return
+    }
+
+    resolveAttemptsRef.current += 1
+    setResolvingCreated(true)
+    setResolveError(false)
+    void (async () => {
+      try {
+        let projects = projectsQuery.data ?? []
+        let created = findCreatedProject(
+          projects,
+          baselineProjectIds.current,
+          combinedName
+        )
+        if (!created) {
+          projects = await fetchWebWorkspaceProjects()
+          queryClient.setQueryData(WEB_WORKSPACE_PROJECTS_QUERY_KEY, projects)
+          created = findCreatedProject(
+            projects,
+            baselineProjectIds.current,
+            combinedName
+          )
+        }
+        if (!created) {
+          if (resolveAttemptsRef.current < 5) {
+            setResolveRetryToken((token) => token + 1)
+          } else {
+            setResolveError(true)
+          }
+          return
+        }
+        resolvedPermitIdRef.current = permitId
+        resolveAttemptsRef.current = 0
+        permitMutation.reset()
+        setObservedPermitId(null)
+        onCreatedRef.current?.(created)
+        onOpenChange(false)
+      } catch {
+        if (resolveAttemptsRef.current < 5) {
+          setResolveRetryToken((token) => token + 1)
+        } else {
+          setResolveError(true)
+        }
+      } finally {
+        setResolvingCreated(false)
+      }
+    })()
+  }, [
+    combinedName,
+    onOpenChange,
+    open,
+    permitMutation,
+    projectsQuery.data,
+    queryClient,
+    resolveRetryToken,
+    trackedCreation,
+  ])
 
   useEffect(() => {
     if (!open || !conflictInProgress) return
@@ -151,20 +248,44 @@ export function ProjectCreateDialog(props: ProjectCreateDialogProps) {
     return () => window.clearInterval(timer)
   }, [creating, open, queryClient])
 
-  const handleOpenChange = (open: boolean) => {
-    if (!open) {
-      permitMutation.reset()
-      startSessionMutation.reset()
-      setName('')
-      setNameTouched(false)
-      setObservedPermitId(null)
-    }
-    onOpenChange(open)
+  const resetForm = () => {
+    permitMutation.reset()
+    startSessionMutation.reset()
+    setUserName('')
+    setProjectName('')
+    setUserNameTouched(false)
+    setProjectNameTouched(false)
+    setObservedPermitId(null)
+    setResolvingCreated(false)
+    setResolveError(false)
+    resolvedPermitIdRef.current = null
+    resolveAttemptsRef.current = 0
   }
 
-  const requestPermit = () => {
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen && required) return
+    if (!nextOpen) resetForm()
+    onOpenChange(nextOpen)
+  }
+
+  const requestPermit = async () => {
     if (!isNameValid || isBusy || creationFailed) return
-    permitMutation.mutate({ name: trimmedName })
+    baselineProjectIds.current = (projectsQuery.data ?? []).map(
+      (project) => project.id
+    )
+    setResolveError(false)
+    resolvedPermitIdRef.current = null
+    resolveAttemptsRef.current = 0
+    try {
+      if (!sessionLive) {
+        await startSessionMutation.mutateAsync({
+          screenSize: props.screenSize ?? undefined,
+        })
+      }
+      permitMutation.mutate({ name: combinedName })
+    } catch {
+      // The mutation error is rendered in place.
+    }
   }
 
   let body: React.ReactNode = null
@@ -178,11 +299,7 @@ export function ProjectCreateDialog(props: ProjectCreateDialogProps) {
           size='sm'
           disabled={isBusy}
           onClick={() => {
-            startSessionMutation.mutate(undefined, {
-              onSuccess: () => {
-                permitMutation.reset()
-              },
-            })
+            void requestPermit()
           }}
         >
           {startSessionMutation.isPending ? (
@@ -213,7 +330,9 @@ export function ProjectCreateDialog(props: ProjectCreateDialogProps) {
           size='sm'
           variant='outline'
           disabled={!isNameValid || isBusy}
-          onClick={requestPermit}
+          onClick={() => {
+            void requestPermit()
+          }}
         >
           {permitMutation.isPending ? (
             <Spinner className='size-4 motion-reduce:animate-none' />
@@ -237,6 +356,40 @@ export function ProjectCreateDialog(props: ProjectCreateDialogProps) {
           })}
         </p>
       </Alert>
+    )
+  } else if (resolveError) {
+    body = (
+      <Alert variant='destructive' role='alert'>
+        <AlertTitle>
+          {t('Project was created but is not registered yet')}
+        </AlertTitle>
+        <AlertDescription>
+          {t('Refresh the project list and try again.')}
+        </AlertDescription>
+        <Button
+          type='button'
+          size='sm'
+          variant='outline'
+          onClick={() => {
+            resolveAttemptsRef.current = 0
+            resolvedPermitIdRef.current = null
+            setResolveError(false)
+            setResolveRetryToken((token) => token + 1)
+          }}
+        >
+          {t('Refresh project list')}
+        </Button>
+      </Alert>
+    )
+  } else if (resolvingCreated) {
+    body = (
+      <div
+        role='status'
+        className='text-muted-foreground flex items-center gap-3 rounded-lg border px-3 py-3 text-sm'
+      >
+        <Spinner className='size-4 shrink-0 motion-reduce:animate-none' />
+        {t('Registering the created project...')}
+      </div>
     )
   } else if (creating) {
     body = (
@@ -262,12 +415,14 @@ export function ProjectCreateDialog(props: ProjectCreateDialogProps) {
 
   return (
     <Dialog open={props.open} onOpenChange={handleOpenChange}>
-      <DialogContent className='sm:max-w-md'>
+      <DialogContent className='sm:max-w-md' showCloseButton={!required}>
         <DialogHeader>
-          <DialogTitle>{t('New project')}</DialogTitle>
+          <DialogTitle>
+            {required ? t('Create your first project') : t('New project')}
+          </DialogTitle>
           <DialogDescription>
             {t(
-              'Enter a name and the system creates it automatically in the remote browser.'
+              'Enter a user identifier and project name. The system creates the project automatically in the remote browser.'
             )}
           </DialogDescription>
         </DialogHeader>
@@ -277,43 +432,75 @@ export function ProjectCreateDialog(props: ProjectCreateDialogProps) {
           className='grid gap-4'
           onSubmit={(event) => {
             event.preventDefault()
-            requestPermit()
+            void requestPermit()
           }}
         >
+          <div className='grid gap-2'>
+            <Label htmlFor='web-workspace-project-user-name'>
+              {t('User name')}
+            </Label>
+            <Input
+              id='web-workspace-project-user-name'
+              autoFocus
+              maxLength={PROJECT_NAME_SEGMENT_MAX_LENGTH}
+              value={userName}
+              aria-invalid={showUserNameError}
+              disabled={
+                permitMutation.isPending ||
+                startSessionMutation.isPending ||
+                creating ||
+                creationFailed ||
+                resolvingCreated
+              }
+              onChange={(event) => {
+                setUserNameTouched(true)
+                setUserName(event.target.value)
+              }}
+            />
+            {showUserNameError ? (
+              <p role='alert' className='text-destructive text-xs'>
+                {t(
+                  'Enter a user name of 1-24 letters, numbers, or underscores.'
+                )}
+              </p>
+            ) : null}
+          </div>
+
           <div className='grid gap-2'>
             <Label htmlFor='web-workspace-project-name'>
               {t('Project name')}
             </Label>
             <Input
               id='web-workspace-project-name'
-              autoFocus
-              maxLength={PROJECT_NAME_MAX_LENGTH}
-              value={name}
-              aria-invalid={showNameError}
-              aria-describedby={
-                showNameError ? 'web-workspace-project-name-error' : undefined
-              }
+              maxLength={PROJECT_NAME_SEGMENT_MAX_LENGTH}
+              value={projectName}
+              aria-invalid={showProjectNameError}
               disabled={
                 permitMutation.isPending ||
                 startSessionMutation.isPending ||
                 creating ||
-                creationFailed
+                creationFailed ||
+                resolvingCreated
               }
               onChange={(event) => {
-                setNameTouched(true)
-                setName(event.target.value)
+                setProjectNameTouched(true)
+                setProjectName(event.target.value)
               }}
             />
-            {showNameError ? (
-              <p
-                id='web-workspace-project-name-error'
-                role='alert'
-                className='text-destructive text-xs'
-              >
-                {t('Enter a project name of 1-64 characters.')}
+            {showProjectNameError ? (
+              <p role='alert' className='text-destructive text-xs'>
+                {t(
+                  'Enter a project name of 1-24 letters, numbers, or underscores.'
+                )}
               </p>
             ) : null}
           </div>
+
+          <p className='text-muted-foreground text-xs'>
+            {t('Final project name: {{name}}', {
+              name: userName || projectName ? combinedName : '—',
+            })}
+          </p>
 
           {body}
 
@@ -323,7 +510,7 @@ export function ProjectCreateDialog(props: ProjectCreateDialogProps) {
                 {permitMutation.isPending ? (
                   <Spinner className='size-4 motion-reduce:animate-none' />
                 ) : null}
-                {t('Create project')}
+                {required ? t('Create first project') : t('Create project')}
               </Button>
             </DialogFooter>
           ) : null}

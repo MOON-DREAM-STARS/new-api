@@ -24,6 +24,7 @@ import { SectionPageLayout } from '@/components/layout'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { ProjectCreateDialog } from './components/project-create-dialog'
 import { ProjectDeleteDialog } from './components/project-delete-dialog'
@@ -59,6 +60,11 @@ import { resolveWebWorkspaceAccess } from './lib/access'
 import { formatByteSize } from './lib/bytes'
 import { resolveConnection } from './lib/connection'
 import { classifyWebWorkspaceError } from './lib/errors'
+import {
+  readLastProjectId,
+  rememberLastProjectId,
+  resolveAutoOpenProject,
+} from './lib/last-project'
 import {
   findPresentationProfile,
   remoteScreenSizeForFrame,
@@ -113,14 +119,33 @@ export function WebWorkspace() {
   const [createOpen, setCreateOpen] = useState(false)
   const [renameTarget, setRenameTarget] = useState<WebProject | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<WebProject | null>(null)
+  const [projectNavigationPending, setProjectNavigationPending] =
+    useState(false)
+  const [projectNavigationErrorKey, setProjectNavigationErrorKey] = useState<
+    string | null
+  >(null)
+  const autoOpenAttemptRef = useRef<string | null>(null)
+  const navigatedProjectRef = useRef<string | null>(null)
+  const firstProjectPromptedRef = useRef(false)
+  const userId = useAuthStore((state) => state.auth.user?.id ?? null)
 
   const session = sessionQuery.data ?? null
   const isLive = isLiveSessionState(session?.state)
   const projectCreationFailed = session?.project_creation?.state === 'FAILED'
   const navigation = session?.navigation ?? null
   const projects = projectsQuery.data ?? []
+  const projectsLoaded = !projectsQuery.isPending && !projectsQuery.isError
+  const firstProjectRequired = ready && projectsLoaded && projects.length === 0
   const selectedProject =
     projects.find((project) => project.id === selectedProjectId) ?? null
+  const suppressRemoteStream =
+    projectsQuery.isPending ||
+    firstProjectRequired ||
+    (isLive &&
+      projects.length > 0 &&
+      (selectedProjectId === null ||
+        projectNavigationPending ||
+        Boolean(projectNavigationErrorKey)))
   const isBusy =
     startMutation.isPending ||
     stopMutation.isPending ||
@@ -185,11 +210,96 @@ export function WebWorkspace() {
   }
 
   function openProject(project: WebProject) {
-    setSelectedProjectId(project.id)
     setDrawerOpen(false)
-    if (!isLive) return
-    navigate('project', project.id)
+    const navigationKey = session ? `${session.session_id}:${project.id}` : null
+    if (!navigationKey || navigatedProjectRef.current !== navigationKey) {
+      setProjectNavigationPending(true)
+    }
+    setSelectedProjectId(project.id)
+    setProjectNavigationErrorKey(null)
   }
+
+  useEffect(() => {
+    if (firstProjectRequired) {
+      if (!firstProjectPromptedRef.current) {
+        firstProjectPromptedRef.current = true
+        setCreateOpen(true)
+      }
+      return
+    }
+    firstProjectPromptedRef.current = false
+  }, [firstProjectRequired])
+
+  useEffect(() => {
+    if (!projectsLoaded || selectedProjectId === null) return
+    if (projects.some((project) => project.id === selectedProjectId)) return
+    setSelectedProjectId(null)
+    navigatedProjectRef.current = null
+    setProjectNavigationErrorKey(null)
+  }, [projects, projectsLoaded, selectedProjectId])
+
+  useEffect(() => {
+    if (
+      !ready ||
+      !isLive ||
+      !session ||
+      !projectsLoaded ||
+      projects.length === 0 ||
+      selectedProjectId !== null
+    ) {
+      return
+    }
+    const key = session.session_id
+    if (autoOpenAttemptRef.current === key) return
+    autoOpenAttemptRef.current = key
+    const target = resolveAutoOpenProject(projects, readLastProjectId(userId))
+    if (!target) return
+    setProjectNavigationPending(true)
+    setSelectedProjectId(target.id)
+  }, [
+    isLive,
+    projects,
+    projectsLoaded,
+    ready,
+    selectedProjectId,
+    session,
+    userId,
+  ])
+
+  useEffect(() => {
+    if (!isLive || !session || !selectedProject) return
+    const key = `${session.session_id}:${selectedProject.id}`
+    if (navigatedProjectRef.current === key) return
+    navigatedProjectRef.current = key
+    setProjectNavigationPending(true)
+    setProjectNavigationErrorKey(null)
+    navigationMutation.mutate(
+      {
+        sessionId: session.session_id,
+        action: 'project',
+        projectId: selectedProject.id,
+      },
+      {
+        onSuccess: () => {
+          rememberLastProjectId(userId, selectedProject.id)
+          setProjectNavigationPending(false)
+        },
+        onError: (navigationError) => {
+          setProjectNavigationPending(false)
+          setProjectNavigationErrorKey(
+            classifyWebWorkspaceError(navigationError).messageKey
+          )
+        },
+      }
+    )
+  }, [isLive, navigationMutation, selectedProject, session, userId])
+
+  useEffect(() => {
+    autoOpenAttemptRef.current = null
+    navigatedProjectRef.current = null
+    setProjectNavigationPending(false)
+    setProjectNavigationErrorKey(null)
+  }, [session?.session_id])
 
   function startSession() {
     startMutation.mutate({ screenSize: proposedScreen })
@@ -317,6 +427,13 @@ export function WebWorkspace() {
             sessionState={session?.state}
             enabled={isDesktop}
             projectCreationFailed={projectCreationFailed}
+            suppressStream={suppressRemoteStream}
+            projectNavigationErrorKey={projectNavigationErrorKey}
+            onRetryProject={() => {
+              if (!selectedProject) return
+              navigatedProjectRef.current = null
+              openProject(selectedProject)
+            }}
             projectsEmpty={
               !projectsQuery.isPending &&
               !projectsQuery.isError &&
@@ -379,7 +496,17 @@ export function WebWorkspace() {
           onDelete={setDeleteTarget}
         />
 
-        <ProjectCreateDialog open={createOpen} onOpenChange={setCreateOpen} />
+        <ProjectCreateDialog
+          open={createOpen}
+          onOpenChange={setCreateOpen}
+          required={firstProjectRequired}
+          screenSize={proposedScreen}
+          onCreated={(project) => {
+            setProjectNavigationPending(true)
+            setSelectedProjectId(project.id)
+            setCreateOpen(false)
+          }}
+        />
         <ProjectRenameDialog
           key={projectDialogKey('rename', renameTarget)}
           project={renameTarget}
@@ -391,10 +518,16 @@ export function WebWorkspace() {
         <ProjectDeleteDialog
           key={projectDialogKey('delete', deleteTarget)}
           project={deleteTarget}
+          isLastProject={projects.length <= 1}
+          onCreate={() => {
+            setDeleteTarget(null)
+            setCreateOpen(true)
+          }}
           onOpenChange={(open) => {
             if (!open) setDeleteTarget(null)
           }}
           onDeleted={removal.markExpectedRemoval}
+          onDeleteRejected={removal.clearExpectedRemoval}
         />
       </SectionPageLayout.Content>
     </SectionPageLayout>
