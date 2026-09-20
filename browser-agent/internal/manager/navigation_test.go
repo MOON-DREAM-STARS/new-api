@@ -113,6 +113,41 @@ func TestNavigateWritesCommandWaitsForReceiptAndAdvancesID(t *testing.T) {
 	}
 }
 
+func TestNavigateProjectWritesProviderProjectID(t *testing.T) {
+	h := newHarness(t)
+	workspaceID := int64(75)
+	_, err := h.mgr.Start(context.Background(), workspaceID, StartOptions{Provider: "chatgpt"})
+	require.NoError(t, err)
+
+	dir := guardStateDir(WorkspaceDir(h.dataRoot, workspaceID))
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	commands, stop := serveNavigationCommand(t, dir)
+	defer stop()
+
+	const projectID = "g-p-0123456789abcdef0123456789abcdef"
+	status, err := h.mgr.NavigateProject(workspaceID, projectID)
+	require.NoError(t, err)
+	assert.True(t, status.CanGoBack)
+
+	select {
+	case command := <-commands:
+		assert.Equal(t, "project", command.Action)
+		assert.Equal(t, projectID, command.ProjectID)
+	case <-time.After(time.Second):
+		t.Fatal("guard did not observe project navigation command")
+	}
+}
+
+func TestNavigateProjectRejectsInvalidProjectID(t *testing.T) {
+	h := newHarness(t)
+	workspaceID := int64(76)
+	_, err := h.mgr.Start(context.Background(), workspaceID, StartOptions{Provider: "chatgpt"})
+	require.NoError(t, err)
+
+	_, err = h.mgr.NavigateProject(workspaceID, "https://chatgpt.com/g/project")
+	require.ErrorIs(t, err, ErrInvalidRequest)
+}
+
 func TestNavigateReturnsTimeoutWhenGuardDoesNotReply(t *testing.T) {
 	h := newHarness(t)
 	workspaceID := int64(72)

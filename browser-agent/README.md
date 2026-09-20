@@ -23,6 +23,7 @@ session 生命周期（idle timeout / crash recovery / reconcile）与资源限�
 | `WEB_WORKSPACE_RUNTIME_MEMORY_BYTES` | 否 | `1073741824` | 每 runtime 内存上限。 |
 | `WEB_WORKSPACE_RUNTIME_CPUS` | 否 | `1.0` | 每 runtime CPU 上限（转成 NanoCPUs）。 |
 | `WEB_WORKSPACE_RUNTIME_PIDS` | 否 | `256` | 每 runtime PIDs 上限。 |
+| `WEB_WORKSPACE_MAX_ACTIVE_RUNTIMES` | 否 | `0` | 全局活跃 runtime 上限；`0` 表示不限制。2 核云端建议设为 `1`。 |
 | `WEB_WORKSPACE_IDLE_TIMEOUT_SECONDS` | 否 | `600` | runtime 无 stream/无 activity 后自动停止的秒数。 |
 | `WEB_WORKSPACE_IDLE_SCAN_SECONDS` | 否 | `15` | 崩溃探测与 idle 扫描周期。 |
 

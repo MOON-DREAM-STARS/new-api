@@ -681,6 +681,14 @@ func TestSnapshotExposesPageHealthWithoutURLs(t *testing.T) {
 	assert.NotContains(t, string(body), "chrome-error://")
 }
 
+func TestManagerCapacityErrorMapsToConflict(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	server := &Server{}
+	server.writeManagerError(recorder, 1, manager.ErrCapacityReached)
+	assert.Equal(t, http.StatusConflict, recorder.Code)
+	assert.JSONEq(t, `{"success":false,"error":"runtime_capacity_reached"}`, recorder.Body.String())
+}
+
 func TestNavigationEndpointMapsErrors(t *testing.T) {
 	h := newHarness(t)
 	workspaceID := int64(82)

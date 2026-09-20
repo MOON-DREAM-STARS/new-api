@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/browser-agent/internal/runtime"
@@ -53,6 +54,7 @@ type PageStatus struct {
 type navigationCommandFile struct {
 	ID          int64  `json:"id"`
 	Action      string `json:"action"`
+	ProjectID   string `json:"project_id,omitempty"`
 	RequestedAt int64  `json:"requested_at"`
 }
 
@@ -157,7 +159,7 @@ func validPageError(value string) bool {
 
 func validNavigationAction(action string) bool {
 	switch action {
-	case "back", "forward", "reload", "state":
+	case "back", "forward", "reload", "state", "project":
 		return true
 	default:
 		return false
@@ -167,7 +169,23 @@ func validNavigationAction(action string) bool {
 // Navigate writes one navigation command and waits for the guard's matching
 // receipt. It never synthesises a successful state when the guard is silent.
 func (m *Manager) Navigate(workspaceID int64, action string) (NavigationStatus, error) {
-	if workspaceID <= 0 || !validNavigationAction(action) {
+	return m.navigate(workspaceID, action, "")
+}
+
+// NavigateProject opens one provider project by its stable external id. The
+// caller must already have authorized the project through ownership; the guard
+// still re-checks it on the resulting Page.navigate.
+func (m *Manager) NavigateProject(workspaceID int64, projectID string) (NavigationStatus, error) {
+	projectID = strings.TrimSpace(projectID)
+	if !projectIDPattern.MatchString(projectID) {
+		return NavigationStatus{}, fmt.Errorf("%w: project navigation request is invalid", ErrInvalidRequest)
+	}
+	return m.navigate(workspaceID, "project", projectID)
+}
+
+func (m *Manager) navigate(workspaceID int64, action string, projectID string) (NavigationStatus, error) {
+	projectID = strings.TrimSpace(projectID)
+	if workspaceID <= 0 || !validNavigationAction(action) || (action == "project" && !projectIDPattern.MatchString(projectID)) || (action != "project" && projectID != "") {
 		return NavigationStatus{}, fmt.Errorf("%w: navigation request is invalid", ErrInvalidRequest)
 	}
 
@@ -205,6 +223,7 @@ func (m *Manager) Navigate(workspaceID int64, action string) (NavigationStatus, 
 	payload, err := json.Marshal(navigationCommandFile{
 		ID:          commandID,
 		Action:      action,
+		ProjectID:   projectID,
 		RequestedAt: m.now().Unix(),
 	})
 	if err != nil {

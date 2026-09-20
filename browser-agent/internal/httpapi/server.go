@@ -23,14 +23,18 @@ import (
 const (
 	maxBodyBytes = 64 << 10
 
-	errorUnauthorized          = "unauthorized"
-	errorInvalidRequest        = "invalid_request"
-	errorRuntimeNotFound       = "runtime_not_found"
-	errorRuntimeNotActive      = "runtime_not_running"
-	errorNavigationUnavailable = "navigation_unavailable"
-	errorNavigationTimeout     = "navigation_timeout"
-	errorInternal              = "internal_error"
-	errorNotFound              = "not_found"
+	errorUnauthorized               = "unauthorized"
+	errorInvalidRequest             = "invalid_request"
+	errorRuntimeNotFound            = "runtime_not_found"
+	errorRuntimeNotActive           = "runtime_not_running"
+	errorRuntimeCapacity            = "runtime_capacity_reached"
+	errorNavigationUnavailable      = "navigation_unavailable"
+	errorNavigationTimeout          = "navigation_timeout"
+	errorProjectDeletionUnavailable = "project_deletion_unavailable"
+	errorProjectDeletionTimeout     = "project_deletion_timeout"
+	errorProjectDeletionRejected    = "project_deletion_rejected"
+	errorInternal                   = "internal_error"
+	errorNotFound                   = "not_found"
 )
 
 type errorEnvelope struct {
@@ -60,6 +64,7 @@ func New(mgr *manager.Manager, token string, logger *slog.Logger) http.Handler {
 	mux.Handle("POST /internal/v1/runtimes/{workspace_id}/restart", server.authenticate(http.HandlerFunc(server.handleRestart)))
 	mux.Handle("POST /internal/v1/runtimes/{workspace_id}/activity", server.authenticate(http.HandlerFunc(server.handleActivity)))
 	mux.Handle("POST /internal/v1/runtimes/{workspace_id}/navigation", server.authenticate(http.HandlerFunc(server.handleNavigation)))
+	mux.Handle("POST /internal/v1/runtimes/{workspace_id}/projects/delete", server.authenticate(http.HandlerFunc(server.handleDeleteProject)))
 	mux.Handle("PUT /internal/v1/runtimes/{workspace_id}/ownership", server.authenticate(http.HandlerFunc(server.handlePutOwnership)))
 	mux.Handle("POST /internal/v1/runtimes/{workspace_id}/permits", server.authenticate(http.HandlerFunc(server.handleIssuePermit)))
 	mux.Handle("GET /internal/v1/runtimes/{workspace_id}/observations", server.authenticate(http.HandlerFunc(server.handleObservations)))
@@ -192,7 +197,8 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 }
 
 type navigationRequest struct {
-	Action string `json:"action"`
+	Action    string `json:"action"`
+	ProjectID string `json:"project_id,omitempty"`
 }
 
 func (s *Server) handleNavigation(w http.ResponseWriter, r *http.Request) {
@@ -206,7 +212,14 @@ func (s *Server) handleNavigation(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errorInvalidRequest)
 		return
 	}
-	status, err := s.mgr.Navigate(workspaceID, strings.TrimSpace(request.Action))
+	action := strings.TrimSpace(request.Action)
+	var status manager.NavigationStatus
+	var err error
+	if action == "project" {
+		status, err = s.mgr.NavigateProject(workspaceID, request.ProjectID)
+	} else {
+		status, err = s.mgr.Navigate(workspaceID, action)
+	}
 	if err != nil {
 		s.writeManagerError(w, workspaceID, err)
 		return
@@ -214,7 +227,31 @@ func (s *Server) handleNavigation(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, struct {
 		Action     string                   `json:"action"`
 		Navigation manager.NavigationStatus `json:"navigation"`
-	}{Action: strings.TrimSpace(request.Action), Navigation: status})
+	}{Action: action, Navigation: status})
+}
+
+type projectDeletionRequest struct {
+	ProjectID   string `json:"project_id"`
+	ProjectName string `json:"project_name"`
+}
+
+func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := parseWorkspaceID(r.PathValue("workspace_id"))
+	if !ok {
+		writeError(w, http.StatusBadRequest, errorInvalidRequest)
+		return
+	}
+	var request projectDeletionRequest
+	if err := decodeJSONBody(w, r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, errorInvalidRequest)
+		return
+	}
+	status, err := s.mgr.DeleteProject(r.Context(), workspaceID, request.ProjectID, request.ProjectName)
+	if err != nil {
+		s.writeManagerError(w, workspaceID, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
 }
 
 type ownershipRequest struct {
@@ -339,10 +376,18 @@ func (s *Server) writeManagerError(w http.ResponseWriter, workspaceID int64, err
 		writeError(w, http.StatusBadRequest, errorInvalidRequest)
 	case errors.Is(err, manager.ErrNotFound):
 		writeError(w, http.StatusNotFound, errorRuntimeNotFound)
+	case errors.Is(err, manager.ErrCapacityReached):
+		writeError(w, http.StatusConflict, errorRuntimeCapacity)
 	case errors.Is(err, manager.ErrNavigationUnavailable):
 		writeError(w, http.StatusConflict, errorNavigationUnavailable)
 	case errors.Is(err, manager.ErrNavigationTimeout):
 		writeError(w, http.StatusGatewayTimeout, errorNavigationTimeout)
+	case errors.Is(err, manager.ErrProjectDeletionUnavailable):
+		writeError(w, http.StatusConflict, errorProjectDeletionUnavailable)
+	case errors.Is(err, manager.ErrProjectDeletionTimeout):
+		writeError(w, http.StatusGatewayTimeout, errorProjectDeletionTimeout)
+	case errors.Is(err, manager.ErrProjectDeletionRejected):
+		writeError(w, http.StatusUnprocessableEntity, errorProjectDeletionRejected)
 	case errors.Is(err, runtime.ErrNotRunning):
 		writeError(w, http.StatusConflict, errorRuntimeNotActive)
 	default:

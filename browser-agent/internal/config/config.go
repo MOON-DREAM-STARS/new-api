@@ -36,6 +36,9 @@ const (
 
 	DefaultIdleTimeoutSeconds = 600
 	DefaultIdleScanSeconds    = 15
+	// DefaultMaxActiveRuntimes is zero: local development may run multiple
+	// workspaces. A constrained deployment sets a positive cap.
+	DefaultMaxActiveRuntimes = int64(0)
 )
 
 // Config is the validated agent configuration.
@@ -58,12 +61,13 @@ type Config struct {
 	// It must be an http(s) host URL the runtime can reach on the internal
 	// network; the agent never derives it from the listen address because
 	// the process may see a different host name than the runtime.
-	EgressProxyURL   string
-	MemoryBytes      int64
-	NanoCPUs         int64
-	PidsLimit        int64
-	IdleTimeout      time.Duration
-	IdleScanInterval time.Duration
+	EgressProxyURL    string
+	MemoryBytes       int64
+	NanoCPUs          int64
+	PidsLimit         int64
+	MaxActiveRuntimes int
+	IdleTimeout       time.Duration
+	IdleScanInterval  time.Duration
 }
 
 // Load reads configuration from getenv (normally os.Getenv).
@@ -166,6 +170,15 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("WEB_WORKSPACE_IDLE_SCAN_SECONDS must be positive")
 	}
 	cfg.IdleScanInterval = time.Duration(scanSeconds) * time.Second
+
+	maxActiveRuntimes, err := intEnv(getenv, "WEB_WORKSPACE_MAX_ACTIVE_RUNTIMES", DefaultMaxActiveRuntimes)
+	if err != nil {
+		return Config{}, err
+	}
+	if maxActiveRuntimes < 0 {
+		return Config{}, fmt.Errorf("WEB_WORKSPACE_MAX_ACTIVE_RUNTIMES must not be negative")
+	}
+	cfg.MaxActiveRuntimes = int(maxActiveRuntimes)
 
 	return cfg, nil
 }

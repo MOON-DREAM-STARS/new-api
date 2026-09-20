@@ -88,6 +88,9 @@ var (
 	// ErrProviderRequired reports a restart that cannot be resolved because the
 	// provider of the previous runtime is unknown.
 	ErrProviderRequired = errors.New("provider is required")
+	// ErrCapacityReached reports that the configured global active-runtime cap
+	// would be exceeded by a new start.
+	ErrCapacityReached = errors.New("runtime capacity reached")
 
 	providerPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
@@ -126,8 +129,11 @@ type Options struct {
 	EgressProxyURL string
 	IdleTimeout    time.Duration
 	ScanInterval   time.Duration
-	Logger         *slog.Logger
-	Now            func() time.Time
+	// MaxActiveRuntimes is the global cap across workspaces. Zero disables the
+	// cap. The cloud profile sets one for a two-core server.
+	MaxActiveRuntimes int
+	Logger            *slog.Logger
+	Now               func() time.Time
 	// Chown hands a directory below an open workspace root to the runtime image
 	// identity. It is overridden only by tests; nil selects (*os.Root).Chown,
 	// which resolves the name below the already opened root and refuses a name
@@ -232,19 +238,21 @@ func (h *streamHandle) close() {
 
 // Manager implements the runtime scheduling and stream attachment contract.
 type Manager struct {
-	driver         runtime.Driver
-	display        runtime.DisplayTransport
-	dataRoot       string
-	hostDataRoot   string
-	egressProxyURL string
-	idleTimeout    time.Duration
-	scanInterval   time.Duration
-	logger         *slog.Logger
-	now            func() time.Time
-	chown          func(root *os.Root, name string, uid int, gid int) error
+	driver            runtime.Driver
+	display           runtime.DisplayTransport
+	dataRoot          string
+	hostDataRoot      string
+	egressProxyURL    string
+	idleTimeout       time.Duration
+	scanInterval      time.Duration
+	maxActiveRuntimes int
+	logger            *slog.Logger
+	now               func() time.Time
+	chown             func(root *os.Root, name string, uid int, gid int) error
 
 	mu       sync.Mutex
 	runtimes map[int64]*runtimeState
+	reserved map[int64]struct{}
 	locks    map[int64]*sync.Mutex
 	streams  map[int64]map[*streamHandle]struct{}
 	ipIndex  map[string]int64
@@ -253,20 +261,22 @@ type Manager struct {
 // New returns a manager bound to a runtime driver and a display transport.
 func New(driver runtime.Driver, display runtime.DisplayTransport, opts Options) *Manager {
 	manager := &Manager{
-		driver:         driver,
-		display:        display,
-		dataRoot:       opts.DataRoot,
-		hostDataRoot:   opts.HostDataRoot,
-		egressProxyURL: opts.EgressProxyURL,
-		idleTimeout:    opts.IdleTimeout,
-		scanInterval:   opts.ScanInterval,
-		logger:         opts.Logger,
-		now:            opts.Now,
-		chown:          opts.Chown,
-		runtimes:       map[int64]*runtimeState{},
-		locks:          map[int64]*sync.Mutex{},
-		streams:        map[int64]map[*streamHandle]struct{}{},
-		ipIndex:        map[string]int64{},
+		driver:            driver,
+		display:           display,
+		dataRoot:          opts.DataRoot,
+		hostDataRoot:      opts.HostDataRoot,
+		egressProxyURL:    opts.EgressProxyURL,
+		idleTimeout:       opts.IdleTimeout,
+		scanInterval:      opts.ScanInterval,
+		maxActiveRuntimes: opts.MaxActiveRuntimes,
+		logger:            opts.Logger,
+		now:               opts.Now,
+		chown:             opts.Chown,
+		runtimes:          map[int64]*runtimeState{},
+		reserved:          map[int64]struct{}{},
+		locks:             map[int64]*sync.Mutex{},
+		streams:           map[int64]map[*streamHandle]struct{}{},
+		ipIndex:           map[string]int64{},
 	}
 	if manager.logger == nil {
 		manager.logger = slog.Default()
@@ -345,7 +355,7 @@ func (m *Manager) Stop(ctx context.Context, workspaceID int64) (Snapshot, error)
 	lock.Lock()
 	defer lock.Unlock()
 
-	snapshot, existed, err := m.stopLocked(ctx, workspaceID)
+	snapshot, existed, err := m.stopLocked(ctx, workspaceID, false)
 	if err != nil {
 		return snapshot, err
 	}
@@ -396,7 +406,12 @@ func (m *Manager) Restart(ctx context.Context, workspaceID int64, opts StartOpti
 	}
 	effective = withDefaults(effective)
 
-	if snapshot, _, err := m.stopLocked(ctx, workspaceID); err != nil {
+	// A restart of a live workspace keeps its existing active-runtime slot
+	// while the old container is being stopped. This prevents a concurrent
+	// start in another workspace from taking the slot during the gap.
+	m.holdRestartCapacity(workspaceID)
+
+	if snapshot, _, err := m.stopLocked(ctx, workspaceID, true); err != nil {
 		return snapshot, err
 	}
 	return m.startLocked(ctx, workspaceID, effective)
@@ -782,16 +797,29 @@ func (m *Manager) scanWorkspace(ctx context.Context, workspaceID int64) {
 		return
 	}
 	m.logger.Info("stopping idle workspace runtime", "workspace_id", workspaceID)
-	if _, _, err := m.stopLocked(ctx, workspaceID); err != nil {
+	if _, _, err := m.stopLocked(ctx, workspaceID, false); err != nil {
 		m.logger.Warn("stopping idle runtime failed", "workspace_id", workspaceID, "error", err)
 	}
 }
 
-func (m *Manager) startLocked(ctx context.Context, workspaceID int64, opts StartOptions) (Snapshot, error) {
-	workspaceDir := WorkspaceDir(m.dataRoot, workspaceID)
-	if err := EnsureWorkspaceDirs(workspaceDir, m.chown); err != nil {
-		return Snapshot{}, fmt.Errorf("prepare workspace directory: %w", err)
+// reserveRuntime atomically checks the global active-runtime cap and inserts
+// the STARTING state under one lock, so two workspaces cannot both pass the
+// cap check before either is visible in the map. A restart already owns its
+// reservation; its STARTING replacement must not consume a second slot.
+func (m *Manager) reserveRuntime(workspaceID int64, opts StartOptions) (*runtimeState, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.maxActiveRuntimes > 0 {
+		_, alreadyReserved := m.reserved[workspaceID]
+		if !alreadyReserved && m.activeSlotsLocked(workspaceID) >= m.maxActiveRuntimes {
+			return nil, ErrCapacityReached
+		}
 	}
+	if m.reserved == nil {
+		m.reserved = map[int64]struct{}{}
+	}
+	m.reserved[workspaceID] = struct{}{}
 
 	now := m.now()
 	rt := &runtimeState{
@@ -804,9 +832,58 @@ func (m *Manager) startLocked(ctx context.Context, workspaceID int64, opts Start
 		lastActivity: now,
 		idleDeadline: now.Add(m.idleTimeout),
 	}
-	m.mu.Lock()
 	m.runtimes[workspaceID] = rt
-	m.mu.Unlock()
+	return rt, nil
+}
+
+// holdRestartCapacity preserves the slot of a live workspace before its
+// restart begins. The reservation is transferred through the stop/start gap.
+func (m *Manager) holdRestartCapacity(workspaceID int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	rt := m.runtimes[workspaceID]
+	if rt == nil || !runtimeCountsAsActive(rt.state) {
+		return
+	}
+	if m.reserved == nil {
+		m.reserved = map[int64]struct{}{}
+	}
+	m.reserved[workspaceID] = struct{}{}
+}
+
+func (m *Manager) activeSlotsLocked(exclude int64) int {
+	slots := make(map[int64]struct{}, len(m.reserved)+len(m.runtimes))
+	for id := range m.reserved {
+		if id != exclude {
+			slots[id] = struct{}{}
+		}
+	}
+	for id, rt := range m.runtimes {
+		if id == exclude || rt == nil || !runtimeCountsAsActive(rt.state) {
+			continue
+		}
+		slots[id] = struct{}{}
+	}
+	return len(slots)
+}
+
+func runtimeCountsAsActive(state State) bool {
+	return state != StateStopped && state != StateFailed
+}
+
+func (m *Manager) startLocked(ctx context.Context, workspaceID int64, opts StartOptions) (Snapshot, error) {
+	rt, err := m.reserveRuntime(workspaceID, opts)
+	if err != nil {
+		return Snapshot{}, err
+	}
+
+	workspaceDir := WorkspaceDir(m.dataRoot, workspaceID)
+	if err := EnsureWorkspaceDirs(workspaceDir, m.chown); err != nil {
+		prepareErr := fmt.Errorf("prepare workspace directory: %w", err)
+		m.markFailed(workspaceID, prepareErr, false)
+		return Snapshot{}, prepareErr
+	}
 
 	// When the agent itself runs in a container, the local workspace path only
 	// exists inside that container. The runtime container is created by the
@@ -910,13 +987,14 @@ func (m *Manager) waitForDisplayReady(ctx context.Context, workspaceID int64) er
 
 // stopLocked stops and removes the container of a workspace. The caller must
 // hold the per-workspace lock.
-func (m *Manager) stopLocked(ctx context.Context, workspaceID int64) (Snapshot, bool, error) {
+func (m *Manager) stopLocked(ctx context.Context, workspaceID int64, preserveCapacity bool) (Snapshot, bool, error) {
 	m.mu.Lock()
 	rt := m.runtimes[workspaceID]
 	if rt == nil {
 		m.mu.Unlock()
 		return Snapshot{}, false, nil
 	}
+	wasActive := runtimeCountsAsActive(rt.state)
 	rt.state = StateStopping
 	handles := m.detachStreamsLocked(workspaceID)
 	snapshot := rt.snapshot(workspaceID)
@@ -947,6 +1025,14 @@ func (m *Manager) stopLocked(ctx context.Context, workspaceID int64) (Snapshot, 
 		current.idleDeadline = time.Time{}
 		snapshot = current.snapshot(workspaceID)
 	}
+	if preserveCapacity && wasActive {
+		if m.reserved == nil {
+			m.reserved = map[int64]struct{}{}
+		}
+		m.reserved[workspaceID] = struct{}{}
+	} else {
+		delete(m.reserved, workspaceID)
+	}
 	m.mu.Unlock()
 	return snapshot, true, nil
 }
@@ -961,6 +1047,7 @@ func (m *Manager) markFailed(workspaceID int64, cause error, removeContainer boo
 		m.clearRuntimeIPLocked(workspaceID)
 		rt.idleDeadline = time.Time{}
 	}
+	delete(m.reserved, workspaceID)
 	handles := m.detachStreamsLocked(workspaceID)
 	m.mu.Unlock()
 
