@@ -237,6 +237,34 @@ describe('WebWorkspace page', () => {
     ).toBeTruthy()
   })
 
+  test('auto-starts a stopped session once on first load', async () => {
+    mockWorkspaceGets({
+      ...runningSession,
+      session_id: 'session-stopped',
+      state: 'STOPPED',
+      page: null,
+    })
+    const sessionGet = apiClient.get
+    let sessionGets = 0
+    apiClient.get = async (url, data) => {
+      if (url === SESSION_PATH) sessionGets += 1
+      return sessionGet(url, data)
+    }
+    const startPosts: Array<{ url: string; data: unknown }> = []
+    apiClient.post = async (url, data) => {
+      startPosts.push({ url, data })
+      return ok(runningSession)
+    }
+
+    renderPage(<WebWorkspace />)
+
+    await waitFor(() => {
+      expect(startPosts).toHaveLength(1)
+      expect(sessionGets).toBeGreaterThanOrEqual(2)
+    })
+    expect(startPosts[0]?.url).toBe(SESSION_PATH)
+  })
+
   test('renders real projects, the centered project strip and the real session state', async () => {
     apiClient.get = async (url) => {
       if (url === CONFIG_PATH) return ok({ enabled: true, entitled: true })
