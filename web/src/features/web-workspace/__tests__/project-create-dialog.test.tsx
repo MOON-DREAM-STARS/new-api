@@ -23,8 +23,8 @@ import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import { api } from '@/lib/api'
 
-import { WEB_WORKSPACE_SESSION_QUERY_KEY } from '../constants'
 import { ProjectCreateDialog } from '../components/project-create-dialog'
+import { WEB_WORKSPACE_SESSION_QUERY_KEY } from '../constants'
 import type { WebWorkspaceProjectCreation } from '../types'
 
 type ApiMethod = (url: string, data?: unknown) => Promise<{ data: unknown }>
@@ -186,52 +186,50 @@ describe('ProjectCreateDialog', () => {
     })
   })
 
-  test('shows the manual fallback and retries with a new permit', async () => {
-    const permits: unknown[] = []
+  test('shows administrator guidance when creation fails without a retry', async () => {
+    let permitCalls = 0
     apiClient.get = async (url) => {
-      if (url === SESSION_PATH) {
-        return ok(
-          sessionDto({
-            permit_id: 'permit-1',
-            state: 'FAILED',
-            error: 'ERR_PROJECT_UI_NOT_FOUND',
-            updated_at: 2,
-          })
-        )
-      }
+      if (url === SESSION_PATH) return ok(sessionDto(null))
       if (url === PERMIT_PATH) return ok({ items: [] })
       throw new Error(`unexpected get ${url}`)
     }
-    apiClient.post = async (_url, data) => {
-      permits.push(data)
-      const permitId = permits.length === 1 ? 'permit-1' : 'permit-2'
-      return ok({ permit_id: permitId, expires_at: futureExpiry(300) })
+    apiClient.post = async () => {
+      permitCalls += 1
+      return ok({ permit_id: 'permit-1', expires_at: futureExpiry(300) })
     }
-    renderDialog()
+    const { queryClient } = renderDialog()
 
     await userEvent.type(screen.getByLabelText('Project name'), 'Alpha')
     await userEvent.click(await waitForCreateButton())
+    queryClient.setQueryData(
+      WEB_WORKSPACE_SESSION_QUERY_KEY,
+      sessionDto({
+        permit_id: 'permit-1',
+        state: 'FAILED',
+        error: 'ERR_PROJECT_UI_NOT_FOUND',
+        updated_at: 2,
+      })
+    )
 
     expect(
       await screen.findByText('Automatic project creation failed')
     ).toBeInTheDocument()
     expect(
       screen.getByText(
-        'Create the project manually in the side panel. The remote browser is showing the full window; the system registers it automatically once the guard observes it.'
+        'Please contact an administrator to manually enable project creation permission.'
       )
     ).toBeInTheDocument()
     expect(
       screen.getByText('Error code: ERR_PROJECT_UI_NOT_FOUND')
     ).toBeInTheDocument()
-
-    await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
-
-    await waitFor(() => {
-      expect(permits).toEqual([{ name: 'Alpha' }, { name: 'Alpha' }])
-    })
+    expect(screen.getByLabelText('Project name')).toBeDisabled()
     expect(
-      await screen.findByText('Creating the project in the remote browser...')
-    ).toBeInTheDocument()
+      screen.queryByRole('button', { name: 'Retry' })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Create project' })
+    ).not.toBeInTheDocument()
+    expect(permitCalls).toBe(1)
   })
 
   test('joins an existing running creation without issuing another permit', async () => {
@@ -343,39 +341,36 @@ describe('ProjectCreateDialog', () => {
     expect(permitCalls).toBe(1)
   })
 
-  test.each(['FAILED', 'CREATED'] as const)(
-    'ignores a stale %s creation state without a matching permit',
-    async (state) => {
-      let permitPayload: unknown
-      apiClient.get = async (url) => {
-        if (url === SESSION_PATH) {
-          return ok(
-            sessionDto({
-              permit_id: 'permit-old',
-              state,
-              error: state === 'FAILED' ? 'ERR_PROJECT_UI_NOT_FOUND' : '',
-              updated_at: 1,
-            })
-          )
-        }
-        if (url === PERMIT_PATH) return ok({ items: [] })
-        throw new Error(`unexpected get ${url}`)
+  test('ignores a stale created state without a matching permit', async () => {
+    let permitPayload: unknown
+    apiClient.get = async (url) => {
+      if (url === SESSION_PATH) {
+        return ok(
+          sessionDto({
+            permit_id: 'permit-old',
+            state: 'CREATED',
+            error: '',
+            updated_at: 1,
+          })
+        )
       }
-      apiClient.post = async (_url, data) => {
-        permitPayload = data
-        return ok({ permit_id: 'permit-new', expires_at: futureExpiry(300) })
-      }
-      renderDialog()
-
-      await userEvent.type(screen.getByLabelText('Project name'), 'Alpha')
-      await userEvent.click(await waitForCreateButton())
-
-      expect(
-        await screen.findByText('Creating the project in the remote browser...')
-      ).toBeInTheDocument()
-      expect(permitPayload).toEqual({ name: 'Alpha' })
+      if (url === PERMIT_PATH) return ok({ items: [] })
+      throw new Error(`unexpected get ${url}`)
     }
-  )
+    apiClient.post = async (_url, data) => {
+      permitPayload = data
+      return ok({ permit_id: 'permit-new', expires_at: futureExpiry(300) })
+    }
+    renderDialog()
+
+    await userEvent.type(screen.getByLabelText('Project name'), 'Alpha')
+    await userEvent.click(await waitForCreateButton())
+
+    expect(
+      await screen.findByText('Creating the project in the remote browser...')
+    ).toBeInTheDocument()
+    expect(permitPayload).toEqual({ name: 'Alpha' })
+  })
 
   test('starts a missing session before retrying the permit', async () => {
     let sessionStarted = false

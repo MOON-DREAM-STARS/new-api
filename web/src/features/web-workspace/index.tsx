@@ -36,9 +36,10 @@ import {
   WorkspaceNavigationControls,
   WorkspaceToolbar,
 } from './components/workspace-toolbar'
+import { WEB_WORKSPACE_HIDDEN_ACTIVITY_INTERVAL_MS } from './constants'
 import { useCompactSidebar } from './hooks/use-compact-sidebar'
-import { useDocumentVisibility } from './hooks/use-document-visibility'
 import { useDesktopViewport } from './hooks/use-desktop-viewport'
+import { useDocumentVisibility } from './hooks/use-document-visibility'
 import { useElementSize } from './hooks/use-element-size'
 import { useImmersiveMode } from './hooks/use-immersive-mode'
 import { useProjectRemovalNotice } from './hooks/use-project-removal-notice'
@@ -55,19 +56,15 @@ import {
   useWebWorkspaceSession,
 } from './hooks/use-web-workspace-session'
 import { resolveWebWorkspaceAccess } from './lib/access'
-import { resolveConnection } from './lib/connection'
 import { formatByteSize } from './lib/bytes'
+import { resolveConnection } from './lib/connection'
 import { classifyWebWorkspaceError } from './lib/errors'
 import {
   findPresentationProfile,
   remoteScreenSizeForFrame,
 } from './lib/presentation'
-import { WEB_WORKSPACE_HIDDEN_ACTIVITY_INTERVAL_MS } from './constants'
 import { isLiveSessionState } from './lib/session'
-import type {
-  WebProject,
-  WebWorkspaceNavigationAction,
-} from './types'
+import type { WebProject, WebWorkspaceNavigationAction } from './types'
 
 /**
  * Remount key for the per-project dialogs so each dialog starts from the
@@ -119,8 +116,7 @@ export function WebWorkspace() {
 
   const session = sessionQuery.data ?? null
   const isLive = isLiveSessionState(session?.state)
-  const revealProviderChrome =
-    session?.project_creation?.state === 'FAILED'
+  const projectCreationFailed = session?.project_creation?.state === 'FAILED'
   const navigation = session?.navigation ?? null
   const projects = projectsQuery.data ?? []
   const selectedProject =
@@ -320,7 +316,7 @@ export function WebWorkspace() {
             sessionId={session?.session_id ?? null}
             sessionState={session?.state}
             enabled={isDesktop}
-            revealProviderChrome={revealProviderChrome}
+            projectCreationFailed={projectCreationFailed}
             projectsEmpty={
               !projectsQuery.isPending &&
               !projectsQuery.isError &&

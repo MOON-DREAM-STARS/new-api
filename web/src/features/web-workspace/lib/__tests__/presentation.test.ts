@@ -74,37 +74,12 @@ describe('computePresentation', () => {
     expect(result.transform.crop.width).toBeLessThanOrEqual(
       screen.width - CHATGPT_PRESENTATION_PROFILE.cropLeft
     )
-    expect(result.transform.crop.height).toBeLessThanOrEqual(screen.height)
-  })
-
-  it('fits the whole framebuffer without cropping when chrome is revealed', () => {
-    const result = computePresentation({
-      provider: 'chatgpt',
-      screen,
-      frame,
-      revealProviderChrome: true,
-    })
-    expect(result.status).toBe('ready')
-    if (result.status !== 'ready') return
-    const { crop, scale, offsetX, offsetY, stageWidth, stageHeight } =
-      result.transform
-    expect(crop).toEqual({
-      x: 0,
-      y: 0,
-      width: screen.width,
-      height: screen.height,
-    })
-    expect(scale).toBe(
-      Math.min(frame.width / screen.width, frame.height / screen.height)
+    expect(result.transform.crop.y).toBeGreaterThanOrEqual(
+      CHATGPT_PRESENTATION_PROFILE.cropTop
     )
-    expect(stageWidth).toBeLessThanOrEqual(frame.width)
-    expect(stageHeight).toBeLessThanOrEqual(frame.height)
-    expect(offsetX).toBeGreaterThanOrEqual(0)
-    expect(offsetY).toBeGreaterThanOrEqual(0)
-    expect(Math.abs(offsetX * 2 + stageWidth - frame.width)).toBeLessThanOrEqual(1)
     expect(
-      Math.abs(offsetY * 2 + stageHeight - frame.height)
-    ).toBeLessThanOrEqual(1)
+      result.transform.crop.y + result.transform.crop.height
+    ).toBeLessThanOrEqual(screen.height)
   })
 
   it('fills the frame without dead space and stays inside the framebuffer', () => {
@@ -124,13 +99,15 @@ describe('computePresentation', () => {
     )
   })
 
-  it('centres the vertical crop inside the visible region', () => {
+  it('centres the vertical crop inside the visible region below the top chrome', () => {
     const result = computePresentation({ provider: 'chatgpt', screen, frame })
     expect(result.status).toBe('ready')
     if (result.status !== 'ready') return
     const { transform } = result
     const bottom = transform.crop.y + transform.crop.height
-    expect(transform.crop.y).toBeCloseTo(screen.height - bottom, 0)
+    const topMargin = transform.crop.y - CHATGPT_PRESENTATION_PROFILE.cropTop
+    const bottomMargin = screen.height - bottom
+    expect(Math.abs(topMargin - bottomMargin)).toBeLessThanOrEqual(1)
   })
 
   it('recomputes the crop when the frame changes', () => {
@@ -157,7 +134,6 @@ describe('computePresentation', () => {
     if (result.status !== 'ready') return
     const { crop } = result.transform
     const visibleWidth = screen.width - CHATGPT_PRESENTATION_PROFILE.cropLeft
-    expect(crop.x).toBe(264)
     expect(crop.x + crop.width).toBeLessThanOrEqual(screen.width)
     const leftMargin = crop.x - CHATGPT_PRESENTATION_PROFILE.cropLeft
     const rightMargin = visibleWidth - leftMargin - crop.width
@@ -184,13 +160,13 @@ describe('remoteScreenSizeForFrame', () => {
         { width: 1920, height: 900 },
         CHATGPT_PRESENTATION_PROFILE
       )
-    ).toEqual({ width: 2180, height: 900 })
+    ).toEqual({ width: 2180, height: 952 })
     expect(
       remoteScreenSizeForFrame(
         { width: 1280, height: 720 },
         CHATGPT_PRESENTATION_PROFILE
       )
-    ).toEqual({ width: 1540, height: 720 })
+    ).toEqual({ width: 1540, height: 772 })
   })
 
   it('keeps the height inside 720p..1440p', () => {
@@ -199,13 +175,13 @@ describe('remoteScreenSizeForFrame', () => {
         { width: 3840, height: 2160 },
         CHATGPT_PRESENTATION_PROFILE
       )
-    ).toEqual({ width: 2820, height: 1440 })
+    ).toEqual({ width: 2728, height: 1440 })
     expect(
       remoteScreenSizeForFrame(
         { width: 300, height: 200 },
         CHATGPT_PRESENTATION_PROFILE
       )
-    ).toEqual({ width: 1340, height: 720 })
+    ).toEqual({ width: 1262, height: 720 })
   })
 
   it('keeps the width inside 640..3840 and preserves wide aspect ratios', () => {
@@ -214,13 +190,13 @@ describe('remoteScreenSizeForFrame', () => {
         { width: 600, height: 1600 },
         CHATGPT_PRESENTATION_PROFILE
       )
-    ).toEqual({ width: 800, height: 1440 })
+    ).toEqual({ width: 781, height: 1440 })
     expect(
       remoteScreenSizeForFrame(
         { width: 5000, height: 800 },
         CHATGPT_PRESENTATION_PROFILE
       )
-    ).toEqual({ width: 3840, height: 573 })
+    ).toEqual({ width: 3840, height: 625 })
   })
 
   it('scales proportionally into the cloud screen budget', () => {
@@ -231,21 +207,21 @@ describe('remoteScreenSizeForFrame', () => {
         CHATGPT_PRESENTATION_PROFILE,
         bounds
       )
-    ).toEqual({ width: 1860, height: 900 })
+    ).toEqual({ width: 1768, height: 900 })
     expect(
       remoteScreenSizeForFrame(
         { width: 2560, height: 1080 },
         CHATGPT_PRESENTATION_PROFILE,
         bounds
       )
-    ).toEqual({ width: 2048, height: 754 })
+    ).toEqual({ width: 2048, height: 806 })
     expect(
       remoteScreenSizeForFrame(
         { width: 3840, height: 1080 },
         CHATGPT_PRESENTATION_PROFILE,
         bounds
       )
-    ).toEqual({ width: 2048, height: 503 })
+    ).toEqual({ width: 2048, height: 555 })
   })
 
   it('returns null when the frame cannot be measured', () => {
@@ -275,25 +251,5 @@ describe('toRemotePoint', () => {
       x: (frameCentre.x - transform.offsetX) / transform.scale,
       y: (frameCentre.y - transform.offsetY) / transform.scale,
     })
-  })
-
-  it('maps the centred uncropped stage when chrome is revealed', () => {
-    const result = computePresentation({
-      provider: 'chatgpt',
-      screen,
-      frame,
-      revealProviderChrome: true,
-    })
-    expect(result.status).toBe('ready')
-    if (result.status !== 'ready') return
-    const { transform } = result
-    const stageTopLeft = { x: transform.offsetX, y: transform.offsetY }
-    expect(toRemotePoint(transform, stageTopLeft)).toEqual({ x: 0, y: 0 })
-    expect(
-      toRemotePoint(transform, {
-        x: transform.offsetX + transform.stageWidth,
-        y: transform.offsetY + transform.stageHeight,
-      })
-    ).toEqual({ x: screen.width, y: screen.height })
   })
 })

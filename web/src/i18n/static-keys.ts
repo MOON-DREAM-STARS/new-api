@@ -601,6 +601,5 @@ export const STATIC_I18N_KEYS = [
   'Create project',
   'Creating the project in the remote browser...',
   'Automatic project creation failed',
-  'Create the project manually in the side panel. The remote browser is showing the full window; the system registers it automatically once the guard observes it.',
-  'Automatic creation failed. Create the project in the side panel of the full remote browser; cropping is restored automatically once the guard observes it.',
+  'Please contact an administrator to manually enable project creation permission.',
 ] as const
