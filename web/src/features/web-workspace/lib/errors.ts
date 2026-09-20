@@ -21,6 +21,7 @@ import { WEB_WORKSPACE_ERROR_CODES } from '../constants'
 export type WebWorkspaceErrorKind =
   | 'session_required'
   | 'project_limit'
+  | 'last_project_required'
   | 'project_creation_in_progress'
   | 'project_deletion_failed'
   | 'capacity_reached'
@@ -54,6 +55,8 @@ export const WEB_WORKSPACE_ERROR_MESSAGE_KEYS: Record<
   session_required: 'Start a browser session before creating a project.',
   project_limit:
     'You have reached the project limit. Remove an existing project first.',
+  last_project_required:
+    'At least one project must remain. Create another project before deleting this one.',
   project_creation_in_progress:
     'A project creation is already running. Finish it or wait for it to fail before starting another.',
   project_deletion_failed:
@@ -101,6 +104,8 @@ function classifyKind(
       return 'session_required'
     case WEB_WORKSPACE_ERROR_CODES.projectLimit:
       return 'project_limit'
+    case WEB_WORKSPACE_ERROR_CODES.lastProjectRequired:
+      return 'last_project_required'
     case WEB_WORKSPACE_ERROR_CODES.projectCreationInProgress:
       return 'project_creation_in_progress'
     case WEB_WORKSPACE_ERROR_CODES.projectDeletionRejected:

@@ -25,6 +25,8 @@ export type ProjectRemovalNotice = {
   removedNames: string[]
   /** Marks a delete the user already confirmed so it is not reported. */
   markExpectedRemoval: (projectId: number) => void
+  /** Clears a delete marker when the provider rejects or no-ops the delete. */
+  clearExpectedRemoval: (projectId: number) => void
   /** Records a policy-denied project reported by a mutation. */
   reportRemoved: (name: string) => void
   dismiss: () => void
@@ -64,6 +66,10 @@ export function useProjectRemovalNotice(
     expectedRemovalsRef.current.add(projectId)
   }, [])
 
+  const clearExpectedRemoval = useCallback((projectId: number) => {
+    expectedRemovalsRef.current.delete(projectId)
+  }, [])
+
   const reportRemoved = useCallback((name: string) => {
     setRemovedNames((current) =>
       current.includes(name) ? current : [...current, name]
@@ -74,5 +80,11 @@ export function useProjectRemovalNotice(
     setRemovedNames([])
   }, [])
 
-  return { removedNames, markExpectedRemoval, reportRemoved, dismiss }
+  return {
+    removedNames,
+    markExpectedRemoval,
+    clearExpectedRemoval,
+    reportRemoved,
+    dismiss,
+  }
 }

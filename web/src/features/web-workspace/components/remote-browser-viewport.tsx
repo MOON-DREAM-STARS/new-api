@@ -36,6 +36,10 @@ type RemoteBrowserViewportProps = {
   enabled: boolean
   immersive: boolean
   projectCreationFailed: boolean
+  /** Pauses the visible stream while the real project navigation is pending. */
+  suppressStream: boolean
+  projectNavigationErrorKey?: string | null
+  onRetryProject?: () => void
   /** Frame element and its measured box, owned by the page. */
   frameRef: RefObject<HTMLDivElement | null>
   frameSize: { width: number; height: number } | null
@@ -114,7 +118,8 @@ export function RemoteBrowserViewport(props: RemoteBrowserViewportProps) {
   const presentationReady = presentation.status === 'ready'
   const surfaceConnected =
     surfaceEnabled && props.surface.status === 'connected'
-  const showStream = surfaceConnected && presentationReady
+  const showStream =
+    surfaceConnected && presentationReady && !props.suppressStream
 
   let status: ViewportStatusProps | null = null
   if (!props.enabled) {
@@ -168,6 +173,22 @@ export function RemoteBrowserViewport(props: RemoteBrowserViewportProps) {
       actionLabel: t('Reconnect now'),
       onAction: props.surface.reconnect,
     }
+  } else if (props.suppressStream && isLive) {
+    status = props.projectNavigationErrorKey
+      ? {
+          kind: 'failed',
+          title: t('Could not open the selected project.'),
+          description: t(props.projectNavigationErrorKey),
+          actionLabel: props.onRetryProject ? t('Retry') : undefined,
+          onAction: props.onRetryProject,
+        }
+      : {
+          kind: 'adapting',
+          title: t('Opening your project...'),
+          description: t(
+            'The workspace view stays paused until your project is ready.'
+          ),
+        }
   } else if (!surfaceConnected) {
     status = {
       kind: 'connecting',

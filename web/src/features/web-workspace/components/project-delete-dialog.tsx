@@ -38,8 +38,14 @@ import type { WebProject } from '../types'
 type ProjectDeleteDialogProps = {
   project: WebProject | null
   onOpenChange: (open: boolean) => void
+  /** True when this is the only registered project in the workspace. */
+  isLastProject: boolean
+  /** Opens the real creation flow without deleting the current project. */
+  onCreate: () => void
   /** Called with the deleted project id so the removal is not reported as unexpected. */
   onDeleted: (projectId: number) => void
+  /** Clears the expected-removal marker when the provider rejects the delete. */
+  onDeleteRejected?: (projectId: number) => void
 }
 
 /** Confirmation dialog for deleting one provider-side project. */
@@ -49,6 +55,8 @@ export function ProjectDeleteDialog(props: ProjectDeleteDialogProps) {
   const error = deleteMutation.error
     ? classifyWebWorkspaceError(deleteMutation.error)
     : null
+  const lastProjectBlocked =
+    props.isLastProject || error?.kind === 'last_project_required'
 
   const handleConfirm = async () => {
     const project = props.project
@@ -59,7 +67,10 @@ export function ProjectDeleteDialog(props: ProjectDeleteDialogProps) {
     try {
       await deleteMutation.mutateAsync(project.id)
       props.onOpenChange(false)
-    } catch {
+    } catch (failure) {
+      if (classifyWebWorkspaceError(failure).kind === 'last_project_required') {
+        props.onDeleteRejected?.(project.id)
+      }
       // The mutation error is rendered in place.
     }
   }
@@ -70,38 +81,69 @@ export function ProjectDeleteDialog(props: ProjectDeleteDialogProps) {
       onOpenChange={props.onOpenChange}
     >
       <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>
-            {t('Delete project {{name}}?', { name: props.project?.name ?? '' })}
-          </AlertDialogTitle>
-          <AlertDialogDescription>
-            {t(
-              'This deletes the provider-side project and its Web Workspace registration. This cannot be undone.'
-            )}
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        {error ? (
-          <Alert variant='destructive' role='alert'>
-            <AlertDescription>{t(error.messageKey)}</AlertDescription>
-          </Alert>
-        ) : null}
-        <AlertDialogFooter>
-          <AlertDialogCancel disabled={deleteMutation.isPending}>
-            {t('Cancel')}
-          </AlertDialogCancel>
-          <AlertDialogAction
-            disabled={deleteMutation.isPending}
-            onClick={(event) => {
-              event.preventDefault()
-              void handleConfirm()
-            }}
-          >
-            {deleteMutation.isPending ? (
-              <Spinner className='size-4 motion-reduce:animate-none' />
+        {lastProjectBlocked ? (
+          <>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                {t('Cannot delete the last project')}
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                {t(
+                  'At least one project must remain. Create another project before deleting this one.'
+                )}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>{t('Cancel')}</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={(event) => {
+                  event.preventDefault()
+                  props.onOpenChange(false)
+                  props.onCreate()
+                }}
+              >
+                {t('New project')}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </>
+        ) : (
+          <>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                {t('Delete project {{name}}?', {
+                  name: props.project?.name ?? '',
+                })}
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                {t(
+                  'This deletes the provider-side project and its Web Workspace registration. This cannot be undone.'
+                )}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            {error ? (
+              <Alert variant='destructive' role='alert'>
+                <AlertDescription>{t(error.messageKey)}</AlertDescription>
+              </Alert>
             ) : null}
-            {t('Delete project')}
-          </AlertDialogAction>
-        </AlertDialogFooter>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={deleteMutation.isPending}>
+                {t('Cancel')}
+              </AlertDialogCancel>
+              <AlertDialogAction
+                disabled={deleteMutation.isPending}
+                onClick={(event) => {
+                  event.preventDefault()
+                  void handleConfirm()
+                }}
+              >
+                {deleteMutation.isPending ? (
+                  <Spinner className='size-4 motion-reduce:animate-none' />
+                ) : null}
+                {t('Delete project')}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </>
+        )}
       </AlertDialogContent>
     </AlertDialog>
   )

@@ -25,7 +25,7 @@ import { api } from '@/lib/api'
 
 import { ProjectCreateDialog } from '../components/project-create-dialog'
 import { WEB_WORKSPACE_SESSION_QUERY_KEY } from '../constants'
-import type { WebWorkspaceProjectCreation } from '../types'
+import type { WebProject, WebWorkspaceProjectCreation } from '../types'
 
 type ApiMethod = (url: string, data?: unknown) => Promise<{ data: unknown }>
 type MockableApi = {
@@ -83,53 +83,69 @@ afterEach(() => {
   apiClient.post = originalPost
 })
 
-function renderDialog(onOpenChange = vi.fn()) {
+function renderDialog(
+  onOpenChange = vi.fn(),
+  overrides: {
+    required?: boolean
+    onCreated?: (project: WebProject) => void
+  } = {}
+) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
   const result = render(
     <QueryClientProvider client={queryClient}>
-      <ProjectCreateDialog open onOpenChange={onOpenChange} />
+      <ProjectCreateDialog open onOpenChange={onOpenChange} {...overrides} />
     </QueryClientProvider>
   )
   return { ...result, onOpenChange, queryClient }
 }
 
-async function waitForCreateButton() {
-  const button = await screen.findByRole('button', { name: 'Create project' })
+async function waitForCreateButton(name = 'Create project') {
+  const button = await screen.findByRole('button', { name })
   await waitFor(() => expect(button).toBeEnabled())
   return button
 }
 
+async function fillProjectName(userName = 'Alpha', projectName = 'Project') {
+  await userEvent.type(screen.getByLabelText('User name'), userName)
+  await userEvent.type(screen.getByLabelText('Project name'), projectName)
+}
+
 describe('ProjectCreateDialog', () => {
-  test('requires a non-blank project name before issuing a permit', async () => {
+  test('requires both project name segments before issuing a permit', async () => {
     mockEmptySession()
 
     renderDialog()
 
-    const input = screen.getByLabelText('Project name')
+    const userInput = screen.getByLabelText('User name')
+    const projectInput = screen.getByLabelText('Project name')
     const submit = screen.getByRole('button', { name: 'Create project' })
 
-    // The field starts empty: the hint only appears once the operator has
-    // interacted with it, so an untouched dialog shows no error.
+    // The fields start empty: hints only appear after the operator interacts.
     expect(submit).toBeDisabled()
     expect(
-      screen.queryByText('Enter a project name of 1-64 characters.')
+      screen.queryByText(
+        'Enter a user name of 1-24 letters, numbers, or underscores.'
+      )
     ).not.toBeInTheDocument()
 
-    await userEvent.type(input, '   ')
+    await userEvent.type(userInput, '   ')
     expect(submit).toBeDisabled()
     expect(
-      screen.getByText('Enter a project name of 1-64 characters.')
+      screen.getByText(
+        'Enter a user name of 1-24 letters, numbers, or underscores.'
+      )
     ).toBeInTheDocument()
 
-    await userEvent.clear(input)
-    await userEvent.type(input, 'Alpha')
-    await waitFor(() => {
-      expect(submit).toBeEnabled()
-    })
+    await userEvent.clear(userInput)
+    await userEvent.type(userInput, 'Alpha')
+    await userEvent.type(projectInput, 'Project')
+    await waitFor(() => expect(submit).toBeEnabled())
     expect(
-      screen.queryByText('Enter a project name of 1-64 characters.')
+      screen.queryByText(
+        'Enter a user name of 1-24 letters, numbers, or underscores.'
+      )
     ).not.toBeInTheDocument()
   })
 
@@ -149,14 +165,14 @@ describe('ProjectCreateDialog', () => {
     }
     renderDialog()
 
-    await userEvent.type(screen.getByLabelText('Project name'), ' Alpha ')
+    await fillProjectName(' Alpha ', ' Project ')
     await userEvent.click(await waitForCreateButton())
 
     expect(
       await screen.findByText('Creating the project in the remote browser...')
     ).toBeInTheDocument()
     expect(permitCalls).toBe(1)
-    expect(permitPayload).toEqual({ name: 'Alpha' })
+    expect(permitPayload).toEqual({ name: 'Alpha-Project' })
   })
 
   test('closes the dialog when the guard observes the created project', async () => {
@@ -171,19 +187,46 @@ describe('ProjectCreateDialog', () => {
           })
         )
       }
-      if (url === PERMIT_PATH) return ok({ items: [] })
+      if (url === PERMIT_PATH) {
+        return ok({
+          items: [
+            {
+              id: 10,
+              provider: 'chatgpt',
+              name: 'Alpha-Project',
+              created_at: 1,
+              updated_at: 2,
+            },
+          ],
+        })
+      }
       throw new Error(`unexpected get ${url}`)
     }
     apiClient.post = async () =>
       ok({ permit_id: 'permit-1', expires_at: futureExpiry(300) })
-    const { onOpenChange } = renderDialog()
+    const onCreated = vi.fn()
+    const { onOpenChange } = renderDialog(undefined, { onCreated })
 
-    await userEvent.type(screen.getByLabelText('Project name'), 'Alpha')
+    await fillProjectName()
     await userEvent.click(await waitForCreateButton())
 
     await waitFor(() => {
+      expect(onCreated).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 10, name: 'Alpha-Project' })
+      )
       expect(onOpenChange).toHaveBeenCalledWith(false)
     })
+  })
+
+  test('required mode does not expose a close control', () => {
+    mockEmptySession()
+
+    renderDialog(undefined, { required: true })
+
+    expect(screen.getByText('Create your first project')).toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Close' })
+    ).not.toBeInTheDocument()
   })
 
   test('shows administrator guidance when creation fails without a retry', async () => {
@@ -199,7 +242,7 @@ describe('ProjectCreateDialog', () => {
     }
     const { queryClient } = renderDialog()
 
-    await userEvent.type(screen.getByLabelText('Project name'), 'Alpha')
+    await fillProjectName()
     await userEvent.click(await waitForCreateButton())
     queryClient.setQueryData(
       WEB_WORKSPACE_SESSION_QUERY_KEY,
@@ -257,7 +300,7 @@ describe('ProjectCreateDialog', () => {
     expect(
       await screen.findByText('Creating the project in the remote browser...')
     ).toBeInTheDocument()
-    expect(screen.getByLabelText('Project name')).toBeDisabled()
+    expect(screen.getByLabelText('User name')).toBeDisabled()
     expect(
       screen.queryByRole('button', { name: 'Create project' })
     ).not.toBeInTheDocument()
@@ -276,7 +319,19 @@ describe('ProjectCreateDialog', () => {
           })
         )
       }
-      if (url === PERMIT_PATH) return ok({ items: [] })
+      if (url === PERMIT_PATH) {
+        return ok({
+          items: [
+            {
+              id: 10,
+              provider: 'chatgpt',
+              name: 'Alpha-Project',
+              created_at: 1,
+              updated_at: 2,
+            },
+          ],
+        })
+      }
       throw new Error(`unexpected get ${url}`)
     }
     apiClient.post = async () =>
@@ -327,7 +382,7 @@ describe('ProjectCreateDialog', () => {
     }
     renderDialog()
 
-    await userEvent.type(screen.getByLabelText('Project name'), 'Alpha')
+    await fillProjectName()
     await userEvent.click(await waitForCreateButton())
 
     expect(
@@ -363,45 +418,76 @@ describe('ProjectCreateDialog', () => {
     }
     renderDialog()
 
-    await userEvent.type(screen.getByLabelText('Project name'), 'Alpha')
+    await fillProjectName()
     await userEvent.click(await waitForCreateButton())
 
     expect(
       await screen.findByText('Creating the project in the remote browser...')
     ).toBeInTheDocument()
-    expect(permitPayload).toEqual({ name: 'Alpha' })
+    expect(permitPayload).toEqual({ name: 'Alpha-Project' })
   })
 
-  test('starts a missing session before retrying the permit', async () => {
-    let sessionStarted = false
+  test('ignores a stale failed state without a matching permit', async () => {
     let permitCalls = 0
     apiClient.get = async (url) => {
-      if (url === SESSION_PATH) return ok(sessionDto(null))
+      if (url === SESSION_PATH) {
+        return ok(
+          sessionDto({
+            permit_id: 'permit-old',
+            state: 'FAILED',
+            error: 'ERR_OLD_CREATION',
+            updated_at: 1,
+          })
+        )
+      }
       if (url === PERMIT_PATH) return ok({ items: [] })
       throw new Error(`unexpected get ${url}`)
     }
-    apiClient.post = async (url) => {
-      if (url === SESSION_PATH) {
-        sessionStarted = true
-        return ok(sessionDto(null))
-      }
-      if (!sessionStarted) {
-        return fail(409, 'WEB_WORKSPACE_SESSION_REQUIRED')
-      }
+    apiClient.post = async () => {
       permitCalls += 1
-      return ok({ permit_id: 'permit-1', expires_at: futureExpiry(300) })
+      return ok({ permit_id: 'permit-new', expires_at: futureExpiry(300) })
     }
     renderDialog()
 
-    await userEvent.type(screen.getByLabelText('Project name'), 'Alpha')
+    await fillProjectName()
     await userEvent.click(await waitForCreateButton())
-    expect(
-      await screen.findByText(
-        'Start a browser session before creating a project.'
-      )
-    ).toBeInTheDocument()
 
-    await userEvent.click(screen.getByRole('button', { name: 'Start session' }))
+    expect(
+      await screen.findByText('Creating the project in the remote browser...')
+    ).toBeInTheDocument()
+    expect(permitCalls).toBe(1)
+  })
+  test('starts a missing session before issuing the permit', async () => {
+    let sessionStarted = false
+    let permitCalls = 0
+    apiClient.get = async (url) => {
+      if (url === SESSION_PATH) {
+        return ok(
+          sessionStarted
+            ? sessionDto(null)
+            : { ...sessionDto(null), state: 'STOPPED' }
+        )
+      }
+      if (url === PERMIT_PATH) return ok({ items: [] })
+      throw new Error(`unexpected get ${url}`)
+    }
+    apiClient.post = async (url, data) => {
+      if (url === SESSION_PATH) {
+        expect(data).toEqual({ screen_width: 0, screen_height: 0 })
+        sessionStarted = true
+        return ok(sessionDto(null))
+      }
+      if (url === PERMIT_PATH) {
+        expect(sessionStarted).toBe(true)
+        permitCalls += 1
+        expect(data).toEqual({ name: 'Alpha-Project' })
+        return ok({ permit_id: 'permit-1', expires_at: futureExpiry(300) })
+      }
+      throw new Error(`unexpected post ${url}`)
+    }
+    renderDialog()
+
+    await fillProjectName()
     await userEvent.click(await waitForCreateButton())
 
     expect(

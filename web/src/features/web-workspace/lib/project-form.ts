@@ -16,17 +16,27 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+
 // The default export is the same zod object as the named `z` export; it is
 // used here because the test runner's CJS interop does not expose `z`.
 import z from 'zod'
 
-/** Matches the server rule: 1-255 characters after trimming. */
-export const renameProjectFormSchema = z.object({
-  name: z
-    .string()
-    .trim()
-    .min(1, 'Project name is required.')
-    .max(255, 'Project name must be 255 characters or fewer.'),
+import {
+  isValidProjectNameSegment,
+  PROJECT_NAME_SEGMENT_MAX_LENGTH,
+} from './project-name'
+
+export const projectNameFormSchema = z.object({
+  userName: z.string().refine(isValidProjectNameSegment, {
+    message: `User name must be 1-${PROJECT_NAME_SEGMENT_MAX_LENGTH} letters, numbers, or underscores.`,
+  }),
+  projectName: z.string().refine(isValidProjectNameSegment, {
+    message: `Project name must be 1-${PROJECT_NAME_SEGMENT_MAX_LENGTH} letters, numbers, or underscores.`,
+  }),
 })
 
-export type RenameProjectFormValues = z.infer<typeof renameProjectFormSchema>
+export type ProjectNameFormValues = z.infer<typeof projectNameFormSchema>
+
+/** Kept as an alias so existing rename imports remain explicit. */
+export const renameProjectFormSchema = projectNameFormSchema
+export type RenameProjectFormValues = ProjectNameFormValues

@@ -7372,6 +7372,22 @@
     "Enter a project name of 1-64 characters.": "Enter a project name of 1-64 characters.",
     "A project creation is already running. Finish it or wait for it to fail before starting another.": "A project creation is already running. Finish it or wait for it to fail before starting another.",
     "Create project": "Create project",
-    "Please contact an administrator to manually enable project creation permission.": "Please contact an administrator to manually enable project creation permission."
+    "Please contact an administrator to manually enable project creation permission.": "Please contact an administrator to manually enable project creation permission.",
+    "Could not open the selected project.": "Could not open the selected project.",
+    "Create first project": "Create first project",
+    "At least one project must remain. Create another project before deleting this one.": "At least one project must remain. Create another project before deleting this one.",
+    "The workspace view stays paused until your project is ready.": "The workspace view stays paused until your project is ready.",
+    "Current name: {{name}}": "Current name: {{name}}",
+    "Final project name: {{name}}": "Final project name: {{name}}",
+    "Registering the created project...": "Registering the created project...",
+    "User name": "User name",
+    "Project was created but is not registered yet": "Project was created but is not registered yet",
+    "Create your first project": "Create your first project",
+    "Cannot delete the last project": "Cannot delete the last project",
+    "Enter a project name of 1-24 letters, numbers, or underscores.": "Enter a project name of 1-24 letters, numbers, or underscores.",
+    "Refresh the project list and try again.": "Refresh the project list and try again.",
+    "Opening your project...": "Opening your project...",
+    "Enter a user identifier and project name. The system creates the project automatically in the remote browser.": "Enter a user identifier and project name. The system creates the project automatically in the remote browser.",
+    "Enter a user name of 1-24 letters, numbers, or underscores.": "Enter a user name of 1-24 letters, numbers, or underscores."
   }
 }
