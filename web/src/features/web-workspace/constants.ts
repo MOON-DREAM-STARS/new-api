@@ -81,6 +81,10 @@ export const WEB_WORKSPACE_ERROR_CODES = {
   projectLimit: 'WEB_WORKSPACE_PROJECT_LIMIT',
   projectCreationInProgress:
     'WEB_WORKSPACE_PROJECT_CREATION_IN_PROGRESS',
+  projectDeletionTimeout: 'WEB_WORKSPACE_PROJECT_DELETION_TIMEOUT',
+  projectDeletionUnavailable: 'WEB_WORKSPACE_PROJECT_DELETION_UNAVAILABLE',
+  projectDeletionRejected: 'WEB_WORKSPACE_PROJECT_DELETION_REJECTED',
+  capacityReached: 'WEB_WORKSPACE_CAPACITY_REACHED',
   ticketInvalid: 'WEB_WORKSPACE_TICKET_INVALID',
 } as const
 

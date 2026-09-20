@@ -77,7 +77,7 @@ describe('computePresentation', () => {
     expect(result.transform.crop.height).toBeLessThanOrEqual(screen.height)
   })
 
-  it('centres the crop in the full framebuffer when chrome is revealed', () => {
+  it('fits the whole framebuffer without cropping when chrome is revealed', () => {
     const result = computePresentation({
       provider: 'chatgpt',
       screen,
@@ -86,9 +86,25 @@ describe('computePresentation', () => {
     })
     expect(result.status).toBe('ready')
     if (result.status !== 'ready') return
-    const { crop } = result.transform
-    expect(crop.x).toBeGreaterThanOrEqual(0)
-    expect(crop.x * 2 + crop.width).toBeCloseTo(screen.width, 0)
+    const { crop, scale, offsetX, offsetY, stageWidth, stageHeight } =
+      result.transform
+    expect(crop).toEqual({
+      x: 0,
+      y: 0,
+      width: screen.width,
+      height: screen.height,
+    })
+    expect(scale).toBe(
+      Math.min(frame.width / screen.width, frame.height / screen.height)
+    )
+    expect(stageWidth).toBeLessThanOrEqual(frame.width)
+    expect(stageHeight).toBeLessThanOrEqual(frame.height)
+    expect(offsetX).toBeGreaterThanOrEqual(0)
+    expect(offsetY).toBeGreaterThanOrEqual(0)
+    expect(Math.abs(offsetX * 2 + stageWidth - frame.width)).toBeLessThanOrEqual(1)
+    expect(
+      Math.abs(offsetY * 2 + stageHeight - frame.height)
+    ).toBeLessThanOrEqual(1)
   })
 
   it('fills the frame without dead space and stays inside the framebuffer', () => {
@@ -192,7 +208,7 @@ describe('remoteScreenSizeForFrame', () => {
     ).toEqual({ width: 1340, height: 720 })
   })
 
-  it('keeps the width inside 640..3840 for unusual aspect ratios', () => {
+  it('keeps the width inside 640..3840 and preserves wide aspect ratios', () => {
     expect(
       remoteScreenSizeForFrame(
         { width: 600, height: 1600 },
@@ -204,7 +220,32 @@ describe('remoteScreenSizeForFrame', () => {
         { width: 5000, height: 800 },
         CHATGPT_PRESENTATION_PROFILE
       )
-    ).toEqual({ width: 3840, height: 800 })
+    ).toEqual({ width: 3840, height: 573 })
+  })
+
+  it('scales proportionally into the cloud screen budget', () => {
+    const bounds = { maxWidth: 2048, maxHeight: 900 }
+    expect(
+      remoteScreenSizeForFrame(
+        { width: 1920, height: 1080 },
+        CHATGPT_PRESENTATION_PROFILE,
+        bounds
+      )
+    ).toEqual({ width: 1860, height: 900 })
+    expect(
+      remoteScreenSizeForFrame(
+        { width: 2560, height: 1080 },
+        CHATGPT_PRESENTATION_PROFILE,
+        bounds
+      )
+    ).toEqual({ width: 2048, height: 754 })
+    expect(
+      remoteScreenSizeForFrame(
+        { width: 3840, height: 1080 },
+        CHATGPT_PRESENTATION_PROFILE,
+        bounds
+      )
+    ).toEqual({ width: 2048, height: 503 })
   })
 
   it('returns null when the frame cannot be measured', () => {
@@ -220,19 +261,39 @@ describe('remoteScreenSizeForFrame', () => {
   })
 })
 describe('toRemotePoint', () => {
-  it('maps frame coordinates through the active crop and scale', () => {
+  it('maps frame coordinates through the active crop, offset and scale', () => {
     const result = computePresentation({ provider: 'chatgpt', screen, frame })
     expect(result.status).toBe('ready')
     if (result.status !== 'ready') return
     const { transform } = result
     expect(toRemotePoint(transform, { x: 0, y: 0 })).toEqual({
-      x: transform.crop.x,
-      y: transform.crop.y,
+      x: -transform.offsetX / transform.scale,
+      y: -transform.offsetY / transform.scale,
     })
     const frameCentre = { x: frame.width * 0.5, y: frame.height * 0.5 }
     expect(toRemotePoint(transform, frameCentre)).toEqual({
-      x: transform.crop.x + frameCentre.x / transform.scale,
-      y: transform.crop.y + frameCentre.y / transform.scale,
+      x: (frameCentre.x - transform.offsetX) / transform.scale,
+      y: (frameCentre.y - transform.offsetY) / transform.scale,
     })
+  })
+
+  it('maps the centred uncropped stage when chrome is revealed', () => {
+    const result = computePresentation({
+      provider: 'chatgpt',
+      screen,
+      frame,
+      revealProviderChrome: true,
+    })
+    expect(result.status).toBe('ready')
+    if (result.status !== 'ready') return
+    const { transform } = result
+    const stageTopLeft = { x: transform.offsetX, y: transform.offsetY }
+    expect(toRemotePoint(transform, stageTopLeft)).toEqual({ x: 0, y: 0 })
+    expect(
+      toRemotePoint(transform, {
+        x: transform.offsetX + transform.stageWidth,
+        y: transform.offsetY + transform.stageHeight,
+      })
+    ).toEqual({ x: screen.width, y: screen.height })
   })
 })

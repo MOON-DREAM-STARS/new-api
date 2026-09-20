@@ -52,6 +52,14 @@ describe('classifyWebWorkspaceError', () => {
     expect(info.kind).toBe('project_limit')
   })
 
+  test('classifies the global runtime capacity conflict', () => {
+    const info = classifyWebWorkspaceError(
+      apiError(409, WEB_WORKSPACE_ERROR_CODES.capacityReached)
+    )
+    expect(info.kind).toBe('capacity_reached')
+    expect(info.messageKey).toContain('active Web Workspace')
+  })
+
   test('classifies an unavailable browser agent, including a bare 503', () => {
     expect(
       classifyWebWorkspaceError(

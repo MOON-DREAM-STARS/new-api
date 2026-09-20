@@ -23,6 +23,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import { api } from '@/lib/api'
 
+import { WEB_WORKSPACE_SESSION_QUERY_KEY } from '../constants'
 import { ProjectCreateDialog } from '../components/project-create-dialog'
 import type { WebWorkspaceProjectCreation } from '../types'
 
@@ -51,6 +52,14 @@ function fail(status: number, code: string) {
 
 function futureExpiry(secondsFromNow: number): number {
   return Math.floor(Date.now() / 1000) + secondsFromNow
+}
+
+function mockEmptySession() {
+  apiClient.get = async (url) => {
+    if (url === SESSION_PATH) return ok(sessionDto(null))
+    if (url === PERMIT_PATH) return ok({ items: [] })
+    throw new Error(`unexpected get ${url}`)
+  }
 }
 
 function sessionDto(projectCreation: WebWorkspaceProjectCreation | null) {
@@ -86,8 +95,16 @@ function renderDialog(onOpenChange = vi.fn()) {
   return { ...result, onOpenChange, queryClient }
 }
 
+async function waitForCreateButton() {
+  const button = await screen.findByRole('button', { name: 'Create project' })
+  await waitFor(() => expect(button).toBeEnabled())
+  return button
+}
+
 describe('ProjectCreateDialog', () => {
   test('requires a non-blank project name before issuing a permit', async () => {
+    mockEmptySession()
+
     renderDialog()
 
     const input = screen.getByLabelText('Project name')
@@ -108,7 +125,9 @@ describe('ProjectCreateDialog', () => {
 
     await userEvent.clear(input)
     await userEvent.type(input, 'Alpha')
-    expect(submit).toBeEnabled()
+    await waitFor(() => {
+      expect(submit).toBeEnabled()
+    })
     expect(
       screen.queryByText('Enter a project name of 1-64 characters.')
     ).not.toBeInTheDocument()
@@ -131,7 +150,7 @@ describe('ProjectCreateDialog', () => {
     renderDialog()
 
     await userEvent.type(screen.getByLabelText('Project name'), ' Alpha ')
-    await userEvent.click(screen.getByRole('button', { name: 'Create project' }))
+    await userEvent.click(await waitForCreateButton())
 
     expect(
       await screen.findByText('Creating the project in the remote browser...')
@@ -160,7 +179,7 @@ describe('ProjectCreateDialog', () => {
     const { onOpenChange } = renderDialog()
 
     await userEvent.type(screen.getByLabelText('Project name'), 'Alpha')
-    await userEvent.click(screen.getByRole('button', { name: 'Create project' }))
+    await userEvent.click(await waitForCreateButton())
 
     await waitFor(() => {
       expect(onOpenChange).toHaveBeenCalledWith(false)
@@ -191,7 +210,7 @@ describe('ProjectCreateDialog', () => {
     renderDialog()
 
     await userEvent.type(screen.getByLabelText('Project name'), 'Alpha')
-    await userEvent.click(screen.getByRole('button', { name: 'Create project' }))
+    await userEvent.click(await waitForCreateButton())
 
     expect(
       await screen.findByText('Automatic project creation failed')
@@ -215,23 +234,148 @@ describe('ProjectCreateDialog', () => {
     ).toBeInTheDocument()
   })
 
-  test('shows the project-creation conflict without pretending success', async () => {
+  test('joins an existing running creation without issuing another permit', async () => {
+    let permitCalls = 0
+    apiClient.get = async (url) => {
+      if (url === SESSION_PATH) {
+        return ok(
+          sessionDto({
+            permit_id: 'permit-running',
+            state: 'RUNNING',
+            error: '',
+            updated_at: 1,
+          })
+        )
+      }
+      if (url === PERMIT_PATH) return ok({ items: [] })
+      throw new Error(`unexpected get ${url}`)
+    }
+    apiClient.post = async () => {
+      permitCalls += 1
+      return ok({ permit_id: 'permit-new', expires_at: futureExpiry(300) })
+    }
+    renderDialog()
+
+    expect(
+      await screen.findByText('Creating the project in the remote browser...')
+    ).toBeInTheDocument()
+    expect(screen.getByLabelText('Project name')).toBeDisabled()
+    expect(
+      screen.queryByRole('button', { name: 'Create project' })
+    ).not.toBeInTheDocument()
+    expect(permitCalls).toBe(0)
+  })
+
+  test('closes after a joined running creation becomes created', async () => {
+    apiClient.get = async (url) => {
+      if (url === SESSION_PATH) {
+        return ok(
+          sessionDto({
+            permit_id: 'permit-running',
+            state: 'RUNNING',
+            error: '',
+            updated_at: 1,
+          })
+        )
+      }
+      if (url === PERMIT_PATH) return ok({ items: [] })
+      throw new Error(`unexpected get ${url}`)
+    }
     apiClient.post = async () =>
-      fail(409, 'WEB_WORKSPACE_PROJECT_CREATION_IN_PROGRESS')
+      ok({ permit_id: 'permit-new', expires_at: futureExpiry(300) })
+    const { onOpenChange, queryClient } = renderDialog()
+
+    await screen.findByText('Creating the project in the remote browser...')
+    queryClient.setQueryData(
+      WEB_WORKSPACE_SESSION_QUERY_KEY,
+      sessionDto({
+        permit_id: 'permit-running',
+        state: 'CREATED',
+        error: '',
+        updated_at: 2,
+      })
+    )
+
+    await waitFor(() => {
+      expect(onOpenChange).toHaveBeenCalledWith(false)
+    })
+  })
+
+  test('reconciles a creation conflict with the real running session', async () => {
+    let sessionCalls = 0
+    let permitCalls = 0
+    apiClient.get = async (url) => {
+      if (url === SESSION_PATH) {
+        sessionCalls += 1
+        return ok(
+          sessionDto(
+            sessionCalls === 1
+              ? null
+              : {
+                  permit_id: 'permit-running',
+                  state: 'RUNNING',
+                  error: '',
+                  updated_at: 2,
+                }
+          )
+        )
+      }
+      if (url === PERMIT_PATH) return ok({ items: [] })
+      throw new Error(`unexpected get ${url}`)
+    }
+    apiClient.post = async () => {
+      permitCalls += 1
+      return fail(409, 'WEB_WORKSPACE_PROJECT_CREATION_IN_PROGRESS')
+    }
     renderDialog()
 
     await userEvent.type(screen.getByLabelText('Project name'), 'Alpha')
-    await userEvent.click(screen.getByRole('button', { name: 'Create project' }))
+    await userEvent.click(await waitForCreateButton())
 
     expect(
-      await screen.findByText(
-        'A project creation is already running. Finish it or wait for it to fail before starting another.'
-      )
+      await screen.findByText('Creating the project in the remote browser...')
     ).toBeInTheDocument()
     expect(
-      screen.queryByText('Creating the project in the remote browser...')
-    ).toBeNull()
+      screen.queryByText(
+        'A project creation is already running. Finish it or wait for it to fail before starting another.'
+      )
+    ).not.toBeInTheDocument()
+    expect(permitCalls).toBe(1)
   })
+
+  test.each(['FAILED', 'CREATED'] as const)(
+    'ignores a stale %s creation state without a matching permit',
+    async (state) => {
+      let permitPayload: unknown
+      apiClient.get = async (url) => {
+        if (url === SESSION_PATH) {
+          return ok(
+            sessionDto({
+              permit_id: 'permit-old',
+              state,
+              error: state === 'FAILED' ? 'ERR_PROJECT_UI_NOT_FOUND' : '',
+              updated_at: 1,
+            })
+          )
+        }
+        if (url === PERMIT_PATH) return ok({ items: [] })
+        throw new Error(`unexpected get ${url}`)
+      }
+      apiClient.post = async (_url, data) => {
+        permitPayload = data
+        return ok({ permit_id: 'permit-new', expires_at: futureExpiry(300) })
+      }
+      renderDialog()
+
+      await userEvent.type(screen.getByLabelText('Project name'), 'Alpha')
+      await userEvent.click(await waitForCreateButton())
+
+      expect(
+        await screen.findByText('Creating the project in the remote browser...')
+      ).toBeInTheDocument()
+      expect(permitPayload).toEqual({ name: 'Alpha' })
+    }
+  )
 
   test('starts a missing session before retrying the permit', async () => {
     let sessionStarted = false
@@ -255,7 +399,7 @@ describe('ProjectCreateDialog', () => {
     renderDialog()
 
     await userEvent.type(screen.getByLabelText('Project name'), 'Alpha')
-    await userEvent.click(screen.getByRole('button', { name: 'Create project' }))
+    await userEvent.click(await waitForCreateButton())
     expect(
       await screen.findByText(
         'Start a browser session before creating a project.'
@@ -263,9 +407,7 @@ describe('ProjectCreateDialog', () => {
     ).toBeInTheDocument()
 
     await userEvent.click(screen.getByRole('button', { name: 'Start session' }))
-    await userEvent.click(
-      await screen.findByRole('button', { name: 'Create project' })
-    )
+    await userEvent.click(await waitForCreateButton())
 
     expect(
       await screen.findByText('Creating the project in the remote browser...')

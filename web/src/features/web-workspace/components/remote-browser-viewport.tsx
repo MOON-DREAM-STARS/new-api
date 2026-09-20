@@ -43,6 +43,7 @@ type RemoteBrowserViewportProps = {
   projectsEmpty: boolean
   surface: RemoteSurfaceController
   page: WebWorkspacePage | null
+  startErrorMessageKey?: string | null
   isReloadPending: boolean
   onStart: () => void
   onReload: () => void
@@ -128,6 +129,14 @@ export function RemoteBrowserViewport(props: RemoteBrowserViewportProps) {
     status = {
       kind: 'starting',
       title: t('Starting the remote browser...'),
+    }
+  } else if (!isLive && props.startErrorMessageKey) {
+    status = {
+      kind: 'failed',
+      title: t('Could not start the remote browser.'),
+      description: t(props.startErrorMessageKey),
+      actionLabel: t('Retry'),
+      onAction: props.onStart,
     }
   } else if (!isLive) {
     // A real account without projects gets its own empty state: projects are

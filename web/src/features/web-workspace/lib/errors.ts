@@ -22,6 +22,8 @@ export type WebWorkspaceErrorKind =
   | 'session_required'
   | 'project_limit'
   | 'project_creation_in_progress'
+  | 'project_deletion_failed'
+  | 'capacity_reached'
   | 'agent_unavailable'
   | 'resource_removed'
   | 'forbidden'
@@ -54,6 +56,10 @@ export const WEB_WORKSPACE_ERROR_MESSAGE_KEYS: Record<
     'You have reached the project limit. Remove an existing project first.',
   project_creation_in_progress:
     'A project creation is already running. Finish it or wait for it to fail before starting another.',
+  project_deletion_failed:
+    'The provider project could not be deleted. Web Workspace kept the local registration.',
+  capacity_reached:
+    'The server already has an active Web Workspace. Wait for it to become idle or stop it before starting another.',
   agent_unavailable:
     'The browser agent is unavailable right now. Try again in a moment.',
   resource_removed: 'This resource is unavailable or has been removed.',
@@ -97,6 +103,13 @@ function classifyKind(
       return 'project_limit'
     case WEB_WORKSPACE_ERROR_CODES.projectCreationInProgress:
       return 'project_creation_in_progress'
+    case WEB_WORKSPACE_ERROR_CODES.projectDeletionRejected:
+      return 'project_deletion_failed'
+    case WEB_WORKSPACE_ERROR_CODES.projectDeletionTimeout:
+    case WEB_WORKSPACE_ERROR_CODES.projectDeletionUnavailable:
+      return 'agent_unavailable'
+    case WEB_WORKSPACE_ERROR_CODES.capacityReached:
+      return 'capacity_reached'
     case WEB_WORKSPACE_ERROR_CODES.agentUnavailable:
     case 'WEB_WORKSPACE_NAVIGATION_TIMEOUT':
     case 'WEB_WORKSPACE_NAVIGATION_UNAVAILABLE':

@@ -74,38 +74,68 @@ export function ProjectCreateDialog(props: ProjectCreateDialogProps) {
   const startSessionMutation = useStartWebWorkspaceSession()
   const [name, setName] = useState('')
   const [nameTouched, setNameTouched] = useState(false)
+  const [observedPermitId, setObservedPermitId] = useState<string | null>(null)
 
   const permit = permitMutation.data ?? null
-  const creating = Boolean(permit)
-  const sessionQuery = useWebWorkspaceSession({
-    enabled: open && creating,
-  })
-  useWebWorkspaceProjects(open && creating)
+  const sessionQuery = useWebWorkspaceSession({ enabled: open })
   const projectCreation = sessionQuery.data?.project_creation ?? null
-  const currentCreation =
+  const sessionRunning = projectCreation?.state === 'RUNNING'
+  const matchingCreation =
     permit && projectCreation?.permit_id === permit.permit_id
       ? projectCreation
       : null
-  const creationFailed = currentCreation?.state === 'FAILED'
-  const creationError = creationFailed ? currentCreation.error : ''
+  const trackedCreation =
+    matchingCreation ??
+    (projectCreation?.permit_id === observedPermitId ? projectCreation : null)
+  const creating = Boolean(permit) || sessionRunning
+  useWebWorkspaceProjects(open && creating)
+  const creationFailed = trackedCreation?.state === 'FAILED'
+  const creationError = creationFailed ? trackedCreation.error : ''
   const trimmedName = name.trim()
   const isNameValid = isValidProjectName(name)
   // The field starts empty, so the hint only appears after the operator has
   // interacted with it instead of on open.
   const showNameError = nameTouched && !isNameValid
-  const error = permitMutation.error
+  const rawError = permitMutation.error
     ? classifyWebWorkspaceError(permitMutation.error)
     : null
-  const isBusy = permitMutation.isPending || startSessionMutation.isPending
+  const conflictInProgress =
+    rawError?.kind === 'project_creation_in_progress'
+  const error = conflictInProgress ? null : rawError
+  const sessionChecking = open && sessionQuery.isLoading && !permit
+  const checkingCreation =
+    conflictInProgress && (sessionQuery.isLoading || sessionQuery.isFetching)
+  const isBusy =
+    permitMutation.isPending || startSessionMutation.isPending || sessionChecking
+  const showCreateAction =
+    !permit && !error && !creating && !checkingCreation
 
   useEffect(() => {
-    if (!open || currentCreation?.state !== 'CREATED') return
+    if (!open || !sessionRunning || !projectCreation) return
+    setObservedPermitId(projectCreation.permit_id)
+  }, [open, projectCreation, sessionRunning])
+
+  useEffect(() => {
+    if (open) return
+    setObservedPermitId(null)
+  }, [open])
+
+  useEffect(() => {
+    if (!open || trackedCreation?.state !== 'CREATED') return
     void queryClient.invalidateQueries({
       queryKey: WEB_WORKSPACE_PROJECTS_QUERY_KEY,
     })
     permitMutation.reset()
+    setObservedPermitId(null)
     onOpenChange(false)
-  }, [currentCreation, onOpenChange, open, permitMutation, queryClient])
+  }, [onOpenChange, open, permitMutation, queryClient, trackedCreation])
+
+  useEffect(() => {
+    if (!open || !conflictInProgress) return
+    void queryClient.invalidateQueries({
+      queryKey: WEB_WORKSPACE_SESSION_QUERY_KEY,
+    })
+  }, [conflictInProgress, open, queryClient])
 
   useEffect(() => {
     if (!open || !creating) return undefined
@@ -126,12 +156,13 @@ export function ProjectCreateDialog(props: ProjectCreateDialogProps) {
       startSessionMutation.reset()
       setName('')
       setNameTouched(false)
+      setObservedPermitId(null)
     }
     onOpenChange(open)
   }
 
   const requestPermit = () => {
-    if (!isNameValid) return
+    if (!isNameValid || isBusy) return
     permitMutation.mutate({ name: trimmedName })
   }
 
@@ -190,7 +221,7 @@ export function ProjectCreateDialog(props: ProjectCreateDialogProps) {
         </Button>
       </Alert>
     )
-  } else if (permit && creationFailed) {
+  } else if (creationFailed) {
     body = (
       <Alert variant='destructive' role='alert'>
         <AlertTitle>{t('Automatic project creation failed')}</AlertTitle>
@@ -228,6 +259,16 @@ export function ProjectCreateDialog(props: ProjectCreateDialogProps) {
         {t('Creating the project in the remote browser...')}
       </div>
     )
+  } else if (checkingCreation) {
+    body = (
+      <div
+        role='status'
+        className='text-muted-foreground flex items-center gap-3 rounded-lg border px-3 py-3 text-sm'
+      >
+        <Spinner className='size-4 shrink-0 motion-reduce:animate-none' />
+        {t('Checking the existing project creation...')}
+      </div>
+    )
   }
 
   return (
@@ -263,7 +304,11 @@ export function ProjectCreateDialog(props: ProjectCreateDialogProps) {
               aria-describedby={
                 showNameError ? 'web-workspace-project-name-error' : undefined
               }
-              disabled={creating && !creationFailed}
+              disabled={
+                permitMutation.isPending ||
+                startSessionMutation.isPending ||
+                (creating && !creationFailed)
+              }
               onChange={(event) => {
                 setNameTouched(true)
                 setName(event.target.value)
@@ -282,7 +327,7 @@ export function ProjectCreateDialog(props: ProjectCreateDialogProps) {
 
           {body}
 
-          {!permit && !error ? (
+          {showCreateAction ? (
             <DialogFooter>
               <Button type='submit' disabled={!isNameValid || isBusy}>
                 {permitMutation.isPending ? (

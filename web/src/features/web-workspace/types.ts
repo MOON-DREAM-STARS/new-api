@@ -26,6 +26,8 @@ For commercial licensing, please contact support@quantumnous.com
 export type WebWorkspaceConfig = {
   enabled: boolean
   entitled: boolean
+  max_screen_width?: number
+  max_screen_height?: number
 }
 
 /**
@@ -52,6 +54,7 @@ export type WebWorkspaceNavigationAction =
   | 'forward'
   | 'reload'
   | 'state'
+  | 'project'
 
 /** Navigation capability reported by the control plane. No URL is exposed. */
 export type WebWorkspaceNavigation = {

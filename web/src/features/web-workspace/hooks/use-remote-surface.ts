@@ -156,6 +156,16 @@ export function useRemoteSurface(
         // would move the framebuffer under the presentation crop.
         const rfb = new RFB(container, socket)
         rfb.scaleViewport = true
+        // Pin the low-bandwidth text profile explicitly so a noVNC default
+        // change does not silently raise stream bytes. The package's public
+        // types lag its runtime API, so the two supported setters are typed
+        // locally instead of weakening the RFB instance type.
+        const bandwidthProfile = rfb as unknown as {
+          compressionLevel: number
+          qualityLevel: number
+        }
+        bandwidthProfile.compressionLevel = 2
+        bandwidthProfile.qualityLevel = 6
         rfbRef.current = rfb
         rfb.addEventListener('connect', () => {
           if (generationRef.current !== generation) return
