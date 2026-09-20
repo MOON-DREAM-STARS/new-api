@@ -25,6 +25,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { cn } from '@/lib/utils'
 
 import type { RemoteSurfaceController } from '../hooks/use-remote-surface'
+import type { LocalInputController } from '../hooks/use-local-input'
 import { computePresentation } from '../lib/presentation'
 import { isLiveSessionState } from '../lib/session'
 import type { WebWorkspacePage } from '../types'
@@ -46,6 +47,7 @@ type RemoteBrowserViewportProps = {
   /** True when the account really has no project: no placeholder is invented. */
   projectsEmpty: boolean
   surface: RemoteSurfaceController
+  localInput: LocalInputController
   page: WebWorkspacePage | null
   startErrorMessageKey?: string | null
   isReloadPending: boolean
@@ -118,8 +120,22 @@ export function RemoteBrowserViewport(props: RemoteBrowserViewportProps) {
   const presentationReady = presentation.status === 'ready'
   const surfaceConnected =
     surfaceEnabled && props.surface.status === 'connected'
-  const showStream =
-    surfaceConnected && presentationReady && !props.suppressStream
+  // A guard page failure is the real, authoritative cause of an unopenable
+  // project. It outranks the generic client-side navigation message so the
+  // operator sees the actual state and error code instead of a guess.
+  const pageFailure = Boolean(
+    props.page && props.page.state !== 'READY' && props.page.error
+  )
+  // The overlay is driven by a client-side navigation failure. When the guard
+  // also recorded a real page failure, that authoritative state and its error
+  // code replace the classified client-side message, so a denied provider
+  // document is never reported as a generic "could not open the project".
+  const projectFailure = Boolean(props.projectNavigationErrorKey)
+  // A failed project navigation must never hide or unmount the already-mounted
+  // Kasm surface: the canvas keeps rendering and the error is layered on top.
+  // Only the pre-navigation "adapting" state still covers the stream.
+  const blockingStatus = props.suppressStream && !projectFailure
+  const showStream = surfaceConnected && presentationReady && !blockingStatus
 
   let status: ViewportStatusProps | null = null
   if (!props.enabled) {
@@ -173,22 +189,14 @@ export function RemoteBrowserViewport(props: RemoteBrowserViewportProps) {
       actionLabel: t('Reconnect now'),
       onAction: props.surface.reconnect,
     }
-  } else if (props.suppressStream && isLive) {
-    status = props.projectNavigationErrorKey
-      ? {
-          kind: 'failed',
-          title: t('Could not open the selected project.'),
-          description: t(props.projectNavigationErrorKey),
-          actionLabel: props.onRetryProject ? t('Retry') : undefined,
-          onAction: props.onRetryProject,
-        }
-      : {
-          kind: 'adapting',
-          title: t('Opening your project...'),
-          description: t(
-            'The workspace view stays paused until your project is ready.'
-          ),
-        }
+  } else if (blockingStatus && isLive) {
+    status = {
+      kind: 'adapting',
+      title: t('Opening your project...'),
+      description: t(
+        'The workspace view stays paused until your project is ready.'
+      ),
+    }
   } else if (!surfaceConnected) {
     status = {
       kind: 'connecting',
@@ -260,6 +268,24 @@ export function RemoteBrowserViewport(props: RemoteBrowserViewportProps) {
           </div>
         </div>
 
+        {props.localInput.enabled ? (
+          <input
+            ref={props.localInput.anchorRef}
+            data-testid='web-workspace-local-input-anchor'
+            aria-label={t('Local input anchor')}
+            autoCapitalize='off'
+            autoCorrect='off'
+            spellCheck={false}
+            tabIndex={-1}
+            onCompositionStart={props.localInput.handleCompositionStart}
+            onCompositionEnd={props.localInput.handleCompositionEnd}
+            onInput={props.localInput.handleInput}
+            onKeyDown={props.localInput.handleKeyDown}
+            className='absolute h-px w-px border-0 bg-transparent p-0 opacity-0 outline-none'
+            style={{ ...props.localInput.anchorStyle, pointerEvents: 'none' }}
+          />
+        ) : null}
+
         {status ? <ViewportStatus {...status} /> : null}
 
         {surfaceEnabled && props.surface.status === 'reconnecting' ? (
@@ -284,7 +310,44 @@ export function RemoteBrowserViewport(props: RemoteBrowserViewportProps) {
           </div>
         ) : null}
 
-        {props.page && props.page.state !== 'READY' ? (
+        {projectFailure && isLive ? (
+          <div
+            role='alert'
+            className='bg-background/95 absolute inset-x-0 top-0 z-30 flex items-center gap-3 border-b px-3 py-2 text-left shadow-sm backdrop-blur-sm'
+          >
+            <AlertCircle aria-hidden='true' className='size-4 shrink-0' />
+            <div className='min-w-0 flex-1'>
+              <p className='text-sm font-medium'>
+                {pageFailure
+                  ? props.page?.state === 'RETRYING'
+                    ? t('The remote page failed to load. Retrying...')
+                    : t('The remote page could not open the selected project.')
+                  : t('Could not open the selected project.')}
+              </p>
+              <p className='text-muted-foreground truncate font-mono text-xs'>
+                {pageFailure
+                  ? t('Error code: {{error}}', {
+                      error: props.page?.error ?? '',
+                    })
+                  : t(props.projectNavigationErrorKey ?? '')}
+              </p>
+            </div>
+            {props.onRetryProject ? (
+              <Button
+                type='button'
+                size='sm'
+                variant='outline'
+                disabled={props.isReloadPending}
+                onClick={props.onRetryProject}
+              >
+                <RefreshCw aria-hidden='true' />
+                {t('Retry')}
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+
+        {props.page && props.page.state !== 'READY' && !projectFailure ? (
           <div
             role={props.page.state === 'FAILED' ? 'alert' : 'status'}
             aria-live='polite'

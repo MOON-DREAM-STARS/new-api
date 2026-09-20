@@ -1,0 +1,140 @@
+/*
+Copyright (C) 2023-2026 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+import { fireEvent, render, waitFor } from '@testing-library/react'
+import type { RefObject } from 'react'
+import { act } from 'react'
+import { afterEach, describe, expect, test, vi } from 'vitest'
+
+import {
+  dispatchWebWorkspaceInputKey,
+  getWebWorkspaceInputCaret,
+  insertWebWorkspaceInputText,
+} from '../../api'
+import type { RemoteSurfaceController } from '../use-remote-surface'
+import {
+  useLocalInput,
+  type LocalInputController,
+} from '../use-local-input'
+
+vi.mock('../../api', () => ({
+  dispatchWebWorkspaceInputKey: vi.fn(),
+  getWebWorkspaceInputCaret: vi.fn(),
+  insertWebWorkspaceInputText: vi.fn(),
+}))
+
+const insertText = vi.mocked(insertWebWorkspaceInputText)
+const getCaret = vi.mocked(getWebWorkspaceInputCaret)
+const dispatchKey = vi.mocked(dispatchWebWorkspaceInputKey)
+
+function makeSurface(): RemoteSurfaceController {
+  return {
+    containerRef: { current: null } as RefObject<HTMLDivElement | null>,
+    screen: null,
+    status: 'connected',
+    attempt: 0,
+    maxAttempts: 5,
+    errorMessageKey: null,
+    getIframe: () => null,
+    getCanvasMetrics: () => null,
+    focusSurface: vi.fn(),
+    reconnect: vi.fn(),
+  }
+}
+
+function LocalInputHarness(props: {
+  onReady: (controller: LocalInputController) => void
+}) {
+  const controller = useLocalInput({
+    sessionId: 'session-1',
+    enabled: true,
+    surface: makeSurface(),
+  })
+  props.onReady(controller)
+  return (
+    <input
+      ref={controller.anchorRef}
+      aria-label='Local input'
+      onCompositionStart={controller.handleCompositionStart}
+      onCompositionEnd={controller.handleCompositionEnd}
+      onInput={controller.handleInput}
+      onKeyDown={controller.handleKeyDown}
+    />
+  )
+}
+
+afterEach(() => {
+  insertText.mockReset()
+  getCaret.mockReset()
+  dispatchKey.mockReset()
+})
+
+describe('useLocalInput', () => {
+  test('injects compositionend once and skips the trailing input event', async () => {
+    getCaret.mockResolvedValue(null)
+    insertText.mockResolvedValue(undefined)
+    const controllerRef: { current: LocalInputController | null } = { current: null }
+    const view = render(
+      <LocalInputHarness
+        onReady={(next) => {
+          controllerRef.current = next
+        }}
+      />
+    )
+    const input = view.getByRole('textbox', { name: 'Local input' }) as HTMLInputElement
+    act(() => controllerRef.current?.toggle())
+
+    fireEvent.compositionStart(input)
+    input.value = '你好'
+    fireEvent.compositionEnd(input, { data: '你好' })
+    fireEvent.input(input)
+
+    await waitFor(() => expect(insertText).toHaveBeenCalledTimes(1))
+    expect(insertText).toHaveBeenCalledWith('session-1', '你好')
+    expect(input.value).toBe('')
+  })
+
+  test('keeps failed committed text visible and reports the real error code', async () => {
+    getCaret.mockResolvedValue(null)
+    insertText.mockRejectedValue({
+      response: {
+        status: 422,
+        data: { success: false, code: 'WEB_WORKSPACE_INPUT_REJECTED' },
+      },
+    })
+    const controllerRef: { current: LocalInputController | null } = { current: null }
+    const view = render(
+      <LocalInputHarness
+        onReady={(next) => {
+          controllerRef.current = next
+        }}
+      />
+    )
+    const input = view.getByRole('textbox', { name: 'Local input' }) as HTMLInputElement
+    act(() => controllerRef.current?.toggle())
+
+    input.value = '失败文本'
+    fireEvent.input(input)
+
+    await waitFor(() => expect(insertText).toHaveBeenCalledTimes(1))
+    expect(input.value).toBe('失败文本')
+    expect(controllerRef.current?.errorCode).toBe(
+      'WEB_WORKSPACE_INPUT_REJECTED'
+    )
+  })
+})

@@ -16,14 +16,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import RFB from '@novnc/novnc'
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 
 import { createWebWorkspaceStreamTicket } from '../api'
 import { WEB_WORKSPACE_RECONNECT_MAX_ATTEMPTS } from '../constants'
 import { classifyWebWorkspaceError } from '../lib/errors'
+import type { LocalCanvasMetrics } from '../lib/local-input'
 import { canRetryReconnect, reconnectDelayMs } from '../lib/reconnect'
-import { buildStreamWebSocketUrl } from '../lib/stream-url'
 
 export type RemoteSurfaceStatus =
   | 'connecting'
@@ -32,7 +31,7 @@ export type RemoteSurfaceStatus =
   | 'failed'
 
 export type RemoteSurfaceController = {
-  /** Host element noVNC renders its canvas into. */
+  /** Host element into which the KasmVNC iframe is mounted. */
   containerRef: RefObject<HTMLDivElement | null>
   /** Remote framebuffer size in remote pixels once the stream is up. */
   screen: { width: number; height: number } | null
@@ -41,6 +40,9 @@ export type RemoteSurfaceController = {
   attempt: number
   maxAttempts: number
   errorMessageKey: string | null
+  getIframe: () => HTMLIFrameElement | null
+  getCanvasMetrics: () => LocalCanvasMetrics | null
+  focusSurface: () => void
   reconnect: () => void
 }
 
@@ -50,22 +52,57 @@ export type UseRemoteSurfaceOptions = {
   enabled: boolean
 }
 
+const KASM_SURFACE_ERROR_KEY = 'Could not connect to the remote browser.'
+const KASM_SCREEN_PROBE_INTERVAL_MS = 250
+const KASM_CONNECT_TIMEOUT_MS = 30000
+
+function buildKasmClientUrl(sessionId: string, ticket: string): string {
+  const sessionPath = encodeURIComponent(sessionId)
+  const ticketPath = encodeURIComponent(ticket)
+  const base = `/api/web-workspace/session/${sessionPath}/kasm/t/${ticketPath}/vnc.html`
+  const params = new URLSearchParams({
+    autoconnect: '1',
+    resize: 'scale',
+    // KasmVNC 1.5.0 prefixes the websocket URL with "/", so the path has to
+    // include the complete same-origin API prefix instead of a bare
+    // "websockify" segment. The ticket remains in the path so KasmVNC's
+    // relative assets and websocket request stay authorized.
+    path: `api/web-workspace/session/${sessionPath}/kasm/t/${ticketPath}/websockify`,
+    clipboard_up: '1',
+    clipboard_down: '1',
+    clipboard_seamless: '1',
+  })
+  return `${base}?${params.toString()}`
+}
+
 /**
- * Streams the remote browser into `containerRef` through noVNC.
+ * Renders the KasmVNC web client in a same-origin iframe and keeps the local
+ * workspace status/error surface in sync with the client's postMessage state.
  *
- * Ticket flow per attach: `POST /session/:id/stream-ticket` → same-origin
- * `ws/wss` URL derived from the page location → the open socket is handed to
- * noVNC, which owns the RFB stream, keyboard and mouse input. A closed socket
- * triggers a fresh ticket with capped exponential backoff; after the attempt
- * limit the controller stops retrying and waits for a manual reconnect.
+ * The iframe's relative assets and the client's websocket request both stay
+ * under the authenticated `/kasm/` API prefix. KasmVNC's own IME path is
+ * disabled; the workspace's local-input anchor owns composition on the host
+ * and injects only the committed text.
  */
 export function useRemoteSurface(
   options: UseRemoteSurfaceOptions
 ): RemoteSurfaceController {
   const containerRef = useRef<HTMLDivElement | null>(null)
-  const rfbRef = useRef<RFB | null>(null)
-  const socketRef = useRef<WebSocket | null>(null)
+  const iframeRef = useRef<HTMLIFrameElement | null>(null)
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  // The ticket whose client document is currently loaded in the iframe. A
+  // second ticket refreshes that document in place; it never replaces the
+  // mounted element, so the Kasm surface is mounted exactly once per session and
+  // its websocket and remote framebuffer are not torn down underneath the
+  // operator.
+  const mountedSrcRef = useRef<string | null>(null)
+  // Identity of the session the mounted surface belongs to. A reconnect re-runs
+  // the attach effect but must keep the mounted element; only a real session,
+  // availability or visibility transition may remove it.
+  const mountedSessionKeyRef = useRef<string | null>(null)
   const timerRef = useRef<number | null>(null)
+  const startupTimerRef = useRef<number | null>(null)
+  const screenProbeTimerRef = useRef<number | null>(null)
   const attemptsRef = useRef(0)
   const generationRef = useRef(0)
   const [reconnectToken, setReconnectToken] = useState(0)
@@ -78,24 +115,28 @@ export function useRemoteSurface(
   } | null>(null)
 
   const clearTimer = useCallback(() => {
-    if (timerRef.current === null) return
-    window.clearTimeout(timerRef.current)
-    timerRef.current = null
+    if (timerRef.current !== null) {
+      window.clearTimeout(timerRef.current)
+      timerRef.current = null
+    }
+    if (startupTimerRef.current !== null) {
+      window.clearTimeout(startupTimerRef.current)
+      startupTimerRef.current = null
+    }
+    if (screenProbeTimerRef.current !== null) {
+      window.clearTimeout(screenProbeTimerRef.current)
+      screenProbeTimerRef.current = null
+    }
   }, [])
 
   const teardown = useCallback(() => {
     clearTimer()
-    const rfb = rfbRef.current
-    rfbRef.current = null
-    if (rfb) {
-      // A stale RFB instance must not drive reconnect decisions.
-      rfb.disconnect()
-    }
-    const socket = socketRef.current
-    socketRef.current = null
-    if (socket && socket.readyState !== WebSocket.CLOSED) {
-      socket.close()
-    }
+    const iframe = iframeRef.current
+    iframeRef.current = null
+    canvasRef.current = null
+    mountedSrcRef.current = null
+    mountedSessionKeyRef.current = null
+    if (iframe) iframe.remove()
   }, [clearTimer])
 
   const sessionId = options.sessionId
@@ -107,8 +148,19 @@ export function useRemoteSurface(
       teardown()
       setStatus('connecting')
       setAttempt(0)
+      setScreen(null)
       return undefined
     }
+
+    const container = containerRef.current
+    if (!container) return undefined
+
+    // A reconnect re-runs this effect with the same session key. The mounted
+    // surface must survive that run: only a genuine session/availability change
+    // is allowed to remove the element and drop its websocket.
+    const sessionKey = `${sessionId}`
+    const isRemount = mountedSessionKeyRef.current !== sessionKey
+    mountedSessionKeyRef.current = sessionKey
 
     const generation = generationRef.current + 1
     generationRef.current = generation
@@ -116,116 +168,198 @@ export function useRemoteSurface(
     setAttempt(0)
     setStatus('connecting')
     setErrorMessageKey(null)
+    if (isRemount) setScreen(null)
 
     function scheduleReconnect() {
       if (generationRef.current !== generation) return
+      clearTimer()
       const nextAttempt = attemptsRef.current + 1
       attemptsRef.current = nextAttempt
       setAttempt(nextAttempt)
       if (!canRetryReconnect(nextAttempt - 1)) {
         setStatus('failed')
+        setErrorMessageKey(KASM_SURFACE_ERROR_KEY)
         return
       }
       setStatus('reconnecting')
       timerRef.current = window.setTimeout(() => {
         timerRef.current = null
-        connect()
+        setReconnectToken((token) => token + 1)
       }, reconnectDelayMs(nextAttempt))
     }
 
-    async function attach() {
-      const container = containerRef.current
-      if (!container) return
-      try {
-        const ticket = await createWebWorkspaceStreamTicket(sessionId)
-        if (generationRef.current !== generation) return
-        const url = buildStreamWebSocketUrl(ticket.stream_url, ticket.ticket, {
-          protocol: window.location.protocol,
-          host: window.location.host,
-        })
-        const socket = new WebSocket(url)
-        if (generationRef.current !== generation) {
-          socket.close()
-          return
-        }
-        socketRef.current = socket
-        // noVNC 1.7 ignores the presentation options passed to the
-        // constructor, so the viewport scaling has to be applied on the
-        // instance. Scaling maps the real framebuffer onto the presentation
-        // stage; the remote desktop keeps its own size because a remote resize
-        // would move the framebuffer under the presentation crop.
-        const rfb = new RFB(container, socket)
-        rfb.scaleViewport = true
-        // Pin the low-bandwidth text profile explicitly so a noVNC default
-        // change does not silently raise stream bytes. The package's public
-        // types lag its runtime API, so the two supported setters are typed
-        // locally instead of weakening the RFB instance type.
-        const bandwidthProfile = rfb as unknown as {
-          compressionLevel: number
-          qualityLevel: number
-        }
-        bandwidthProfile.compressionLevel = 2
-        bandwidthProfile.qualityLevel = 6
-        rfbRef.current = rfb
-        rfb.addEventListener('connect', () => {
-          if (generationRef.current !== generation) return
-          attemptsRef.current = 0
-          setAttempt(0)
-          setStatus('connected')
-          setErrorMessageKey(null)
-        })
-        rfb.addEventListener('disconnect', () => {
-          if (generationRef.current !== generation) return
-          if (rfbRef.current !== rfb) return
-          rfbRef.current = null
-          socketRef.current = null
+    let iframe: HTMLIFrameElement | null = null
+
+    function probeScreen() {
+      if (generationRef.current !== generation || !iframe) return
+      const canvases = Array.from(
+        iframe.contentDocument?.querySelectorAll('canvas') ?? []
+      )
+      // KasmVNC's page contains a small multi-monitor widget canvas before the
+      // real remote framebuffer canvas. Select the largest usable canvas so the
+      // presentation crop never derives from the widget.
+      const canvas = canvases
+        .filter(
+          (candidate) => candidate.width >= 640 && candidate.height >= 360
+        )
+        .sort(
+          (left, right) => right.width * right.height - left.width * left.height
+        )[0]
+      if (canvas && canvas.width > 0 && canvas.height > 0) {
+        canvasRef.current = canvas
+        setScreen({ width: canvas.width, height: canvas.height })
+        return
+      }
+      canvasRef.current = null
+      screenProbeTimerRef.current = window.setTimeout(
+        probeScreen,
+        KASM_SCREEN_PROBE_INTERVAL_MS
+      )
+    }
+
+    function markConnected() {
+      if (generationRef.current !== generation) return
+      clearTimer()
+      attemptsRef.current = 0
+      setAttempt(0)
+      setStatus('connected')
+      setErrorMessageKey(null)
+      probeScreen()
+    }
+
+    function handleMessage(event: MessageEvent) {
+      if (generationRef.current !== generation || !iframe) return
+      if (event.source !== iframe.contentWindow) return
+      if (event.origin !== window.location.origin) return
+      const data = event.data as { action?: string; value?: unknown } | null
+      if (!data || typeof data.action !== 'string') return
+
+      switch (data.action) {
+        case 'noVNC_initialized':
+          break
+        case 'connection_state':
+          if (data.value === 'connected') {
+            markConnected()
+          } else if (data.value === 'disconnected') {
+            scheduleReconnect()
+          } else if (data.value === 'reconnecting') {
+            setStatus('reconnecting')
+          } else if (data.value === 'connecting') {
+            setStatus('connecting')
+          }
+          break
+        case 'disconnectrx':
+        case 'idle_session_timeout':
+          setErrorMessageKey(KASM_SURFACE_ERROR_KEY)
           scheduleReconnect()
-        })
-        rfb.addEventListener('securityfailure', () => {
-          if (generationRef.current !== generation) return
-          setErrorMessageKey('Could not verify the remote browser session.')
-        })
-      } catch (error) {
+          break
+        default:
+          break
+      }
+    }
+
+    // attachSurface mounts the KasmVNC client exactly once per session. A later
+    // ticket (for example after a reconnect) reuses the same iframe element and
+    // only navigates it to the new authorised URL, so the element, its
+    // websocket and the remote framebuffer are never recreated underneath the
+    // operator and the replacement surface never doubles up in the DOM.
+    function attachSurface(ticket: string) {
+      if (generationRef.current !== generation || !container) return
+      const nextSrc = buildKasmClientUrl(sessionId, ticket)
+      const current = iframeRef.current
+      if (current && current.isConnected) {
+        mountedSrcRef.current = nextSrc
+        if (current.getAttribute('src') !== nextSrc) current.src = nextSrc
+        return
+      }
+      const nextIframe = document.createElement('iframe')
+      iframe = nextIframe
+      iframeRef.current = nextIframe
+      mountedSrcRef.current = nextSrc
+      nextIframe.title = 'Remote browser display'
+      nextIframe.dataset.testid = 'web-workspace-surface-iframe'
+      nextIframe.setAttribute(
+        'allow',
+        'clipboard-read; clipboard-write; fullscreen; autoplay'
+      )
+      nextIframe.setAttribute('allowfullscreen', 'true')
+      nextIframe.style.width = '100%'
+      nextIframe.style.height = '100%'
+      nextIframe.style.display = 'block'
+      nextIframe.style.border = '0'
+      nextIframe.style.background = '#000'
+      nextIframe.addEventListener('load', () => {
+        if (generationRef.current !== generation) return
+      })
+      nextIframe.addEventListener('error', () => {
+        if (generationRef.current !== generation) return
+        scheduleReconnect()
+      })
+      nextIframe.src = nextSrc
+      window.addEventListener('message', handleMessage)
+      container.replaceChildren(nextIframe)
+      startupTimerRef.current = window.setTimeout(() => {
+        startupTimerRef.current = null
+        if (generationRef.current !== generation) return
+        scheduleReconnect()
+      }, KASM_CONNECT_TIMEOUT_MS)
+    }
+
+    void createWebWorkspaceStreamTicket(sessionId)
+      .then(({ ticket }) => {
+        if (generationRef.current !== generation) return
+        attachSurface(ticket)
+      })
+      .catch((error) => {
         if (generationRef.current !== generation) return
         setErrorMessageKey(classifyWebWorkspaceError(error).messageKey)
         scheduleReconnect()
-      }
-    }
-
-    function connect() {
-      if (generationRef.current !== generation) return
-      if (!containerRef.current) return
-      clearTimer()
-      setErrorMessageKey(null)
-      const previousRfb = rfbRef.current
-      rfbRef.current = null
-      if (previousRfb) {
-        previousRfb.disconnect()
-      }
-      void attach()
-    }
-
-    connect()
+      })
 
     return () => {
-      generationRef.current += 1
-      teardown()
+      window.removeEventListener('message', handleMessage)
+      if (generationRef.current === generation) {
+        generationRef.current += 1
+      }
+      // Keep the mounted Kasm surface across a reconnect of the same session so
+      // the websocket and framebuffer are never rebuilt underneath the operator.
+      if (mountedSessionKeyRef.current !== sessionKey) teardown()
     }
-  }, [enabled, sessionId, reconnectToken, clearTimer, teardown])
-
-  useEffect(() => {
-    if (status !== 'connected') {
-      setScreen(null)
-      return
-    }
-    const canvas = containerRef.current?.querySelector('canvas')
-    if (!canvas) return
-    setScreen({ width: canvas.width, height: canvas.height })
-  }, [status])
+  }, [enabled, sessionId, reconnectToken, teardown])
 
   const reconnect = useCallback(() => {
     attemptsRef.current = 0
     setReconnectToken((token) => token + 1)
+  }, [])
+
+  const getIframe = useCallback(() => iframeRef.current, [])
+
+  const getCanvasMetrics = useCallback((): LocalCanvasMetrics | null => {
+    const container = containerRef.current
+    const iframe = iframeRef.current
+    const canvas = canvasRef.current
+    if (!container || !iframe || !canvas || canvas.width <= 0 || canvas.height <= 0) {
+      return null
+    }
+    const containerRect = container.getBoundingClientRect()
+    const iframeRect = iframe.getBoundingClientRect()
+    const canvasRect = canvas.getBoundingClientRect()
+    return {
+      left: iframeRect.left - containerRect.left + canvasRect.left,
+      top: iframeRect.top - containerRect.top + canvasRect.top,
+      width: canvasRect.width,
+      height: canvasRect.height,
+      canvasWidth: canvas.width,
+      canvasHeight: canvas.height,
+    }
+  }, [])
+
+  const focusSurface = useCallback(() => {
+    const iframe = iframeRef.current
+    if (!iframe) return
+    iframe.focus()
+    iframe.contentWindow?.focus()
+    containerRef.current?.focus()
   }, [])
 
   return {
@@ -235,6 +369,9 @@ export function useRemoteSurface(
     attempt,
     maxAttempts: WEB_WORKSPACE_RECONNECT_MAX_ATTEMPTS,
     errorMessageKey,
+    getIframe,
+    getCanvasMetrics,
+    focusSurface,
     reconnect,
   }
 }

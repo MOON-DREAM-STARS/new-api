@@ -23,6 +23,11 @@ import type {
   WebProject,
   WebProjectPermit,
   WebWorkspaceConfig,
+  WebWorkspaceFileChooser,
+  WebWorkspaceFileChooserResult,
+  WebWorkspaceInputCaret,
+  WebWorkspaceInputCaretResponse,
+  WebWorkspaceInputModifier,
   WebWorkspaceNavigationAction,
   WebWorkspaceSession,
   WebWorkspaceStatus,
@@ -171,6 +176,126 @@ export async function deleteWebWorkspaceProject(
   projectId: number
 ): Promise<void> {
   await api.delete(`${BASE_PATH}/projects/${projectId}`)
+}
+
+/**
+ * Long-polls the control plane for a pending chooser. A timeout returns null so
+ * the caller can immediately start the next poll without treating it as error.
+ */
+export async function fetchWebWorkspaceFileChooser(
+  sessionId: string,
+  waitMs = 25000,
+  signal?: AbortSignal
+): Promise<WebWorkspaceFileChooser | null> {
+  const res = await api.get<ApiEnvelope<WebWorkspaceFileChooser | null>>(
+    `${BASE_PATH}/session/${encodeURIComponent(sessionId)}/file-chooser`,
+    {
+      params: { wait_ms: waitMs },
+      signal,
+      skipErrorHandler: true,
+      disableDuplicate: true,
+    }
+  )
+  return res.data.data ?? null
+}
+
+/** Streams selected local files to the agent through the control plane. */
+export async function uploadWebWorkspaceFileChooserFiles(
+  sessionId: string,
+  chooserId: string,
+  formData: FormData
+): Promise<WebWorkspaceFileChooserResult> {
+  const res = await api.post<ApiEnvelope<WebWorkspaceFileChooserResult>>(
+    `${BASE_PATH}/session/${encodeURIComponent(sessionId)}/file-chooser/${encodeURIComponent(chooserId)}/files`,
+    formData,
+    { skipErrorHandler: true }
+  )
+  return res.data.data
+}
+
+/** Cancels a pending chooser when the operator dismisses the local picker. */
+export async function cancelWebWorkspaceFileChooser(
+  sessionId: string,
+  chooserId: string
+): Promise<WebWorkspaceFileChooserResult> {
+  const res = await api.post<ApiEnvelope<WebWorkspaceFileChooserResult>>(
+    `${BASE_PATH}/session/${encodeURIComponent(sessionId)}/file-chooser/${encodeURIComponent(chooserId)}/cancel`,
+    undefined,
+    { skipErrorHandler: true }
+  )
+  return res.data.data
+}
+
+export type WebWorkspaceClipboardPayload = {
+  mime: string
+  data: Blob
+}
+
+/** Returns the raw remote selection bytes and MIME type. */
+export async function copyWebWorkspaceClipboard(
+  sessionId: string
+): Promise<WebWorkspaceClipboardPayload> {
+  const res = await api.post<Blob>(
+    `${BASE_PATH}/session/${encodeURIComponent(sessionId)}/clipboard/copy`,
+    undefined,
+    { responseType: 'blob', skipErrorHandler: true }
+  )
+  const rawContentType = String(res.headers['content-type'] ?? '')
+  const mime = rawContentType.split(';', 1)[0]?.trim().toLowerCase() ?? ''
+  if (!mime) throw new Error('clipboard response is missing Content-Type')
+  return { mime, data: res.data }
+}
+
+/** Sends one raw local clipboard body to the remote browser. */
+export async function pasteWebWorkspaceClipboard(
+  sessionId: string,
+  mime: string,
+  data: Blob
+): Promise<void> {
+  await api.post(
+    `${BASE_PATH}/session/${encodeURIComponent(sessionId)}/clipboard/paste`,
+    data,
+    {
+      headers: { 'Content-Type': mime },
+      skipErrorHandler: true,
+    }
+  )
+}
+
+/** Injects one committed local text value into the remote browser. */
+export async function insertWebWorkspaceInputText(
+  sessionId: string,
+  text: string
+): Promise<void> {
+  await api.post(
+    `${BASE_PATH}/session/${encodeURIComponent(sessionId)}/input/text`,
+    { text },
+    { skipErrorHandler: true }
+  )
+}
+
+/** Forwards one approved remote key with modifiers. */
+export async function dispatchWebWorkspaceInputKey(
+  sessionId: string,
+  key: string,
+  modifiers: WebWorkspaceInputModifier[]
+): Promise<void> {
+  await api.post(
+    `${BASE_PATH}/session/${encodeURIComponent(sessionId)}/input/key`,
+    { key, modifiers },
+    { skipErrorHandler: true }
+  )
+}
+
+/** Reads the remote caret rectangle; null means no active editable element. */
+export async function getWebWorkspaceInputCaret(
+  sessionId: string
+): Promise<WebWorkspaceInputCaret | null> {
+  const res = await api.get<ApiEnvelope<WebWorkspaceInputCaretResponse>>(
+    `${BASE_PATH}/session/${encodeURIComponent(sessionId)}/input/caret`,
+    { skipErrorHandler: true }
+  )
+  return res.data.data?.caret ?? null
 }
 
 export async function createWebWorkspaceStreamTicket(

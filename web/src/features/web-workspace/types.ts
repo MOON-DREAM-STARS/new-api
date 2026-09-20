@@ -66,6 +66,9 @@ export type WebWorkspaceNavigation = {
 /** Runtime policy mode reported by the control plane. Never client supplied. */
 export type WebWorkspaceSessionMode = 'LOCKED' | 'LOGIN'
 
+/** Presentation-only IBus readiness reported with the session snapshot. */
+export type WebWorkspaceIMEState = 'READY' | 'UNAVAILABLE'
+
 /** URL-free health state for the page inside the remote browser. */
 export type WebWorkspacePage = {
   state: 'READY' | 'RETRYING' | 'FAILED'
@@ -82,6 +85,38 @@ export type WebWorkspaceProjectCreation = {
   updated_at: number
 }
 
+/** URL-free pending local file chooser handed to the browser client. */
+export type WebWorkspaceFileChooser = {
+  chooser_id: string
+  mode: 'selectSingle' | 'selectMultiple'
+  created_at: number
+  expires_at: number
+}
+
+/** Real guard result of attaching files or cancelling a local chooser. */
+export type WebWorkspaceFileChooserResult = {
+  chooser_id: string
+  state: 'DONE' | 'CANCELLED' | 'FAILED' | 'EXPIRED' | string
+  error: string
+  updated_at: number
+}
+
+/** Local input modes shown by the workspace toolbar. */
+export type WebWorkspaceInputMode = 'remote' | 'local'
+
+export type WebWorkspaceInputModifier = 'ctrl' | 'shift' | 'alt' | 'meta'
+
+/** Remote caret rectangle in remote CSS pixels. */
+export type WebWorkspaceInputCaret = {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export type WebWorkspaceInputCaretResponse = {
+  caret: WebWorkspaceInputCaret | null
+}
 /** Control-plane view of one browser session. Runtime ids never reach the client. */
 export type WebWorkspaceSession = {
   session_id: string
@@ -95,6 +130,7 @@ export type WebWorkspaceSession = {
   navigation: WebWorkspaceNavigation | null
   page: WebWorkspacePage | null
   project_creation: WebWorkspaceProjectCreation | null
+  ime_state: WebWorkspaceIMEState | string
 }
 
 export type WebWorkspaceStatus = {

@@ -39,10 +39,13 @@ import {
 } from './components/workspace-toolbar'
 import { WEB_WORKSPACE_HIDDEN_ACTIVITY_INTERVAL_MS } from './constants'
 import { useCompactSidebar } from './hooks/use-compact-sidebar'
+import { useClipboardBridge } from './hooks/use-clipboard-bridge'
 import { useDesktopViewport } from './hooks/use-desktop-viewport'
 import { useDocumentVisibility } from './hooks/use-document-visibility'
 import { useElementSize } from './hooks/use-element-size'
+import { useFileChooserBridge } from './hooks/use-file-chooser-bridge'
 import { useImmersiveMode } from './hooks/use-immersive-mode'
+import { useLocalInput } from './hooks/use-local-input'
 import { useProjectRemovalNotice } from './hooks/use-project-removal-notice'
 import { useRemoteSurface } from './hooks/use-remote-surface'
 import { useWebWorkspaceConfig } from './hooks/use-web-workspace-config'
@@ -66,6 +69,7 @@ import {
   resolveAutoOpenProject,
 } from './lib/last-project'
 import {
+  computePresentation,
   findPresentationProfile,
   remoteScreenSizeForFrame,
 } from './lib/presentation'
@@ -126,7 +130,9 @@ export function WebWorkspace() {
   >(null)
   const autoOpenAttemptRef = useRef<string | null>(null)
   const navigatedProjectRef = useRef<string | null>(null)
+  const screenRemapAttemptedRef = useRef<string | null>(null)
   const firstProjectPromptedRef = useRef(false)
+  const [screenRemapPending, setScreenRemapPending] = useState(false)
   const userId = useAuthStore((state) => state.auth.user?.id ?? null)
 
   const session = sessionQuery.data ?? null
@@ -160,6 +166,29 @@ export function WebWorkspace() {
     enabled: isDesktop && isLive && isVisible,
   })
 
+  const clipboardBridge = useClipboardBridge({
+    sessionId: session?.session_id ?? null,
+    enabled: ready && isLive && isVisible && surface.status === 'connected',
+    containerRef: surface.containerRef,
+  })
+
+  const localInput = useLocalInput({
+    sessionId: session?.session_id ?? null,
+    enabled:
+      ready &&
+      isLive &&
+      isVisible &&
+      surface.status === 'connected' &&
+      !suppressRemoteStream,
+    surface,
+    copyRemoteSelection: clipboardBridge.copyRemoteSelection,
+    pasteIntoRemote: clipboardBridge.pasteIntoRemote,
+  })
+
+  const fileChooserBridge = useFileChooserBridge({
+    sessionId: session?.session_id ?? null,
+    enabled: ready && isLive && isVisible && surface.status === 'connected',
+  })
   const keepAlive = useRef<() => void>(() => undefined)
   keepAlive.current = () => {
     if (session) activityMutation.mutate(session.session_id)
@@ -185,6 +214,22 @@ export function WebWorkspace() {
         maxHeight: configQuery.data?.max_screen_height,
       })
     : null
+  const surfacePresentation = computePresentation({
+    provider,
+    screen: surface.screen,
+    frame: frameSize,
+  })
+  // KasmVNC renders the whole framebuffer into the stage. A runtime created
+  // for a different aspect ratio would make the presentation crop hide a large
+  // part of the page, so remap it once per measured screen proposal.
+  const screenRemapNeeded =
+    isLive &&
+    surface.status === 'connected' &&
+    proposedScreen !== null &&
+    presentationProfile !== null &&
+    surfacePresentation.status === 'ready' &&
+    (surfacePresentation.transform.crop.x - presentationProfile.cropLeft > 4 ||
+      surfacePresentation.transform.crop.y - presentationProfile.cropTop > 4)
   const connection = resolveConnection({
     sessionState: session?.state,
     surfaceStatus: surface.status,
@@ -245,7 +290,10 @@ export function WebWorkspace() {
       !session ||
       !projectsLoaded ||
       projects.length === 0 ||
-      selectedProjectId !== null
+      selectedProjectId !== null ||
+      screenRemapPending ||
+      screenRemapNeeded ||
+      surface.status !== 'connected'
     ) {
       return
     }
@@ -263,11 +311,21 @@ export function WebWorkspace() {
     ready,
     selectedProjectId,
     session,
+    surface.status,
+    screenRemapNeeded,
+    screenRemapPending,
     userId,
   ])
 
   useEffect(() => {
     if (!isLive || !session || !selectedProject) return
+    if (
+      screenRemapPending ||
+      screenRemapNeeded ||
+      surface.status !== 'connected'
+    ) {
+      return
+    }
     const key = `${session.session_id}:${selectedProject.id}`
     if (navigatedProjectRef.current === key) return
     navigatedProjectRef.current = key
@@ -292,14 +350,69 @@ export function WebWorkspace() {
         },
       }
     )
-  }, [isLive, navigationMutation, selectedProject, session, userId])
+  }, [
+    isLive,
+    navigationMutation,
+    screenRemapNeeded,
+    screenRemapPending,
+    selectedProject,
+    session,
+    surface.status,
+    userId,
+  ])
 
   useEffect(() => {
     autoOpenAttemptRef.current = null
     navigatedProjectRef.current = null
+    screenRemapAttemptedRef.current = null
+    setScreenRemapPending(false)
     setProjectNavigationPending(false)
     setProjectNavigationErrorKey(null)
   }, [session?.session_id])
+
+  useEffect(() => {
+    if (!screenRemapPending) return
+    if (surface.status === 'connected' && !screenRemapNeeded) {
+      setScreenRemapPending(false)
+    }
+  }, [screenRemapNeeded, screenRemapPending, surface.status])
+
+  useEffect(() => {
+    if (screenRemapPending && restartMutation.isError) {
+      setScreenRemapPending(false)
+    }
+  }, [restartMutation.isError, screenRemapPending])
+
+  useEffect(() => {
+    if (
+      !session ||
+      !proposedScreen ||
+      !screenRemapNeeded ||
+      screenRemapPending ||
+      restartMutation.isPending
+    ) {
+      return undefined
+    }
+    const key = `${session.session_id}:${proposedScreen.width}x${proposedScreen.height}`
+    if (screenRemapAttemptedRef.current === key) return undefined
+    const timer = window.setTimeout(() => {
+      if (screenRemapAttemptedRef.current === key) return
+      screenRemapAttemptedRef.current = key
+      setScreenRemapPending(true)
+      navigatedProjectRef.current = null
+      restartMutation.mutate({
+        sessionId: session.session_id,
+        screenSize: proposedScreen,
+      })
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [
+    proposedScreen,
+    restartMutation,
+    screenRemapNeeded,
+    screenRemapPending,
+    session,
+  ])
 
   function startSession() {
     startMutation.mutate({ screenSize: proposedScreen })
@@ -405,6 +518,8 @@ export function WebWorkspace() {
           navigation={navigation}
           isNavigationAvailable={isNavigationAvailable}
           isNavigationPending={isBusy}
+          inputMode={localInput.mode}
+          inputEnabled={localInput.enabled}
           immersive={immersive.immersive}
           onStart={startSession}
           onReconnect={surface.reconnect}
@@ -416,7 +531,14 @@ export function WebWorkspace() {
           onNavigateBack={() => navigate('back')}
           onNavigateForward={() => navigate('forward')}
           onNavigateReload={() => navigate('reload')}
+          onCopyRemoteSelection={() => {
+            void clipboardBridge.copyRemoteSelection()
+          }}
+          onPasteIntoRemote={() => {
+            void clipboardBridge.pasteIntoRemote()
+          }}
           onToggleImmersive={immersive.toggle}
+          onToggleInputMode={localInput.toggle}
         />
       </SectionPageLayout.Actions>
       <SectionPageLayout.Content>
@@ -424,6 +546,34 @@ export function WebWorkspace() {
           data-testid='web-workspace-content'
           className='relative flex h-full min-h-0'
         >
+          {fileChooserBridge.errorMessageKey ? (
+            <Alert
+              role='alert'
+              className='bg-background/90 absolute top-3 left-1/2 z-20 max-w-[calc(100%-2rem)] -translate-x-1/2 px-4 py-3 shadow-sm backdrop-blur-sm'
+            >
+              <AlertTitle>{t(fileChooserBridge.errorMessageKey)}</AlertTitle>
+            </Alert>
+          ) : null}
+          {clipboardBridge.errorMessageKey ? (
+            <Alert
+              role='alert'
+              className='bg-background/90 absolute top-3 left-1/2 z-20 max-w-[calc(100%-2rem)] -translate-x-1/2 px-4 py-3 shadow-sm backdrop-blur-sm'
+            >
+              <AlertTitle>{t(clipboardBridge.errorMessageKey)}</AlertTitle>
+            </Alert>
+          ) : null}
+          {localInput.errorCode ? (
+            <Alert
+              role='alert'
+              className='bg-background/90 absolute top-3 right-3 z-20 max-w-sm px-3 py-2 shadow-sm backdrop-blur-sm'
+            >
+              <AlertTitle>
+                {t('Local input failed: {{code}}', {
+                  code: localInput.errorCode,
+                })}
+              </AlertTitle>
+            </Alert>
+          ) : null}
           <RemoteBrowserViewport
             provider={provider}
             sessionId={session?.session_id ?? null}
@@ -444,6 +594,7 @@ export function WebWorkspace() {
             }
             immersive={immersive.immersive}
             surface={surface}
+            localInput={localInput}
             page={session?.page ?? null}
             startErrorMessageKey={startError?.messageKey ?? null}
             isReloadPending={navigationMutation.isPending}

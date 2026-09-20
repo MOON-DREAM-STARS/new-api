@@ -79,14 +79,14 @@ describe('classifyWebWorkspaceError', () => {
     ).toBe('unknown')
     expect(
       classifyWebWorkspaceError(
-        apiError(504, 'WEB_WORKSPACE_NAVIGATION_TIMEOUT')
+        apiError(504, WEB_WORKSPACE_ERROR_CODES.navigationTimeout)
       ).kind
-    ).toBe('agent_unavailable')
+    ).toBe('provider_slow')
     expect(
       classifyWebWorkspaceError(
-        apiError(409, 'WEB_WORKSPACE_NAVIGATION_UNAVAILABLE')
+        apiError(409, WEB_WORKSPACE_ERROR_CODES.navigationUnavailable)
       ).kind
-    ).toBe('agent_unavailable')
+    ).toBe('navigation_failed')
     expect(
       classifyWebWorkspaceError(apiError(418, 'WEB_WORKSPACE_UNKNOWN')).kind
     ).toBe('unknown')
