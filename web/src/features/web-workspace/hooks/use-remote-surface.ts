@@ -56,7 +56,8 @@ const KASM_SURFACE_ERROR_KEY = 'Could not connect to the remote browser.'
 const KASM_SCREEN_PROBE_INTERVAL_MS = 250
 const KASM_CONNECT_TIMEOUT_MS = 30000
 
-function buildKasmClientUrl(sessionId: string, ticket: string): string {
+/** @internal Exported for the KasmVNC URL contract test. */
+export function buildKasmClientUrl(sessionId: string, ticket: string): string {
   const sessionPath = encodeURIComponent(sessionId)
   const ticketPath = encodeURIComponent(ticket)
   const base = `/api/web-workspace/session/${sessionPath}/kasm/t/${ticketPath}/vnc.html`
