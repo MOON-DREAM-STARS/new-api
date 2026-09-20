@@ -92,6 +92,40 @@ func sendMainFrameReady(t *testing.T, f *fakeCDP) {
 	sendPageLoad(t, f)
 }
 
+func TestPageHealthProbesExistingProviderPageOnAttach(t *testing.T) {
+	logs := &logBuffer{}
+	dir := t.TempDir()
+	f := newFakeCDP(t)
+	f.queueResult("Target.getTargets", map[string]any{
+		"targetInfos": []map[string]any{{
+			"targetId": "target-1",
+			"type":     "page",
+			"url":      "https://chatgpt.com/",
+		}},
+	})
+	f.queueResult("Runtime.evaluate", map[string]any{
+		"result": map[string]any{"type": "boolean", "value": true},
+	})
+	run := startGuardWithPageHealth(t, f, logs, dir, "https://chatgpt.com/", []time.Duration{10 * time.Millisecond})
+	f.send("Target.attachedToTarget", "", map[string]any{
+		"sessionId": "session-1",
+		"targetInfo": map[string]any{
+			"targetId": "target-1",
+			"type":     "page",
+			"url":      "https://chatgpt.com/",
+		},
+		"waitingForDebugger": true,
+	})
+
+	f.awaitIn("session-1", "Runtime.evaluate")
+	status := awaitNavigationStatusMatch(t, dir, 0, func(status navigationStatus) bool {
+		return status.PageState == pageStateReady
+	})
+	assert.Equal(t, pageStateReady, status.PageState)
+	assert.Empty(t, status.PageError)
+	run.assertRunning(100 * time.Millisecond)
+}
+
 func TestPageHealthRetriesThenRecovers(t *testing.T) {
 	logs := &logBuffer{}
 	dir := t.TempDir()
@@ -230,6 +264,28 @@ func TestPageHealthIgnoresSubframeDocumentFailures(t *testing.T) {
 	run.assertRunning(100 * time.Millisecond)
 }
 
+func TestPageHealthIgnoresAbortedDocumentNavigation(t *testing.T) {
+	logs := &logBuffer{}
+	dir := t.TempDir()
+	f := newFakeCDP(t)
+	run := startGuardWithPageHealth(t, f, logs, dir, "https://chatgpt.com/", []time.Duration{10 * time.Millisecond})
+	attachPage(t, f, "session-1", "target-1")
+	f.awaitIn("session-1", "Network.enable")
+	sendMainFrameReady(t, f)
+	awaitNavigationStatusMatch(t, dir, 0, func(status navigationStatus) bool {
+		return status.PageState == pageStateReady
+	})
+
+	sendMainDocumentFailure(t, f, "request-aborted", "net::ERR_ABORTED")
+	f.drain(50 * time.Millisecond)
+
+	status := awaitNavigationStatus(t, dir, 0)
+	assert.Equal(t, pageStateReady, status.PageState)
+	assert.Empty(t, status.PageError)
+	assert.Zero(t, status.PageAttempts)
+	assert.Zero(t, countBufferedMethod(f, "Page.navigate"))
+	run.assertRunning(100 * time.Millisecond)
+}
 func TestPageHealthReloadsBlankPageUntilContentReady(t *testing.T) {
 	logs := &logBuffer{}
 	dir := t.TempDir()

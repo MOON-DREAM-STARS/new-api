@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,12 +67,13 @@ func awaitCreationState(t *testing.T, dir string, state string) projectCreationF
 type probeAnswer struct {
 	found        bool
 	loginVisible bool
+	disabled     bool
 	rect         *probeRect
 }
 
 func queueProbe(t *testing.T, f *fakeCDP, answer probeAnswer) {
 	t.Helper()
-	value := map[string]any{"found": answer.found, "loginVisible": answer.loginVisible}
+	value := map[string]any{"found": answer.found, "loginVisible": answer.loginVisible, "disabled": answer.disabled}
 	if answer.rect != nil {
 		value["rect"] = map[string]any{
 			"x":      answer.rect.X,
@@ -112,6 +114,85 @@ func expectMouseClick(t *testing.T, f *fakeCDP, sessionID string, x float64, y f
 	assert.Equal(t, "mouseReleased", releaseParams.Type)
 }
 
+func expectTypedText(t *testing.T, f *fakeCDP, sessionID, text string) {
+	t.Helper()
+	for _, r := range text {
+		key := string(r)
+		down := f.awaitIn(sessionID, "Input.dispatchKeyEvent")
+		var downParams struct {
+			Type string `json:"type"`
+			Key  string `json:"key"`
+		}
+		decodeParams(t, down, &downParams)
+		assert.Equal(t, "keyDown", downParams.Type)
+		assert.Equal(t, key, downParams.Key)
+
+		char := f.awaitIn(sessionID, "Input.dispatchKeyEvent")
+		var charParams struct {
+			Type           string `json:"type"`
+			Key            string `json:"key"`
+			Text           string `json:"text"`
+			UnmodifiedText string `json:"unmodifiedText"`
+		}
+		decodeParams(t, char, &charParams)
+		assert.Equal(t, "char", charParams.Type)
+		assert.Equal(t, key, charParams.Key)
+		assert.Equal(t, key, charParams.Text)
+		assert.Equal(t, key, charParams.UnmodifiedText)
+
+		up := f.awaitIn(sessionID, "Input.dispatchKeyEvent")
+		var upParams struct {
+			Type string `json:"type"`
+			Key  string `json:"key"`
+		}
+		decodeParams(t, up, &upParams)
+		assert.Equal(t, "keyUp", upParams.Type)
+		assert.Equal(t, key, upParams.Key)
+	}
+}
+func awaitExpressionContaining(t *testing.T, f *fakeCDP, needle string) cdpMessage {
+	t.Helper()
+	return f.awaitWhere("Runtime.evaluate", 5*time.Second, func(msg cdpMessage) bool {
+		if msg.Method != "Runtime.evaluate" {
+			return false
+		}
+		var params struct {
+			Expression string `json:"expression"`
+		}
+		return json.Unmarshal(msg.Params, &params) == nil && strings.Contains(params.Expression, needle)
+	})
+}
+
+func hasExpressionContaining(f *fakeCDP, needle string) bool {
+	for _, msg := range f.buffered {
+		if msg.Method != "Runtime.evaluate" {
+			continue
+		}
+		var params struct {
+			Expression string `json:"expression"`
+		}
+		if json.Unmarshal(msg.Params, &params) == nil && strings.Contains(params.Expression, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func keyEventCount(f *fakeCDP, key string) int {
+	count := 0
+	for _, msg := range f.buffered {
+		if msg.Method != "Input.dispatchKeyEvent" {
+			continue
+		}
+		var params struct {
+			Key string `json:"key"`
+		}
+		if json.Unmarshal(msg.Params, &params) == nil && params.Key == key {
+			count++
+		}
+	}
+	return count
+}
 func defaultCreationTimings() creationOptions {
 	return creationOptions{
 		pollInterval: 5 * time.Millisecond,
@@ -179,13 +260,7 @@ func TestProjectCreationDrivesTheProviderUIAndReportsCreated(t *testing.T) {
 	expectMouseClick(t, f, "session-1", 160, 216)
 	expectMouseClick(t, f, "session-1", 520, 316)
 
-	insert := f.awaitIn("session-1", "Input.insertText")
-	var text struct {
-		Text string `json:"text"`
-	}
-	decodeParams(t, insert, &text)
-	assert.Equal(t, "Quarterly Review", text.Text)
-
+	expectTypedText(t, f, "session-1", "Quarterly Review")
 	expectMouseClick(t, f, "session-1", 690, 416)
 
 	// The ownership stage is the only writer of the single-use marker: it is
@@ -198,6 +273,127 @@ func TestProjectCreationDrivesTheProviderUIAndReportsCreated(t *testing.T) {
 	run.assertRunning(100 * time.Millisecond)
 }
 
+func TestProjectCreationWaitsForSubmitControlBeforeEnterFallback(t *testing.T) {
+	timings := defaultCreationTimings()
+	timings.pollInterval = 2 * time.Millisecond
+	timings.submitGrace = 50 * time.Millisecond
+	f, _, dir, run := prepareCreationGuard(t, timings)
+	writePermitWithName(t, dir, "permit-create-1", "Quarterly Review", 5*time.Minute)
+
+	sendMainFrameReady(t, f)
+	queueProbe(t, f, probeAnswer{found: true, rect: rectAt(100, 200, 120, 32)})
+	queueProbe(t, f, probeAnswer{found: true, rect: rectAt(400, 300, 240, 32)})
+	queueProbe(t, f, probeAnswer{})
+	queueProbe(t, f, probeAnswer{found: true, rect: rectAt(640, 400, 100, 32)})
+	queueProbe(t, f, probeAnswer{})
+
+	expectMouseClick(t, f, "session-1", 160, 216)
+	expectMouseClick(t, f, "session-1", 520, 316)
+	expectTypedText(t, f, "session-1", "Quarterly Review")
+	expectMouseClick(t, f, "session-1", 690, 416)
+	assert.False(t, f.hasCommand("session-1", "Input.insertText"))
+	assert.Zero(t, keyEventCount(f, "Enter"))
+
+	writeConsumedPermit(t, dir, "permit-create-1")
+	status := awaitCreationState(t, dir, projectCreationStateCreated)
+	assert.Equal(t, "permit-create-1", status.PermitID)
+	assert.Empty(t, status.Error)
+	run.assertRunning(100 * time.Millisecond)
+}
+func TestProjectCreationSynchronizesControlledInputForDisabledSubmit(t *testing.T) {
+	timings := defaultCreationTimings()
+	timings.pollInterval = 2 * time.Millisecond
+	timings.submitGrace = 50 * time.Millisecond
+	f, _, dir, run := prepareCreationGuard(t, timings)
+	writePermitWithName(t, dir, "permit-create-1", "Quarterly Review", 5*time.Minute)
+
+	sendMainFrameReady(t, f)
+	queueProbe(t, f, probeAnswer{found: true, rect: rectAt(100, 200, 120, 32)})
+	queueProbe(t, f, probeAnswer{found: true, rect: rectAt(400, 300, 240, 32)})
+	queueProbe(t, f, probeAnswer{found: true, disabled: true, rect: rectAt(640, 400, 100, 32)})
+	f.queueResult("Runtime.evaluate", map[string]any{
+		"result": map[string]any{"type": "object", "value": map[string]any{"found": true}},
+	})
+	queueProbe(t, f, probeAnswer{found: true, rect: rectAt(640, 400, 100, 32)})
+
+	expectMouseClick(t, f, "session-1", 160, 216)
+	expectMouseClick(t, f, "session-1", 520, 316)
+	expectTypedText(t, f, "session-1", "Quarterly Review")
+	expectMouseClick(t, f, "session-1", 690, 416)
+	assert.True(t, hasExpressionContaining(f, "HTMLInputElement.prototype"))
+	assert.True(t, hasExpressionContaining(f, "tracker.setValue"))
+	assert.True(t, hasExpressionContaining(f, "new InputEvent('input'"))
+	assert.True(t, hasExpressionContaining(f, "type === 'submit'"))
+	assert.False(t, f.hasCommand("session-1", "Input.insertText"))
+	assert.Zero(t, keyEventCount(f, "Enter"))
+	run.assertRunning(100 * time.Millisecond)
+}
+
+func TestProjectCreationDoesNotPressEnterForDisabledSubmit(t *testing.T) {
+	timings := defaultCreationTimings()
+	timings.pollInterval = 2 * time.Millisecond
+	timings.submitGrace = 10 * time.Millisecond
+	f, _, dir, _ := prepareCreationGuard(t, timings)
+	writePermitWithName(t, dir, "permit-create-1", "Quarterly Review", 5*time.Minute)
+
+	sendMainFrameReady(t, f)
+	queueProbe(t, f, probeAnswer{found: true, rect: rectAt(100, 200, 120, 32)})
+	queueProbe(t, f, probeAnswer{found: true, rect: rectAt(400, 300, 240, 32)})
+	queueProbe(t, f, probeAnswer{found: true, disabled: true, rect: rectAt(640, 400, 100, 32)})
+	f.queueResult("Runtime.evaluate", map[string]any{
+		"result": map[string]any{"type": "object", "value": map[string]any{"found": true}},
+	})
+	for i := 0; i < 100; i++ {
+		queueProbe(t, f, probeAnswer{found: true, disabled: true, rect: rectAt(640, 400, 100, 32)})
+	}
+
+	awaitExpressionContaining(t, f, "HTMLInputElement.prototype")
+	status := awaitCreationState(t, dir, projectCreationStateFailed)
+	assert.Equal(t, creationErrorNameRejected, status.Error)
+	assert.True(t, hasExpressionContaining(f, "HTMLInputElement.prototype"))
+	assert.Zero(t, keyEventCount(f, "Enter"))
+	assert.NoFileExists(t, filepath.Join(dir, permitConsumedFileName))
+}
+
+func TestProjectCreationFallsBackToEnterAfterSubmitGrace(t *testing.T) {
+	timings := defaultCreationTimings()
+	timings.pollInterval = 2 * time.Millisecond
+	timings.submitGrace = 10 * time.Millisecond
+	f, _, dir, run := prepareCreationGuard(t, timings)
+	writePermitWithName(t, dir, "permit-create-1", "Quarterly Review", 5*time.Minute)
+
+	sendMainFrameReady(t, f)
+	queueProbe(t, f, probeAnswer{found: true, rect: rectAt(100, 200, 120, 32)})
+	queueProbe(t, f, probeAnswer{found: true, rect: rectAt(400, 300, 240, 32)})
+
+	expectMouseClick(t, f, "session-1", 160, 216)
+	expectMouseClick(t, f, "session-1", 520, 316)
+	expectTypedText(t, f, "session-1", "Quarterly Review")
+
+	down := f.awaitIn("session-1", "Input.dispatchKeyEvent")
+	var downParams struct {
+		Type string `json:"type"`
+		Key  string `json:"key"`
+	}
+	decodeParams(t, down, &downParams)
+	assert.Equal(t, "keyDown", downParams.Type)
+	assert.Equal(t, "Enter", downParams.Key)
+
+	up := f.awaitIn("session-1", "Input.dispatchKeyEvent")
+	var upParams struct {
+		Type string `json:"type"`
+		Key  string `json:"key"`
+	}
+	decodeParams(t, up, &upParams)
+	assert.Equal(t, "keyUp", upParams.Type)
+	assert.Equal(t, "Enter", upParams.Key)
+
+	writeConsumedPermit(t, dir, "permit-create-1")
+	status := awaitCreationState(t, dir, projectCreationStateCreated)
+	assert.Equal(t, "permit-create-1", status.PermitID)
+	assert.Empty(t, status.Error)
+	run.assertRunning(100 * time.Millisecond)
+}
 func TestProjectCreationFailsClosedWhenTheProviderIsSignedOut(t *testing.T) {
 	f, _, dir, run := prepareCreationGuard(t, defaultCreationTimings())
 	writePermitWithName(t, dir, "permit-create-1", "Quarterly Review", 5*time.Minute)

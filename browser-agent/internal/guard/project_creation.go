@@ -104,6 +104,7 @@ func (r *probeRect) center() (float64, float64, bool) {
 type creationProbe struct {
 	Found        bool       `json:"found"`
 	LoginVisible bool       `json:"loginVisible"`
+	Disabled     bool       `json:"disabled"`
 	Rect         *probeRect `json:"rect"`
 }
 
@@ -134,14 +135,15 @@ type projectCreationController struct {
 	stepDelay    time.Duration
 	submitGrace  time.Duration
 
-	mu        sync.Mutex
-	permitID  string
-	state     string
-	errorCode string
-	updatedAt int64
-	phase     creationPhase
-	phaseAt   time.Time
-	deadline  time.Time
+	mu         sync.Mutex
+	permitID   string
+	state      string
+	errorCode  string
+	updatedAt  int64
+	nameSynced bool
+	phase      creationPhase
+	phaseAt    time.Time
+	deadline   time.Time
 }
 
 func newProjectCreationController(dir string, mode policy.Mode, client *cdpClient, navigation *navigationController, pageHealth *pageHealthController, logger *slog.Logger, options creationOptions) *projectCreationController {
@@ -376,9 +378,7 @@ func (c *projectCreationController) stepAwaitInput(ctx context.Context, sessionI
 	if err := c.click(ctx, sessionID, x, y); err != nil {
 		return err
 	}
-	if err := c.client.call(ctx, sessionID, "Input.insertText", map[string]any{
-		"text": strings.TrimSpace(permit.DisplayName),
-	}); err != nil {
+	if err := c.typeText(ctx, sessionID, strings.TrimSpace(permit.DisplayName)); err != nil {
 		return err
 	}
 	c.setPhase(creationPhaseAwaitSubmit)
@@ -391,6 +391,19 @@ func (c *projectCreationController) stepAwaitSubmit(ctx context.Context, session
 		return err
 	}
 	if probe.Found {
+		if probe.Disabled {
+			if !c.nameSyncDone() {
+				if err := c.syncControlledProjectName(ctx, sessionID, permit.DisplayName); err != nil {
+					return err
+				}
+				c.markNameSynced()
+				return nil
+			}
+			if c.now().Sub(c.phaseStart()) < c.submitGrace {
+				return nil
+			}
+			return c.fail(permit.PermitID, creationErrorNameRejected)
+		}
 		if x, y, ok := probe.Rect.center(); ok {
 			if err := c.click(ctx, sessionID, x, y); err != nil {
 				return err
@@ -398,6 +411,9 @@ func (c *projectCreationController) stepAwaitSubmit(ctx context.Context, session
 			c.setPhase(creationPhaseAwaitResult)
 			return nil
 		}
+	}
+	if c.now().Sub(c.phaseStart()) < c.submitGrace {
+		return nil
 	}
 	// No explicit submit control: the name field is focused, so Enter submits.
 	if err := c.pressEnter(ctx, sessionID); err != nil {
@@ -479,6 +495,112 @@ func (c *projectCreationController) click(ctx context.Context, sessionID string,
 	return c.settle(ctx)
 }
 
+// typeText sends real per-character key events. Input.insertText updates the
+// DOM value but does not necessarily update a React-controlled input's state,
+// which can leave the provider's submit button disabled.
+func (c *projectCreationController) typeText(ctx context.Context, sessionID, text string) error {
+	for _, r := range text {
+		key := string(r)
+		if err := c.client.call(ctx, sessionID, "Input.dispatchKeyEvent", map[string]any{
+			"type": "keyDown",
+			"key":  key,
+		}); err != nil {
+			return err
+		}
+		if err := c.client.call(ctx, sessionID, "Input.dispatchKeyEvent", map[string]any{
+			"type":           "char",
+			"key":            key,
+			"text":           key,
+			"unmodifiedText": key,
+		}); err != nil {
+			return err
+		}
+		if err := c.client.call(ctx, sessionID, "Input.dispatchKeyEvent", map[string]any{
+			"type": "keyUp",
+			"key":  key,
+		}); err != nil {
+			return err
+		}
+	}
+	return c.settle(ctx)
+}
+
+// syncControlledProjectName ensures React observed the project name even when
+// synthetic key events only changed the native input value. The native value
+// setter bypasses React's tracker; the bubbling input/change events then give
+// React the same signal a real edit would.
+func (c *projectCreationController) syncControlledProjectName(ctx context.Context, sessionID string, name string) error {
+	encoded, err := json.Marshal(strings.TrimSpace(name))
+	if err != nil {
+		return err
+	}
+	expression := fmt.Sprintf(syncControlledProjectNameExpression, string(encoded))
+	result, err := c.client.callResult(ctx, sessionID, "Runtime.evaluate", map[string]any{
+		"expression":    expression,
+		"returnByValue": true,
+	})
+	if err != nil {
+		return err
+	}
+	var evaluated struct {
+		Result struct {
+			Value struct {
+				Found bool `json:"found"`
+			} `json:"value"`
+		} `json:"result"`
+		ExceptionDetails json.RawMessage `json:"exceptionDetails"`
+	}
+	if err := json.Unmarshal(result, &evaluated); err != nil {
+		return fmt.Errorf("parse controlled input sync: %w", err)
+	}
+	if len(evaluated.ExceptionDetails) > 0 && string(evaluated.ExceptionDetails) != "null" {
+		return errors.New("controlled input sync raised an exception")
+	}
+	if !evaluated.Result.Value.Found {
+		return errors.New("controlled input sync did not find the project name field")
+	}
+	return nil
+}
+
+const syncControlledProjectNameExpression = `(() => {
+	const desired = %s;
+	const visible = (el) => {
+		const rect = el.getBoundingClientRect();
+		return rect.width > 0 && rect.height > 0;
+	};
+	const fieldName = (el) => (
+		(el.getAttribute('aria-label') || '') + ' ' +
+		(el.getAttribute('placeholder') || '') + ' ' +
+		(el.getAttribute('name') || '')
+	).toLowerCase();
+	const fields = Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"], [role="textbox"]'))
+		.filter((el) => visible(el) && /project|name/.test(fieldName(el)));
+	const el = fields[0];
+	if (!el) return { found: false };
+	const tracker = el._valueTracker;
+	const previous = tracker && typeof tracker.getValue === 'function'
+		? tracker.getValue()
+		: (el.value !== undefined ? el.value : el.textContent || '');
+	if (el instanceof HTMLInputElement && Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')) {
+		Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, desired);
+	} else if (el instanceof HTMLTextAreaElement && Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')) {
+		Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(el, desired);
+	} else {
+		el.textContent = desired;
+	}
+	// React ignores synthetic value changes that leave its tracker at the new
+	// value. Restore the pre-change value so the bubbling InputEvent is seen.
+	if (tracker && typeof tracker.setValue === 'function') tracker.setValue(previous);
+	el.dispatchEvent(new InputEvent('input', {
+		bubbles: true,
+		composed: true,
+		data: desired,
+		inputType: 'insertText',
+	}));
+	el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+	return { found: true };
+})()`
+
 func (c *projectCreationController) pressEnter(ctx context.Context, sessionID string) error {
 	key := map[string]any{
 		"key":                   "Enter",
@@ -525,6 +647,7 @@ func (c *projectCreationController) begin(permit permitFile) error {
 	c.permitID = permit.PermitID
 	c.state = projectCreationStateRunning
 	c.errorCode = ""
+	c.nameSynced = false
 	c.phase = creationPhaseOpenUI
 	c.phaseAt = now
 	c.deadline = now.Add(c.timeout)
@@ -538,6 +661,7 @@ func (c *projectCreationController) markCreated(permitID string) error {
 	c.permitID = permitID
 	c.state = projectCreationStateCreated
 	c.errorCode = ""
+	c.nameSynced = false
 	c.phase = creationPhaseNone
 	c.mu.Unlock()
 	c.audit("project_creation_created", permitID)
@@ -551,6 +675,7 @@ func (c *projectCreationController) fail(permitID string, errorCode string) erro
 	c.permitID = permitID
 	c.state = projectCreationStateFailed
 	c.errorCode = errorCode
+	c.nameSynced = false
 	c.phase = creationPhaseNone
 	c.mu.Unlock()
 	c.audit("project_creation_failed", permitID, errorCode)
@@ -621,6 +746,18 @@ func (c *projectCreationController) setPhase(phase creationPhase) {
 	c.mu.Lock()
 	c.phase = phase
 	c.phaseAt = c.now()
+	c.mu.Unlock()
+}
+
+func (c *projectCreationController) nameSyncDone() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.nameSynced
+}
+
+func (c *projectCreationController) markNameSynced() {
+	c.mu.Lock()
+	c.nameSynced = true
 	c.mu.Unlock()
 }
 
@@ -730,21 +867,29 @@ const probeProjectNameExpression = `(() => {
 // form, if the provider offers one instead of submitting on Enter.
 const probeSubmitExpression = `(() => {
 	const norm = (value) => (value || '').replace(/\s+/g, ' ').trim().toLowerCase();
-	const rectOf = (el) => {
+	const visible = (el) => {
 		const rect = el.getBoundingClientRect();
-		if (rect.width <= 0 || rect.height <= 0) return null;
-		return rect;
+		return rect.width > 0 && rect.height > 0;
 	};
-	const scope = document.querySelector('[role="dialog"]') || document;
-	const nodes = Array.from(scope.querySelectorAll('button, [role="button"]'));
-	for (const el of nodes) {
-		const name = norm(el.getAttribute('aria-label')) || norm(el.innerText);
-		if (!/^(create|create project|save|save project|add|next|continue|done)\b/.test(name)) continue;
-		const rect = rectOf(el);
-		if (!rect) continue;
-		return { found: true, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } };
-	}
-	return { found: false };
+	const fieldName = (el) => (
+		(el.getAttribute('aria-label') || '') + ' ' +
+		(el.getAttribute('placeholder') || '') + ' ' +
+		(el.getAttribute('name') || '')
+	).toLowerCase();
+	const dialogs = Array.from(document.querySelectorAll('dialog, [role="dialog"]')).filter(visible);
+	const preferred = dialogs.find((scope) => Array.from(scope.querySelectorAll('input, textarea, [contenteditable="true"], [role="textbox"]')).some((el) => visible(el) && /project|name/.test(fieldName(el)))) || dialogs[0];
+	const scopes = preferred ? [preferred] : [document];
+	const nodes = Array.from(scopes[0].querySelectorAll('button, [role="button"], input[type="submit"]'));
+	const named = (el) => norm(el.getAttribute('aria-label')) || norm(el.getAttribute('title')) || norm(el.getAttribute('value')) || norm(el.innerText);
+	const explicit = nodes.find((el) => {
+		if (!visible(el)) return false;
+		const type = norm(el.getAttribute('type'));
+		return type === 'submit' && /^(create|create project|save|save project|done)\b/.test(named(el));
+	});
+	const control = explicit || nodes.find((el) => visible(el) && /^(create|create project|save|save project|done)\b/.test(named(el)));
+	if (!control) return { found: false };
+	const rect = control.getBoundingClientRect();
+	return { found: true, disabled: !!control.disabled, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } };
 })()`
 
 // probeNameRejectedExpression reports a visible validation error in the creation

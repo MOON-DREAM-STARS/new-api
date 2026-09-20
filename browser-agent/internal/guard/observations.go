@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/QuantumNous/new-api/browser-agent/internal/provider/chatgpt"
 )
@@ -18,6 +19,7 @@ type observationRecord struct {
 	ExternalProjectID      string  `json:"external_project_id,omitempty"`
 	ExternalConversationID string  `json:"external_conversation_id,omitempty"`
 	Slug                   *string `json:"slug,omitempty"`
+	DisplayName            *string `json:"display_name,omitempty"`
 	ObservedAt             int64   `json:"observed_at"`
 }
 
@@ -33,19 +35,23 @@ func (s *providerState) observeNavigation(resource chatgpt.Resource) {
 // observeProjectCreated records the first navigation of a project that was
 // allowed by a creation permit. The dedup key contains the permit id, so a
 // project re-created later with a new permit is observed again.
-func (s *providerState) observeProjectCreated(projectID, slug, permitID string) {
+func (s *providerState) observeProjectCreated(projectID, slug, displayName, permitID string) {
 	if !s.markSeen("project_created\x00" + projectID + "\x00" + permitID) {
 		return
 	}
 	// A project that exists again can be reported as missing later on.
 	delete(s.seen, "project_not_found\x00"+projectID)
 	s.lastSlug[projectID] = slug
-	s.append(observationRecord{
+	record := observationRecord{
 		Event:             "project_created",
 		PermitID:          permitID,
 		ExternalProjectID: projectID,
 		Slug:              &slug,
-	})
+	}
+	if name := strings.TrimSpace(displayName); name != "" {
+		record.DisplayName = &name
+	}
+	s.append(record)
 }
 
 // observeConversationCreated records one conversation of a registered project

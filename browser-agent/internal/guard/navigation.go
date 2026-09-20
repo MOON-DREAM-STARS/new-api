@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/QuantumNous/new-api/browser-agent/internal/provider/chatgpt"
 )
 
 const (
@@ -25,6 +27,7 @@ const (
 type navigationCommand struct {
 	ID          int64  `json:"id"`
 	Action      string `json:"action"`
+	ProjectID   string `json:"project_id,omitempty"`
 	RequestedAt int64  `json:"requested_at"`
 }
 
@@ -295,6 +298,15 @@ func (n *navigationController) applyCommand(ctx context.Context, command navigat
 			}
 		}
 		if err := n.client.call(ctx, sessionID, "Page.reload", nil); err != nil {
+			return err
+		}
+	case "project":
+		target := "https://chatgpt.com/g/" + strings.TrimSpace(command.ProjectID) + "/project"
+		resource, err := chatgpt.Classify(target)
+		if err != nil || resource.Kind != chatgpt.KindProject || resource.ProjectID != strings.TrimSpace(command.ProjectID) || resource.Slug != "" {
+			return errors.New("project navigation target is invalid")
+		}
+		if err := n.client.call(ctx, sessionID, "Page.navigate", map[string]any{"url": target}); err != nil {
 			return err
 		}
 	case "state":
