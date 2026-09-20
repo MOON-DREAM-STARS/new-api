@@ -1,0 +1,20 @@
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       ca-certificates \
+       chromium \
+       fonts-noto-cjk \
+       imagemagick \
+       nodejs \
+       npm \
+       procps \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN npm install --prefix /opt/harness puppeteer-core@22.15.0 \
+    && npm cache clean --force
+
+COPY measure.js /opt/harness/measure.js
+
+WORKDIR /opt/harness
+CMD ["node", "/opt/harness/measure.js", "--help"]

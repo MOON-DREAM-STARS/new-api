@@ -64,6 +64,57 @@ func TestClassifyFixtures(t *testing.T) {
 	}
 }
 
+// The per-project gizmo request is the only place a deleted project is still
+// visible: the SPA document answers 200. Only the bare gizmo resource may be
+// treated as the loss signal, never the conversation listing or a foreign host.
+func TestGizmoNotFoundProjectID(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		url   string
+		id    string
+		match bool
+	}{
+		{
+			name:  "bare gizmo resource",
+			url:   "https://chatgpt.com/backend-api/gizmos/g-p-0123456789abcdef0123456789abcdef",
+			id:    "g-p-0123456789abcdef0123456789abcdef",
+			match: true,
+		},
+		{
+			name: "conversation listing is not the project resource",
+			url:  "https://chatgpt.com/backend-api/gizmos/g-p-0123456789abcdef0123456789abcdef/conversations?cursor=0&limit=5",
+		},
+		{
+			name: "query is not the project resource",
+			url:  "https://chatgpt.com/backend-api/gizmos/g-p-0123456789abcdef0123456789abcdef?x=1",
+		},
+		{
+			name: "slug form is not the project id",
+			url:  "https://chatgpt.com/backend-api/gizmos/g-p-0123456789abcdef0123456789abcdef-test0",
+		},
+		{
+			name: "foreign host",
+			url:  "https://evil.example.com/backend-api/gizmos/g-p-0123456789abcdef0123456789abcdef",
+		},
+		{
+			name: "wrong path",
+			url:  "https://chatgpt.com/backend-api/me",
+		},
+		{
+			name: "uppercase id",
+			url:  "https://chatgpt.com/backend-api/gizmos/g-p-0123456789ABCDEF0123456789abcdef",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id, ok := GizmoNotFoundProjectID(tc.url)
+			assert.Equal(t, tc.match, ok)
+			if tc.match {
+				assert.Equal(t, tc.id, id)
+			}
+		})
+	}
+}
+
 func TestIsProviderHost(t *testing.T) {
 	for _, tc := range []struct {
 		host  string

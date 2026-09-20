@@ -148,6 +148,37 @@ func (c *cdpClient) call(ctx context.Context, sessionID, method string, params a
 	}
 }
 
+// notify writes one command without waiting for its response. It is used for
+// dispatch-only commands whose response carries no decision and whose renderer
+// latency would otherwise gate the command loop. The write still happens on the
+// single CDP channel, so ordering and the one-consumer rule are unchanged; the
+// eventual response is simply discarded by deliver.
+func (c *cdpClient) notify(sessionID, method string, params any) error {
+	payload := struct {
+		ID        int64           `json:"id"`
+		Method    string          `json:"method"`
+		Params    json.RawMessage `json:"params,omitempty"`
+		SessionID string          `json:"sessionId,omitempty"`
+	}{Method: method, SessionID: sessionID}
+	if params != nil {
+		raw, err := json.Marshal(params)
+		if err != nil {
+			return fmt.Errorf("encode %s params: %w", method, err)
+		}
+		payload.Params = raw
+	}
+	payload.ID = c.newID()
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("encode %s command: %w", method, err)
+	}
+	if err := c.write(data); err != nil {
+		c.fail(fmt.Errorf("send %s command: %w", method, err))
+		return fmt.Errorf("send %s command: %w", method, err)
+	}
+	return nil
+}
+
 // callResult is the result-bearing form of call. It uses the same websocket as
 // every other command, so navigation state stays on the single existing CDP
 // consumer.

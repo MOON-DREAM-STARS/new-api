@@ -15,6 +15,10 @@ const (
 	WorkspaceMountTarget = "/workspace"
 	// VNCPort is the RFB display port exposed inside the runtime container.
 	VNCPort = 5900
+	// KasmPort is the KasmVNC web client and websocket port exposed inside the
+	// runtime container. Both display ports remain private to the runtime
+	// network; the agent is the only proxy in front of them.
+	KasmPort = 6901
 
 	// RuntimeUID and RuntimeGID are the non-root identity the runtime image
 	// runs as (browser-agent/runtime/Dockerfile declares the user webworkspace

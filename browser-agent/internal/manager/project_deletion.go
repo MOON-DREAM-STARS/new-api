@@ -25,6 +25,11 @@ var (
 	ErrProjectDeletionUnavailable = errors.New("project deletion unavailable")
 	ErrProjectDeletionTimeout     = errors.New("project deletion timeout")
 	ErrProjectDeletionRejected    = errors.New("project deletion rejected")
+	// ErrLastProjectRequired refuses the deletion of the only registered
+	// project. The agent owns the ownership document, so this is the last line
+	// of defence: a caller that never consulted the control plane still cannot
+	// leave the workspace without any provider project.
+	ErrLastProjectRequired = errors.New("at least one project must remain")
 )
 
 type ProjectDeletionStatus struct {
@@ -73,6 +78,32 @@ func (file projectDeletionStatusFile) status() ProjectDeletionStatus {
 	}
 }
 
+// ensureAnotherProjectRemains refuses a deletion that would remove the only
+// project in the ownership document. The document is the single source of truth
+// for what the workspace really owns, so this check cannot be bypassed by a
+// caller that only knows a project id.
+func ensureAnotherProjectRemains(root *os.Root, projectID string) error {
+	data, err := root.ReadFile(ownershipFileName)
+	if errors.Is(err, os.ErrNotExist) {
+		// Without an ownership document the agent cannot prove another project
+		// remains, so the deletion fails closed.
+		return ErrLastProjectRequired
+	}
+	if err != nil {
+		return fmt.Errorf("%w: read ownership state: %v", ErrProjectDeletionUnavailable, err)
+	}
+	var ownership guardOwnership
+	if err := json.Unmarshal(data, &ownership); err != nil {
+		return fmt.Errorf("%w: ownership state is invalid", ErrProjectDeletionUnavailable)
+	}
+	for _, registered := range ownership.Projects {
+		if strings.TrimSpace(registered) != projectID {
+			return nil
+		}
+	}
+	return ErrLastProjectRequired
+}
+
 // DeleteProject asks the guard to delete one provider-side project through the
 // existing CDP consumer. The local mapping is removed by the caller only after
 // this returns success.
@@ -104,6 +135,10 @@ func (m *Manager) DeleteProject(ctx context.Context, workspaceID int64, projectI
 		return ProjectDeletionStatus{}, fmt.Errorf("%w: prepare guard state directory: %v", ErrProjectDeletionUnavailable, err)
 	}
 	defer guardRoot.Close()
+
+	if err := ensureAnotherProjectRemains(guardRoot, projectID); err != nil {
+		return ProjectDeletionStatus{}, err
+	}
 
 	lastID := int64(0)
 	if data, err := guardRoot.ReadFile(projectDeletionStatusFileName); err == nil {

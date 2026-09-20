@@ -115,6 +115,8 @@ func Run(ctx context.Context, cfg Config) error {
 	g.navigation.onReload = g.pageHealth.reload
 	g.projectCreation = newProjectCreationController(stateDir, cfg.Mode, client, g.navigation, g.pageHealth, logger, cfg.creationTimings)
 	g.projectDeletion = newProjectDeletionController(stateDir, client, g.navigation, logger)
+	g.fileChooser = newFileChooserController(stateDir, client, logger)
+	g.input = newInputController(stateDir, client, g.navigation, logger)
 	defer func() {
 		cancelRun()
 		g.waitBackground()
@@ -128,6 +130,8 @@ func Run(ctx context.Context, cfg Config) error {
 	g.runBackground(func() { g.pageHealth.run(runCtx) })
 	g.runBackground(func() { g.projectCreation.run(runCtx) })
 	g.runBackground(func() { g.projectDeletion.run(runCtx) })
+	g.runBackground(func() { g.fileChooser.run(runCtx) })
+	g.runBackground(func() { g.input.run(runCtx) })
 	logger.Info("browser guard active", "event", "guard_active", "component", "guard", "mode", string(cfg.Mode))
 
 	select {
@@ -275,6 +279,8 @@ type guard struct {
 	pageHealth      *pageHealthController
 	projectCreation *projectCreationController
 	projectDeletion *projectDeletionController
+	fileChooser     *fileChooserController
+	input           *inputController
 	startupTargetID string
 
 	backgroundMu     sync.Mutex
@@ -350,6 +356,11 @@ func (g *guard) handleEvent(ctx context.Context, sessionID, method string, param
 			return err
 		}
 		g.refreshNavigation(ctx, sessionID)
+		return nil
+	case "Page.fileChooserOpened":
+		if err := g.fileChooser.onOpened(ctx, sessionID, params); err != nil {
+			g.logger.Warn("file chooser event failed", "event", "file_chooser_event_failed", "component", "guard", "error", err)
+		}
 		return nil
 	case "Page.loadEventFired":
 		g.pageHealth.observeLoadEvent(ctx, sessionID)
@@ -512,6 +523,14 @@ func (g *guard) enablePageDomain(ctx context.Context, sessionID string) {
 			"error", err,
 		)
 	}
+	if err := g.client.call(ctx, sessionID, "Page.setInterceptFileChooserDialog", map[string]any{"enabled": true}); err != nil {
+		g.logger.Warn("file chooser interception unavailable",
+			"event", "file_chooser_interception_unavailable",
+			"component", "guard",
+			"reason", "local file chooser bridge degraded",
+			"error", err,
+		)
+	}
 	g.navigation.refreshCurrent(ctx, sessionID)
 	// Network.enable feeds the project_not_found observation. It is requested
 	// after the page domain and stays non-fatal for the same reason: the guard
@@ -541,26 +560,32 @@ func (g *guard) onNetworkResponse(params json.RawMessage) {
 	if err := json.Unmarshal(params, &event); err != nil {
 		return
 	}
-	if event.Type != "Document" {
-		return
-	}
 	if event.Response.Status != http.StatusNotFound && event.Response.Status != http.StatusGone {
 		return
 	}
-	g.state.observeProjectNotFoundURL(event.Response.URL)
+	// A deleted project is not a document 404: the SPA document answers 200 and
+	// bounces to the shell. Its loss is carried by the provider backend request
+	// for that single project, so both shapes are observed.
+	g.state.observeProjectNotFoundBackend(event.Response.URL)
+	if event.Type == "Document" {
+		g.state.observeProjectNotFoundURL(event.Response.URL)
+	}
 }
 
 // onRequestPaused applies the shared policy table to every network request of
 // the runtime. Unknown hosts, non web schemes and non standard ports are denied
 // by default.
+type fetchRequestPaused struct {
+	RequestID    string `json:"requestId"`
+	ResourceType string `json:"resourceType"`
+	FrameID      string `json:"frameId"`
+	Request      struct {
+		URL string `json:"url"`
+	} `json:"request"`
+}
+
 func (g *guard) onRequestPaused(ctx context.Context, sessionID string, params json.RawMessage) error {
-	var event struct {
-		RequestID    string `json:"requestId"`
-		ResourceType string `json:"resourceType"`
-		Request      struct {
-			URL string `json:"url"`
-		} `json:"request"`
-	}
+	var event fetchRequestPaused
 	if err := json.Unmarshal(params, &event); err != nil {
 		return fmt.Errorf("parse Fetch.requestPaused: %w", err)
 	}
@@ -572,21 +597,56 @@ func (g *guard) onRequestPaused(ctx context.Context, sessionID string, params js
 	}
 	decision, host := g.evaluateURL(event.Request.URL)
 	if !decision.Allowed {
+		g.noteDeniedDocument(event, decision.Reason)
 		return g.denyRequest(ctx, sessionID, event.RequestID, host, event.ResourceType, decision.Reason)
 	}
 	// Only document requests carry the provider resource decision; every other
 	// request (backend-api, static assets, ...) keeps the Phase 3 strategy.
 	if event.ResourceType == "Document" {
 		if verdict := g.state.evaluateDocument(event.Request.URL); !verdict.Allowed {
+			g.noteDeniedDocument(event, verdict.Reason)
 			return g.denyRequest(ctx, sessionID, event.RequestID, host, event.ResourceType, verdict.Reason)
 		}
 	}
 	if err := g.client.call(ctx, sessionID, "Fetch.continueRequest", map[string]any{
 		"requestId": event.RequestID,
 	}); err != nil {
+		if staleInterceptionError(err) {
+			g.logger.Debug("paused request already resolved",
+				"event", "interception_already_resolved",
+				"component", "guard",
+				"resource_type", event.ResourceType,
+			)
+			return nil
+		}
 		return fmt.Errorf("continue request: %w", err)
 	}
 	return nil
+}
+
+// noteDeniedDocument publishes a denied main-frame document as the
+// authoritative page outcome. Chromium's own loadingFailed event for the
+// refused request is routinely superseded by the next navigation and may never
+// arrive, so the real policy reason has to be recorded at deny time instead of
+// waiting for an error that would leave the page on a generic ERR_ACCESS_DENIED.
+func (g *guard) noteDeniedDocument(event fetchRequestPaused, reason string) {
+	if event.ResourceType != "Document" {
+		return
+	}
+	g.pageHealth.markDeniedDocument(event.FrameID, reason)
+}
+
+// staleInterceptionError reports the CDP race where a paused request has already
+// left the interception queue before the guard answered it, for example because
+// the navigation that owned it was aborted or replaced. The request can no
+// longer be continued or failed, so there is nothing left to enforce; treating
+// it as fatal would stop the whole runtime and tear down the display surface.
+func staleInterceptionError(err error) bool {
+	var cdpErr *cdpError
+	if !errors.As(err, &cdpErr) {
+		return false
+	}
+	return cdpErr.Code == -32602 && strings.Contains(cdpErr.Message, "Invalid InterceptionId")
 }
 
 // denyRequest audits one denied request with the Phase 3 audit fields and fails
@@ -597,6 +657,14 @@ func (g *guard) denyRequest(ctx context.Context, sessionID, requestID, host, res
 		"requestId":   requestID,
 		"errorReason": "AccessDenied",
 	}); err != nil {
+		if staleInterceptionError(err) {
+			g.logger.Debug("denied request already resolved",
+				"event", "interception_already_resolved",
+				"component", "guard",
+				"resource_type", resourceType,
+			)
+			return nil
+		}
 		return fmt.Errorf("fail request: %w", err)
 	}
 	return nil
