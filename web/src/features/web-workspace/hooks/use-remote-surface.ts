@@ -266,13 +266,33 @@ export function useRemoteSurface(
     // only navigates it to the new authorised URL, so the element, its
     // websocket and the remote framebuffer are never recreated underneath the
     // operator and the replacement surface never doubles up in the DOM.
+    // Every attach attempt owns its message listener and its startup deadline,
+    // including the attempt that reuses the mounted element. The effect cleanup
+    // removes the previous listener, so a reused surface that skipped this would
+    // never report "connected" again and the workspace would sit on
+    // "Connecting" forever while the remote framebuffer was already live.
+    function armAttempt() {
+      clearTimer()
+      window.addEventListener('message', handleMessage)
+      startupTimerRef.current = window.setTimeout(() => {
+        startupTimerRef.current = null
+        if (generationRef.current !== generation) return
+        scheduleReconnect()
+      }, KASM_CONNECT_TIMEOUT_MS)
+    }
+
     function attachSurface(ticket: string) {
       if (generationRef.current !== generation || !container) return
       const nextSrc = buildKasmClientUrl(sessionId, ticket)
       const current = iframeRef.current
       if (current && current.isConnected) {
+        // handleMessage ignores every event while this closure has no element,
+        // so a reused surface has to rebind the element as well as its
+        // listener; otherwise the reconnected client is never observed.
+        iframe = current
         mountedSrcRef.current = nextSrc
         if (current.getAttribute('src') !== nextSrc) current.src = nextSrc
+        armAttempt()
         return
       }
       const nextIframe = document.createElement('iframe')
@@ -299,13 +319,8 @@ export function useRemoteSurface(
         scheduleReconnect()
       })
       nextIframe.src = nextSrc
-      window.addEventListener('message', handleMessage)
       container.replaceChildren(nextIframe)
-      startupTimerRef.current = window.setTimeout(() => {
-        startupTimerRef.current = null
-        if (generationRef.current !== generation) return
-        scheduleReconnect()
-      }, KASM_CONNECT_TIMEOUT_MS)
+      armAttempt()
     }
 
     void createWebWorkspaceStreamTicket(sessionId)
