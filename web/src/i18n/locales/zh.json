@@ -7429,6 +7429,8 @@
     "Paste into remote": "粘贴到远程",
     "The remote page could not open the selected project.": "远程页面无法打开所选项目。",
     "Local input failed: {{code}}": "本地输入失败：{{code}}",
-    "Another file chooser is already pending for this workspace.": "此工作区已有另一个文件选择器正在等待处理。"
+    "Another file chooser is already pending for this workspace.": "此工作区已有另一个文件选择器正在等待处理。",
+    "Switch to local input": "切换到本地输入",
+    "Switch to remote keyboard": "切换到远端键盘"
   }
 }

@@ -7412,6 +7412,8 @@
     "Paste into remote": "Paste into remote",
     "The remote page could not open the selected project.": "The remote page could not open the selected project.",
     "Local input failed: {{code}}": "Local input failed: {{code}}",
-    "Another file chooser is already pending for this workspace.": "Another file chooser is already pending for this workspace."
+    "Another file chooser is already pending for this workspace.": "Another file chooser is already pending for this workspace.",
+    "Switch to local input": "Switch to local input",
+    "Switch to remote keyboard": "Switch to remote keyboard"
   }
 }
