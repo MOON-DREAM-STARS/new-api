@@ -160,12 +160,18 @@ export function WebWorkspace() {
     restartMutation.isPending ||
     navigationMutation.isPending
 
+  // The KasmVNC client can only be fetched once the runtime has finished
+  // bringing up X, the RFB server and websockify. Attaching earlier makes the
+  // first request fail with a gateway error that no retry can turn into a
+  // picture, so the surface waits for the runtime's own page-health signal,
+  // which the viewport already renders while it is not READY.
+  const pageReady = session?.page?.state === 'READY'
   const surface = useRemoteSurface({
     sessionId: session?.session_id ?? '',
     // A hidden tab detaches the display stream: no framebuffer is sent while
     // the user cannot see it, and the runtime is kept alive by the activity
     // keep-alive below instead.
-    enabled: isDesktop && isLive && isVisible,
+    enabled: isDesktop && isLive && isVisible && pageReady,
   })
 
   const clipboardBridge = useClipboardBridge({

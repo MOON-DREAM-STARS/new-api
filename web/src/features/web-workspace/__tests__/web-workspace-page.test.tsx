@@ -195,6 +195,12 @@ const runningSession = {
     updated_at: 1,
   },
   project_creation: null,
+  page: {
+    state: 'READY',
+    error: '',
+    attempts: 0,
+    updated_at: 1,
+  },
 }
 
 function mockWorkspaceGets(session: unknown) {
@@ -808,6 +814,35 @@ describe('WebWorkspace page', () => {
         'The server already has an active Web Workspace. Wait for it to become idle or stop it before starting another.'
       )
     ).toBeInTheDocument()
+  })
+
+  test('does not attach the display stream before the runtime page is ready', async () => {
+    mockWorkspaceGets({ ...runningSession, page: null })
+
+    const { unmount } = renderPage(<WebWorkspace />)
+
+    await waitFor(() => {
+      expect(surfaceOptions.sessionId).toBe(runningSession.session_id)
+    })
+    expect(surfaceOptions.enabled).toBe(false)
+    unmount()
+
+    surfaceOptions.enabled = false
+    mockWorkspaceGets({
+      ...runningSession,
+      page: {
+        state: 'READY',
+        error: '',
+        attempts: 0,
+        updated_at: 2,
+      },
+    })
+
+    renderPage(<WebWorkspace />)
+
+    await waitFor(() => {
+      expect(surfaceOptions.enabled).toBe(true)
+    })
   })
 
   test('detaches the display stream while the tab is hidden', async () => {
