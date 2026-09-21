@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -168,12 +169,25 @@ func responsesRequestMessagesToChat(req *dto.OpenAIResponsesRequest) ([]dto.Mess
 		if err := kitutil.Unmarshal(req.Input, &items); err != nil {
 			return nil, fmt.Errorf("invalid input array: %w", err)
 		}
+		// Chat Completions requires the tool messages answering one assistant tool_calls
+		// batch to stay contiguous, so media hoisted out of function_call_output items is
+		// held back and emitted as a single user message once the batch ends.
+		var pendingMedia []any
 		for _, item := range items {
-			nextMessages, err := responsesInputItemToChatMessages(item, messages)
+			itemType := strings.TrimSpace(kitutil.Interface2String(item["type"]))
+			if len(pendingMedia) > 0 && itemType != responsesInputTypeFunctionCallOutput {
+				messages = append(messages, dto.Message{Role: "user", Content: pendingMedia})
+				pendingMedia = nil
+			}
+			nextMessages, media, err := responsesInputItemToChatMessages(item, messages)
 			if err != nil {
 				return nil, err
 			}
 			messages = nextMessages
+			pendingMedia = append(pendingMedia, media...)
+		}
+		if len(pendingMedia) > 0 {
+			messages = append(messages, dto.Message{Role: "user", Content: pendingMedia})
 		}
 		return messages, nil
 	default:
@@ -181,31 +195,28 @@ func responsesRequestMessagesToChat(req *dto.OpenAIResponsesRequest) ([]dto.Mess
 	}
 }
 
-func responsesInputItemToChatMessages(item map[string]any, messages []dto.Message) ([]dto.Message, error) {
+// responsesInputItemToChatMessages appends the Chat messages for one Responses input item.
+// The second result carries media content parts hoisted out of a function_call_output item,
+// already in Chat shape; the caller decides where that user message lands.
+func responsesInputItemToChatMessages(item map[string]any, messages []dto.Message) ([]dto.Message, []any, error) {
 	itemType := strings.TrimSpace(kitutil.Interface2String(item["type"]))
 	switch itemType {
 	case responsesInputTypeFunctionCall:
 		toolCall, err := responsesFunctionCallItemToChatToolCall(item)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return appendToolCallToLastAssistant(messages, toolCall), nil
+		return appendToolCallToLastAssistant(messages, toolCall), nil, nil
 	case responsesInputTypeCustomToolCall:
 		toolCall, err := responsesCustomToolCallItemToChatToolCall(item)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return appendToolCallToLastAssistant(messages, toolCall), nil
+		return appendToolCallToLastAssistant(messages, toolCall), nil, nil
 	case responsesInputTypeFunctionCallOutput:
 		callID := strings.TrimSpace(kitutil.Interface2String(item["call_id"]))
-		content, mediaParts := splitFunctionCallOutputToChatMessages(item["output"])
-		messages = append(messages, dto.Message{Role: "tool", ToolCallId: callID, Content: content})
-		if len(mediaParts) > 0 {
-			// Chat Completions 的 tool 消息按规范只能承载文本：媒体块改为紧随其后的一条
-			// user 消息，避免把二进制（base64）序列化进 tool 消息文本。
-			messages = append(messages, dto.Message{Role: "user", Content: mediaParts})
-		}
-		return messages, nil
+		content, media := responsesToolOutputToChat(item["output"])
+		return append(messages, dto.Message{Role: "tool", ToolCallId: callID, Content: content}), media, nil
 	}
 
 	role := strings.TrimSpace(kitutil.Interface2String(item["role"]))
@@ -214,9 +225,9 @@ func responsesInputItemToChatMessages(item map[string]any, messages []dto.Messag
 	}
 	content, err := responsesInputContentToChatContent(item["content"])
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return append(messages, dto.Message{Role: role, Content: content}), nil
+	return append(messages, dto.Message{Role: role, Content: content}), nil, nil
 }
 
 func responsesInputContentToChatContent(content any) (any, error) {
@@ -550,145 +561,55 @@ func responseToolOutputToChatContent(value any) any {
 	}
 }
 
-// splitFunctionCallOutputToChatMessages 把 function_call_output 的 output 映射为 Chat 目标的
-// 消息内容：返回 tool 消息的 content，以及（可选）需要以独立 user 消息下发的媒体内容块。
-//
-// Chat Completions 的 tool 消息按规范只能承载文本，因此当 Responses 的 output 是内容块数组
-// 且含图片/文件等非文本块时，把文本留在 tool 消息、非文本块交给调用方紧随其后追加一条 user
-// 消息；否则整段内容（含 base64 数据）会被序列化成 tool 消息文本——上游会把二进制当作文本
-// 计数，触发 context_length_exceeded，且图像语义完全丢失。
-// 文本块以 "\n" 连接；若没有任何文本块，tool 内容使用类型感知的非空占位（如 "[image]"）。
-//
-// 非内容块数组的形态（字符串、对象、任意 JSON 数组、纯文本内容块数组）保持既有字符串化行为。
-func splitFunctionCallOutputToChatMessages(value any) (any, []any) {
-	parts, ok := responsesToolOutputContentParts(value)
-	if !ok {
+// responsesToolOutputToChat maps a function_call_output payload onto Chat Completions, where a
+// tool message may only carry text. A Responses content-part array keeps its text on the tool
+// message and returns the media parts in Chat shape for the caller to hoist into a user message;
+// stringifying them instead would hand base64 image data to the upstream text tokenizer. Any
+// other payload shape (string, object, plain JSON array) keeps the historical stringified form.
+func responsesToolOutputToChat(value any) (any, []any) {
+	rawParts, ok := value.([]any)
+	if !ok || len(rawParts) == 0 {
 		return responseToolOutputToChatContent(value), nil
 	}
 
-	texts := make([]string, 0, len(parts))
-	mediaParts := make([]any, 0, len(parts))
-	for _, part := range parts {
-		if isResponsesTextContentPartType(strings.TrimSpace(kitutil.Interface2String(part["type"]))) {
+	texts := make([]string, 0, len(rawParts))
+	mediaParts := make([]any, 0, len(rawParts))
+	labels := make([]string, 0, len(rawParts))
+	for _, rawPart := range rawParts {
+		part, ok := rawPart.(map[string]any)
+		if !ok {
+			return responseToolOutputToChatContent(value), nil
+		}
+		partType := strings.TrimSpace(kitutil.Interface2String(part["type"]))
+		switch partType {
+		case "input_text", "output_text", "text":
 			if text := kitutil.Interface2String(part["text"]); text != "" {
 				texts = append(texts, text)
 			}
-			continue
+		case "input_image", "input_file", "input_audio", "input_video":
+			mediaParts = append(mediaParts, part)
+			label := "[" + strings.TrimPrefix(partType, "input_") + "]"
+			if !slices.Contains(labels, label) {
+				labels = append(labels, label)
+			}
+		default:
+			return responseToolOutputToChatContent(value), nil
 		}
-		mediaParts = append(mediaParts, part)
 	}
 	if len(mediaParts) == 0 {
-		return responseToolOutputToChatContent(value), nil
+		return strings.Join(texts, "\n"), nil
 	}
 
 	converted, err := responsesContentPartsToChatContent(mediaParts)
 	if err != nil {
 		return responseToolOutputToChatContent(value), nil
 	}
-	chatParts, ok := converted.([]any)
-	if !ok || len(chatParts) == 0 {
-		return responseToolOutputToChatContent(value), nil
-	}
+	media, _ := converted.([]any)
 	if len(texts) == 0 {
-		// Chat Completions 的 tool 消息只能承载文本；媒体块已由调用方追加的 user
-		// 消息承载，这里用类型感知的非空占位，避免上游拒绝空 tool 内容。
-		return responsesToolOutputMediaPlaceholder(mediaParts), chatParts
+		// Upstreams reject empty tool content; the media itself rides on the hoisted user message.
+		return strings.Join(labels, " "), media
 	}
-	return strings.Join(texts, "\n"), chatParts
-}
-
-// responsesToolOutputMediaPlaceholder 生成无文本块时 tool 消息的占位文案：按非文本块
-// 类型去重、按首次出现顺序排列、空格连接；纯图片场景返回 "[image]"。
-func responsesToolOutputMediaPlaceholder(mediaParts []any) string {
-	labels := make([]string, 0, len(mediaParts))
-	seen := make(map[string]struct{}, len(mediaParts))
-	for _, rawPart := range mediaParts {
-		part, ok := rawPart.(map[string]any)
-		if !ok {
-			continue
-		}
-		label := responsesToolOutputMediaPlaceholderLabel(strings.TrimSpace(kitutil.Interface2String(part["type"])))
-		if label == "" {
-			continue
-		}
-		if _, exists := seen[label]; exists {
-			continue
-		}
-		seen[label] = struct{}{}
-		labels = append(labels, label)
-	}
-	return strings.Join(labels, " ")
-}
-
-func responsesToolOutputMediaPlaceholderLabel(partType string) string {
-	switch partType {
-	case "input_image":
-		return "[image]"
-	case "input_file":
-		return "[file]"
-	case "input_audio":
-		return "[audio]"
-	case "input_video":
-		return "[video]"
-	default:
-		return ""
-	}
-}
-
-// responsesToolOutputContentParts 判定 value 是否为 Responses 内容块数组：数组非空，且每个
-// 元素都是带已知内容块 type 的对象。这样 `[1,2]`、`[{"type":"unknown"}]` 等普通 JSON 数组
-// 不满足条件，继续走既有字符串化路径。
-func responsesToolOutputContentParts(value any) ([]map[string]any, bool) {
-	var rawParts []any
-	switch typed := value.(type) {
-	case []any:
-		rawParts = typed
-	case []map[string]any:
-		rawParts = make([]any, 0, len(typed))
-		for _, part := range typed {
-			rawParts = append(rawParts, part)
-		}
-	default:
-		return nil, false
-	}
-	if len(rawParts) == 0 {
-		return nil, false
-	}
-
-	parts := make([]map[string]any, 0, len(rawParts))
-	for _, rawPart := range rawParts {
-		part, ok := rawPart.(map[string]any)
-		if !ok {
-			return nil, false
-		}
-		if !isResponsesContentPartType(strings.TrimSpace(kitutil.Interface2String(part["type"]))) {
-			return nil, false
-		}
-		parts = append(parts, part)
-	}
-	return parts, true
-}
-
-// isResponsesContentPartType 已知的 Responses 内容块 type（与 responsesContentPartsToChatContent
-// 的 switch 同集合）。
-func isResponsesContentPartType(partType string) bool {
-	switch partType {
-	case "input_text", "output_text", "text",
-		"input_image", "input_file", "input_audio", "input_video":
-		return true
-	default:
-		return false
-	}
-}
-
-// isResponsesTextContentPartType 文本类内容块：承载 text 字段，可以留在 tool 消息里。
-func isResponsesTextContentPartType(partType string) bool {
-	switch partType {
-	case "input_text", "output_text", "text":
-		return true
-	default:
-		return false
-	}
+	return strings.Join(texts, "\n"), media
 }
 
 func responsesRawFloat(raw json.RawMessage) (*float64, error) {
