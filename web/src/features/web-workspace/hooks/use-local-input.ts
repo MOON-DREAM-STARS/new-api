@@ -236,13 +236,29 @@ export function useLocalInput(
     return undefined
   }, [enabled])
 
+  // While local input owns typing, a click inside the remote page must hand
+  // focus back to the anchor: the iframe would otherwise keep the keyboard and
+  // the local IME would never see the next keystroke. The listener follows the
+  // iframe document because a reconnect reloads it with a fresh ticket.
   useEffect(() => {
     if (!enabled || mode !== 'local') return undefined
-    const document = surface.getIframe()?.contentDocument
-    if (!document) return undefined
+    const frame = surface.getIframe()
+    if (!frame) return undefined
     const handleClick = () => handleSurfaceClick()
-    document.addEventListener('click', handleClick, true)
-    return () => document.removeEventListener('click', handleClick, true)
+    let attached: Document | null = null
+    const attach = () => {
+      const next = frame.contentDocument
+      if (!next || next === attached) return
+      attached?.removeEventListener('click', handleClick, true)
+      attached = next
+      attached.addEventListener('click', handleClick, true)
+    }
+    attach()
+    frame.addEventListener('load', attach)
+    return () => {
+      frame.removeEventListener('load', attach)
+      attached?.removeEventListener('click', handleClick, true)
+    }
   }, [enabled, handleSurfaceClick, mode, surface])
 
   return {
