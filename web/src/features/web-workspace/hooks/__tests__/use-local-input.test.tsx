@@ -16,9 +16,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { fireEvent, render, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { RefObject } from 'react'
-import { act } from 'react'
+import { act, useMemo, useRef } from 'react'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import {
@@ -78,6 +78,28 @@ function LocalInputHarness(props: {
   )
 }
 
+function IframeLocalInputHarness(props: {
+  onReady: (controller: LocalInputController) => void
+}) {
+  const frameRef = useRef<HTMLIFrameElement>(null)
+  const surface = useMemo(
+    () => ({ ...makeSurface(), getIframe: () => frameRef.current }),
+    []
+  )
+  const controller = useLocalInput({
+    sessionId: 'session-1',
+    enabled: true,
+    surface,
+  })
+  props.onReady(controller)
+  return (
+    <div>
+      <iframe ref={frameRef} title='Remote frame' />
+      <input ref={controller.anchorRef} aria-label='Local input' />
+    </div>
+  )
+}
+
 afterEach(() => {
   insertText.mockReset()
   getCaret.mockReset()
@@ -107,6 +129,37 @@ describe('useLocalInput', () => {
     await waitFor(() => expect(insertText).toHaveBeenCalledTimes(1))
     expect(insertText).toHaveBeenCalledWith('session-1', '你好')
     expect(input.value).toBe('')
+  })
+
+  test('takes the keyboard back when the remote page is clicked', async () => {
+    getCaret.mockResolvedValue(null)
+    insertText.mockResolvedValue(undefined)
+    const controllerRef: { current: LocalInputController | null } = { current: null }
+    render(
+      <IframeLocalInputHarness
+        onReady={(next) => {
+          controllerRef.current = next
+        }}
+      />
+    )
+
+    const anchor = screen.getByRole('textbox', { name: 'Local input' })
+    const frame = screen.getByTitle('Remote frame') as HTMLIFrameElement
+    await waitFor(() => expect(frame.contentDocument).toBeTruthy())
+
+    act(() => controllerRef.current?.toggle())
+    await waitFor(() => expect(document.activeElement).toBe(anchor))
+
+    // The operator clicks the remote page to place its caret.
+    anchor.blur()
+    expect(document.activeElement).not.toBe(anchor)
+    act(() => {
+      frame.contentDocument!.dispatchEvent(
+        new MouseEvent('click', { bubbles: true })
+      )
+    })
+
+    await waitFor(() => expect(document.activeElement).toBe(anchor))
   })
 
   test('keeps failed committed text visible and reports the real error code', async () => {
