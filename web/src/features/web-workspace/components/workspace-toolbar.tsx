@@ -245,16 +245,18 @@ export function WorkspaceToolbar(props: WorkspaceToolbarProps) {
         variant={props.inputMode === 'local' ? 'secondary' : 'ghost'}
         aria-pressed={props.inputMode === 'local'}
         aria-label={
-          props.inputMode === 'local' ? t('Remote keyboard') : t('Local input')
+          props.inputMode === 'local' ? t('Local input') : t('Remote keyboard')
         }
         title={
-          props.inputMode === 'local' ? t('Remote keyboard') : t('Local input')
+          props.inputMode === 'local'
+            ? t('Switch to remote keyboard')
+            : t('Switch to local input')
         }
         disabled={!props.inputEnabled || props.isBusy}
         onClick={props.onToggleInputMode}
       >
         <Keyboard aria-hidden='true' />
-        {props.inputMode === 'local' ? t('Remote keyboard') : t('Local input')}
+        {props.inputMode === 'local' ? t('Local input') : t('Remote keyboard')}
       </Button>
 
       <DropdownMenu>

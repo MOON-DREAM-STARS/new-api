@@ -5779,6 +5779,8 @@
     "Input method is unavailable in the remote browser.": "远程浏览器中的输入法当前不可用。",
     "Local input": "本地输入",
     "Remote keyboard": "远端键盘",
+    "Switch to local input": "切换到本地输入",
+    "Switch to remote keyboard": "切换到远端键盘",
     "Local input anchor": "本地输入锚点",
     "Local input failed: {{code}}": "本地输入失败：{{code}}",
     "Local input is unavailable. Reconnect the remote browser and try again.": "本地输入当前不可用，请重新连接远程浏览器后重试。",

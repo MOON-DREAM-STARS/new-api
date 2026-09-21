@@ -636,6 +636,8 @@ export const STATIC_I18N_KEYS = [
   'Input method is unavailable in the remote browser.',
   'Local input',
   'Remote keyboard',
+  'Switch to local input',
+  'Switch to remote keyboard',
   'Local input anchor',
   'Local input failed: {{code}}',
   'Local input is unavailable. Reconnect the remote browser and try again.',

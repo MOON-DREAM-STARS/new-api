@@ -406,7 +406,7 @@ describe('WebWorkspace page', () => {
       screen.queryByText('Input method is unavailable in the remote browser.')
     ).toBeNull()
     expect(
-      await screen.findByRole('button', { name: 'Local input' })
+      await screen.findByRole('button', { name: 'Remote keyboard' })
     ).toBeInTheDocument()
   })
 
