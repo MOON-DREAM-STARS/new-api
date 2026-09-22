@@ -1,4 +1,4 @@
-// Package docker implements the runtime.Driver and runtime.DisplayTransport
+// Package docker implements the runtime.Driver and runtime.DisplayProbe
 // contracts against the Docker Engine API reached through a unix socket. It
 // uses only net/http and the standard library, never the Docker SDK.
 package docker

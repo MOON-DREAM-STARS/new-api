@@ -15,7 +15,7 @@ const (
 	inputStateName   = "input.json"
 	inputCommandName = "input-command.json"
 
-	inputPollInterval = 100 * time.Millisecond
+	inputPollInterval = 20 * time.Millisecond
 	inputWaitTimeout  = 10 * time.Second
 	inputTextMaxRunes = 4096
 

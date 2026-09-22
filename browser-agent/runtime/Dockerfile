@@ -33,7 +33,6 @@ RUN apt-get update \
       net-tools \
       procps \
       ssl-cert \
-      websockify \
       x11-utils \
       xauth \
       xclip \
@@ -60,6 +59,7 @@ RUN mkdir -p /usr/local/share/kasmvnc \
 
 COPY runtime/entrypoint.sh /usr/local/bin/web-workspace-entrypoint.sh
 COPY runtime/kasm-xstartup.sh /usr/local/bin/kasm-xstartup.sh
+COPY runtime/fontconfig-web-workspace.conf /etc/fonts/local.conf
 COPY --from=guard-build /out/workspace-guard /usr/local/bin/workspace-guard
 COPY --from=clipd-build /out/workspace-clipd /usr/local/bin/workspace-clipd
 RUN chmod 0755 /usr/local/bin/web-workspace-entrypoint.sh /usr/local/bin/kasm-xstartup.sh /usr/local/bin/workspace-guard /usr/local/bin/workspace-clipd
@@ -68,11 +68,11 @@ WORKDIR /workspace
 USER webworkspace:webworkspace
 
 ENV HOME=/workspace \
+    LANG=C.UTF-8 \
     WW_WORKSPACE_DIR=/workspace \
     WW_DISPLAY=:99 \
     WW_SCREEN_WIDTH=1280 \
     WW_SCREEN_HEIGHT=720 \
-    WW_VNC_PORT=5900 \
     WW_KASM_PORT=6901
 
 ENTRYPOINT ["/usr/local/bin/web-workspace-entrypoint.sh"]

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -41,16 +42,7 @@ func (s *Server) handleKasmProxy(w http.ResponseWriter, r *http.Request) {
 
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
-			pr.Out.URL.Scheme = target.Scheme
-			pr.Out.URL.Host = target.Host
-			pr.Out.URL.Path = suffix
-			pr.Out.URL.RawPath = ""
-			pr.Out.Host = target.Host
-			// The bearer token authenticates the agent endpoint only. KasmVNC
-			// receives no service token and no browser session cookie.
-			pr.Out.Header.Del("Authorization")
-			pr.Out.Header.Del("Cookie")
-			pr.SetXForwarded()
+			rewriteKasmRequest(pr, target, suffix)
 		},
 		ModifyResponse: func(response *http.Response) error {
 			if response.StatusCode != http.StatusSwitchingProtocols {
@@ -70,6 +62,23 @@ func (s *Server) handleKasmProxy(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+func rewriteKasmRequest(pr *httputil.ProxyRequest, target *url.URL, suffix string) {
+	pr.Out.URL.Scheme = target.Scheme
+	pr.Out.URL.Host = target.Host
+	pr.Out.URL.Path = suffix
+	pr.Out.URL.RawPath = ""
+	pr.Out.Host = target.Host
+	// Native KasmVNC rejects a missing Origin during the websocket handshake.
+	// Any non-empty runtime origin is accepted, and the browser's public origin
+	// must not leak to the runtime.
+	pr.Out.Header.Set("Origin", target.Scheme+"://"+target.Host)
+	// The bearer token authenticates the agent endpoint only. KasmVNC receives
+	// no service token and no browser session cookie.
+	pr.Out.Header.Del("Authorization")
+	pr.Out.Header.Del("Cookie")
+	pr.SetXForwarded()
 }
 
 func kasmPathSuffix(requestPath string, workspaceID int64) string {

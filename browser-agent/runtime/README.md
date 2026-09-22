@@ -1,6 +1,6 @@
 # Web Workspace Runtime
 
-默认镜像名：`newapi-web-workspace-runtime:local`。当前 KasmVNC 验收镜像标签为 `newapi-web-workspace-runtime:kasmvnc-20260920`。镜像基于 `debian:bookworm-slim`，提供 KasmVNC 1.5.0（Xvnc）传统 RFB、websockify 承载 KasmVNC 自带 web client、GUI Chromium、`workspace-clipd` 剪贴板 helper 与内置的 `workspace-guard`（Browser Guard），并以非 root 用户 `webworkspace`（uid/gid `10001`）运行。
+默认镜像名：`newapi-web-workspace-runtime:local`。当前本机验收标签为 `newapi-web-workspace-runtime:local-sc-latency-20260921`，回滚标签为 `newapi-web-workspace-runtime:pre-sc-latency-20260921`。镜像基于 `debian:bookworm-slim`，提供 KasmVNC 1.5.0（Xvnc）原生 HTTP/WebSocket、GUI Chromium、`workspace-clipd` 剪贴板 helper 与内置的 `workspace-guard`（Browser Guard），并以非 root 用户 `webworkspace`（uid/gid `10001`）运行。
 
 ## 构建
 
@@ -10,7 +10,7 @@
 docker build -f browser-agent/runtime/Dockerfile -t newapi-web-workspace-runtime:local browser-agent/
 ```
 
-Dockerfile 为多阶段构建：`golang:1.26.1-alpine` 阶段复制 `go.mod`、`go.sum`、`internal/policy`、`internal/provider`、`internal/runtime`、`internal/guard`、`cmd/workspace-guard`，以 `CGO_ENABLED=0` 静态编译 guard；另一个同版本构建阶段复制 `go.mod`、`go.sum` 与 `cmd/workspace-clipd`，以 `CGO_ENABLED=0` 静态编译 clipd。最终阶段使用 Debian bookworm，安装 Chromium、KasmVNC 1.5.0 bookworm amd64 `.deb`、websockify、xclip 与 xdotool，创建 uid/gid `10001` 用户，并复制 `/usr/local/bin/workspace-guard` 与 `/usr/local/bin/workspace-clipd`（均 0755）。
+Dockerfile 为多阶段构建：`golang:1.26.1-alpine` 阶段复制 `go.mod`、`go.sum`、`internal/policy`、`internal/provider`、`internal/runtime`、`internal/guard`、`cmd/workspace-guard`，以 `CGO_ENABLED=0` 静态编译 guard；另一个同版本构建阶段复制 `go.mod`、`go.sum` 与 `cmd/workspace-clipd`，以 `CGO_ENABLED=0` 静态编译 clipd。最终阶段使用 Debian bookworm，安装 Chromium、KasmVNC 1.5.0 bookworm amd64 `.deb`、Noto CJK 字体、xclip 与 xdotool，并安装 `fontconfig-web-workspace.conf` 以强制 `Noto Sans CJK SC`；创建 uid/gid `10001` 用户，并复制 `/usr/local/bin/workspace-guard` 与 `/usr/local/bin/workspace-clipd`（均 0755）。
 
 ## 环境变量
 
@@ -23,12 +23,11 @@ Dockerfile 为多阶段构建：`golang:1.26.1-alpine` 阶段复制 `go.mod`、`
 | `WW_DISPLAY` | `:99` | KasmVNC/Xvnc 显示号。 |
 | `WW_SCREEN_WIDTH` | `1280` | KasmVNC 屏幕宽度。 |
 | `WW_SCREEN_HEIGHT` | `720` | KasmVNC 屏幕高度。 |
-| `WW_VNC_PORT` | `5900` | KasmVNC 传统 RFB 监听端口；绝不 publish 到宿主。 |
-| `WW_KASM_PORT` | `6901` | websockify/KasmVNC web client 端口；绝不 publish 到宿主。 |
+| `WW_KASM_PORT` | `6901` | KasmVNC 原生 HTTP/WebSocket 端口；绝不 publish 到宿主。 |
 | `WW_PROVIDER` | `unknown` | 信息字段，同时用于推导默认 `WW_START_URL`（`chatgpt` → `https://chatgpt.com/`）。 |
 | `WW_START_URL` | 按 `WW_PROVIDER` 推导 | 运行时窗口的起始 URL：`chatgpt` → `https://chatgpt.com/`，其他 provider → `about:blank`；显式设置时优先使用该值。 |
 
-入口脚本将 `HOME` 设为 `WW_WORKSPACE_DIR`，并将 `XDG_CONFIG_HOME`、`XDG_CACHE_HOME`、`XDG_DATA_HOME`、`XDG_RUNTIME_DIR` 分别指向 `profile/config`、`cache`、`profile/data`、`tmp/runtime`，避免 Chromium 写入只读 rootfs。运行时不再启动 D-Bus 或 IBus，也不向 Chromium 导出远端输入法模块变量；中文组合只由 KasmVNC web client 处理。
+入口脚本将 `HOME` 设为 `WW_WORKSPACE_DIR`，并将 `XDG_CONFIG_HOME`、`XDG_CACHE_HOME`、`XDG_DATA_HOME`、`XDG_RUNTIME_DIR` 分别指向 `profile/config`、`cache`、`profile/data`、`tmp/runtime`，避免 Chromium 写入只读 rootfs。运行时不再启动 D-Bus 或 IBus，也不向 Chromium 导出远端输入法模块变量；Chrome 使用 `--lang=zh-CN` 与简体中文 Accept-Language，中文组合由操作者本机输入法完成，成稿通过 Guard 注入。
 
 ## Chromium 启动参数
 
@@ -45,10 +44,12 @@ Dockerfile 为多阶段构建：`golang:1.26.1-alpine` 阶段复制 `go.mod`、`
 --no-sandbox --test-type --password-store=basic --user-data-dir=... --display=... --window-size=<W,H> --window-position=0,0 --app="$WW_START_URL"
 --disable-gpu --disable-software-rasterizer --disable-dev-shm-usage
 --disable-component-update --disable-sync --metrics-recording-only --no-pings --disable-breakpad
---force-device-scale-factor=1 --js-flags=--max-old-space-size=256
+--force-device-scale-factor=1 --lang=zh-CN --accept-lang="zh-CN,zh;q=0.9,en;q=0.8" --js-flags=--max-old-space-size=256
 ```
 
 其中 `--disable-gpu`、`--disable-software-rasterizer` 与 `--disable-features=...Vulkan` 固定软件渲染路径；其余低资源参数限制后台更新、崩溃上报和 V8 堆大小。未设置 `--renderer-process-limit`，避免 ChatGPT 多模块加载时触发 `ERR_INSUFFICIENT_RESOURCES`。`--disable-background-networking` 未启用：本机 smoke test 中它会让 ChatGPT 主页面停留在空白页，保留现有代理与 Guard 策略即可。
+
+KasmVNC transport 固定使用平衡低延迟 profile：原生 `6901` WebSocket、30fps、动态质量 6–8、静态文字质量 8 以上按无损处理、JPEG/WebP video quality 6、单 rectangle 压缩线程、1920x1080 video 上限与 bilinear 缩放；不启用 WebRTC 或 H.264。该 profile 与客户端 URL 参数同时生效，避免浏览器 localStorage 中的旧值覆盖。
 
 Chromium 使用 `--password-store=basic`：Provider cookie、localStorage 及其加密密钥随 workspace `profile/` 持久化，不依赖容器内 keyring/portal。因此 runtime 容器重建或重启后 Provider 登录态应继续可用；profile 的 `0700`/`0600` 权限与 workspace 隔离同时也是登录态保护边界。New API 的本机浏览器登录 cookie 不在此 profile 中。
 
@@ -68,7 +69,7 @@ Chromium 使用 `--password-store=basic`：Provider cookie、localStorage 及其
 
 ### Fail closed
 
-guard 与 CDP 断连、命令通道出错、启动 15s 预算内无法连接、模式或 `WW_CDP_URL` 非法时，guard 以非 0 退出。入口脚本的 watchdog 一旦发现 guard 退出，会记录日志、清理 Chromium → websockify → KasmVNC/Xvnc 并以 1 退出，因此容器状态为 FAILED，浏览器不会在没有 guard 的情况下继续可用。
+guard 与 CDP 断连、命令通道出错、启动 15s 预算内无法连接、模式或 `WW_CDP_URL` 非法时，guard 以非 0 退出。入口脚本的 watchdog 一旦发现 guard 退出，会记录日志、清理 Chromium → KasmVNC/Xvnc 并以 1 退出，因此容器状态为 FAILED，浏览器不会在没有 guard 的情况下继续可用。
 
 ## workspace-clipd 剪贴板 helper
 
@@ -85,7 +86,7 @@ guard 与 CDP 断连、命令通道出错、启动 15s 预算内无法连接、�
 
 KasmVNC 自带 `enable_ime` 已关闭，运行时不再安装、启动或导出 IBus/libpinyin，也不设置 `GTK_IM_MODULE`、`QT_IM_MODULE` 或 `XMODIFIERS`。中文候选与中英文切换由 Windows 本机输入法在 Web Workspace 的透明输入锚点中完成；成稿通过 Guard 的 `input_text` 注入远端，常用按键通过 `input_key` 转发，远端不再接收原始拼音按键。默认仍为远端键盘模式，操作者手动切换到本地输入模式后才使用该路径。
 
-`ime-state.json` 只表示 KasmVNC X server 与 websockify web-client transport 是否就绪：两者启动成功写为 `READY`，失败写为 `UNAVAILABLE`。它不再表示远端输入法能力。该目录为 `0700`，文件内容只允许下列两态：
+`ime-state.json` 只表示 KasmVNC X server 与原生 6901 HTTP/WebSocket transport 是否就绪：两者启动成功写为 `READY`，失败写为 `UNAVAILABLE`。它不再表示远端输入法能力。该目录为 `0700`，文件内容只允许下列两态：
 
 ```json
 {"state":"READY"}
@@ -101,18 +102,17 @@ KasmVNC 自带 `enable_ime` 已关闭，运行时不再安装、启动或导出 
 入口脚本按以下顺序启动进程：
 
 1. 校验 `WW_PROXY_SERVER` 与 `WW_GUARD_MODE`，非法即退出 1；
-2. 启动 KasmVNC `vncserver`/`Xvnc`（显示 `:99`、RFB `WW_VNC_PORT`），等待 display 与该端口就绪；
-3. 启动 websockify（`WW_KASM_PORT` → `127.0.0.1:$WW_VNC_PORT`，web root 为 `/usr/share/kasmvnc/www`），等待 web client 端口就绪；KasmVNC 1.5.0 的一个 Xvnc 进程无法同时绑定 websocket 与 RFB TCP，因此 6901 的 listener 是 websockify，web client 仍为 KasmVNC 自带资产；
-4. 写入 READY 到 `$WW_WORKSPACE_DIR/.guard/ime-state.json`；KasmVNC/websockify 启动失败则写 UNAVAILABLE 并退出 1；
+2. 启动 KasmVNC `vncserver`/`Xvnc`（显示 `:99`、原生 HTTP/WebSocket `WW_KASM_PORT=6901`），等待 display 与 web client/WebSocket 端口就绪；
+3. 写入 READY 到 `$WW_WORKSPACE_DIR/.guard/ime-state.json`；KasmVNC 原生 transport 启动失败则写 UNAVAILABLE 并退出 1；
 5. 启动 `workspace-clipd`，等待 `/workspace/tmp/clipd.sock` 就绪；
-6. 启动 Chromium 应用窗口（后台，`--user-data-dir=$WW_WORKSPACE_DIR/profile`，起始 URL 为 `$WW_START_URL`）；
-7. 启动 `workspace-guard`（后台），随后 watchdog 监视 guard、websockify 与 Chromium：guard 或 websockify 退出 → 清理并以 1 退出；Chromium 退出 → 按 Chromium 的退出码清理并退出。
+5. 启动 Chromium 应用窗口（后台，`--user-data-dir=$WW_WORKSPACE_DIR/profile`，起始 URL 为 `$WW_START_URL`）；
+6. 启动 `workspace-guard`（后台），随后 watchdog 监视 guard 与 Chromium：guard 退出 → 清理并以 1 退出；Chromium 退出 → 按 Chromium 的退出码清理并退出。
 
-`SIGTERM`/`SIGINT` 到达时，按 workspace-guard → Chromium → workspace-clipd → websockify → KasmVNC/Xvnc 顺序终止进程后再退出。`docker stop` 不应留下该容器内的孤儿进程。
+`SIGTERM`/`SIGINT` 到达时，按 workspace-guard → Chromium → workspace-clipd → KasmVNC/Xvnc 顺序终止进程后再退出。`docker stop` 不应留下该容器内的孤儿进程。
 
 ## 运行前提与安全取舍
 
-- 必须使用私有 Docker network，并由 Browser Agent service auth 控制访问；不要把 `$WW_VNC_PORT` 或 `$WW_KASM_PORT` publish 到宿主或公网。KasmVNC 使用 `-DisableBasicAuth`/`-SecurityTypes None`，websockify 与 RFB 的访问控制完全依赖私有网络隔离、Agent bearer service token 与 New API session ownership；任一端口暴露给不受信网络都会扩大控制面。
+- 必须使用私有 Docker network，并由 Browser Agent service auth 控制访问；不要把 `$WW_KASM_PORT` publish 到宿主或公网。KasmVNC 使用 `-DisableBasicAuth`/`-SecurityTypes None`，原生 HTTP/WebSocket 的访问控制完全依赖私有网络隔离、Agent bearer service token 与 New API session ownership；端口暴露给不受信网络会扩大控制面。
 - CDP 只在容器 loopback 上监听（`--remote-debugging-address=127.0.0.1`），不得 publish，也不得把 endpoint 或 DevTools WebSocket URL 返回给客户端；guard 是唯一 CDP consumer。
 - Runtime manager 必须保证每个 workspace 最多只有一个活动 runtime。容器重启后 hostname/PID 会变化，入口脚本会清理 `profile/` 中 Chromium 遗留的 `SingletonLock`、`SingletonCookie`、`SingletonSocket`，但不会删除其他 profile 数据；若并发挂载同一 profile，这些锁不能替代 Agent 层的单实例调度。
 - 宿主 workspace 目录必须可由 uid/gid `10001` 写入（或在创建容器前调整为 `10001:10001`）；否则入口脚本无法创建 `profile/`、`cache/`、`tmp/`，Chromium 无法启动。

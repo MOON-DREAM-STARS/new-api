@@ -241,14 +241,14 @@ func TestListParsesWorkspaceLabel(t *testing.T) {
 	assert.False(t, infos[1].Running)
 }
 
-func TestConnectRejectsStoppedContainer(t *testing.T) {
+func TestProbeRejectsStoppedContainer(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"Id":"a","State":{"Status":"exited","Running":false}}`))
 	}))
 	defer server.Close()
 
 	driver := newTestDriver(server)
-	_, err := driver.Connect(context.Background(), 5)
+	err := driver.Probe(context.Background(), 5)
 	assert.ErrorIs(t, err, runtime.ErrNotRunning)
 }
 

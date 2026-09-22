@@ -1,11 +1,10 @@
-// Package runtimetest provides in-memory Driver and DisplayTransport fakes used
-// by the manager, HTTP and stream tests.
+// Package runtimetest provides in-memory Driver and DisplayProbe fakes used by
+// the manager and HTTP tests.
 package runtimetest
 
 import (
 	"context"
 	"fmt"
-	"io"
 	"strings"
 	"sync"
 	"time"
@@ -206,74 +205,41 @@ func envMap(entries []string) map[string]string {
 	return env
 }
 
-// FakeDisplay is an in-memory runtime.DisplayTransport. Every Connect call
-// returns a fresh FakeConn unless ConnectFunc supplies one, so a readiness
-// probe never shares a connection with a display stream.
-type FakeDisplay struct {
-	mu       sync.Mutex
-	Connects int
-	Err      error
-	// FailFirst makes the first N Connect calls fail with FailErr (default
-	// runtime.ErrNotRunning), simulating a display that is not ready yet.
-	FailFirst   int
-	FailErr     error
-	ConnectFunc func(ctx context.Context, workspaceID int64) (io.ReadWriteCloser, error)
+// FakeDisplayProbe is an in-memory runtime.DisplayProbe.
+type FakeDisplayProbe struct {
+	mu     sync.Mutex
+	Probes int
+	Err    error
+	// FailFirst makes the first N Probe calls fail with FailErr (default
+	// runtime.ErrNotRunning), simulating a listener that is not ready yet.
+	FailFirst int
+	FailErr   error
+	ProbeFunc func(ctx context.Context, workspaceID int64) error
 }
 
-func (f *FakeDisplay) Connect(ctx context.Context, workspaceID int64) (io.ReadWriteCloser, error) {
+func (f *FakeDisplayProbe) Probe(ctx context.Context, workspaceID int64) error {
 	f.mu.Lock()
-	f.Connects++
+	f.Probes++
 	failFirst := f.FailFirst > 0
 	if failFirst {
 		f.FailFirst--
 	}
 	failErr := f.FailErr
-	displayErr := f.Err
-	connect := f.ConnectFunc
+	probeErr := f.Err
+	probe := f.ProbeFunc
 	f.mu.Unlock()
 
 	if failFirst {
 		if failErr != nil {
-			return nil, failErr
+			return failErr
 		}
-		return nil, runtime.ErrNotRunning
+		return runtime.ErrNotRunning
 	}
-	if displayErr != nil {
-		return nil, displayErr
+	if probeErr != nil {
+		return probeErr
 	}
-	if connect != nil {
-		return connect(ctx, workspaceID)
+	if probe != nil {
+		return probe(ctx, workspaceID)
 	}
-	return NewFakeConn(), nil
-}
-
-// FakeConn is an io.ReadWriteCloser that records whether it was closed.
-type FakeConn struct {
-	reader *io.PipeReader
-	writer *io.PipeWriter
-	once   sync.Once
-	Closed chan struct{}
-}
-
-// NewFakeConn returns a connected FakeConn.
-func NewFakeConn() *FakeConn {
-	reader, writer := io.Pipe()
-	return &FakeConn{reader: reader, writer: writer, Closed: make(chan struct{})}
-}
-
-func (c *FakeConn) Read(p []byte) (int, error) {
-	return c.reader.Read(p)
-}
-
-func (c *FakeConn) Write(p []byte) (int, error) {
-	return c.writer.Write(p)
-}
-
-func (c *FakeConn) Close() error {
-	c.once.Do(func() {
-		close(c.Closed)
-		_ = c.reader.Close()
-		_ = c.writer.Close()
-	})
 	return nil
 }
