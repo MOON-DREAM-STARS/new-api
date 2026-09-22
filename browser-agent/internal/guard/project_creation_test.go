@@ -442,6 +442,13 @@ func TestCreationProbesAcceptBothLocales(t *testing.T) {
 	// anchors on the start of the accessible name.
 	assert.Regexp(t, regexp.MustCompile(`\^\(new project\\b\|新项目\|新建项目\)`), probeNewProjectExpression)
 	assert.Regexp(t, regexp.MustCompile(`\^\(log in\\b\|sign in\\b\|sign up\\b\|create account\\b\|登录\|注册\|创建账户\|创建帐户\)`), probeNewProjectExpression)
+
+	// The live sidebar pins an account footer over the bottom of the scroll area,
+	// so a creation entry below the fold reports a rect whose centre hits the
+	// footer. The probe has to scroll it into view and verify the click point with
+	// a hit test; without that the guard clicks the footer and only times out.
+	assert.Contains(t, probeNewProjectExpression, "scrollIntoView", "creation entry must be scrolled into view before clicking")
+	assert.Contains(t, probeNewProjectExpression, "elementFromPoint", "creation entry click point must be hit-tested")
 }
 
 // TestCreationExpressionsKeepFormatVerbsIntact guards the generated probes: the

@@ -823,6 +823,15 @@ func permitConsumedByDir(dir string, permitID string) bool {
 // language-independent hint is tried first; the current provider build exposes
 // no data-testid on this control, so the accessible-name list is the path that
 // actually matches and it has to cover both languages.
+//
+// The sidebar is a scroll container whose pinned account footer overlaps the
+// bottom of the list. A creation entry below the fold therefore reports a
+// bounding rect that lies underneath the footer, and clicking that rect's centre
+// hits the footer instead. The probe scrolls the entry into view and only reports
+// a point that actually hit-tests to the control, so the controller never
+// dispatches a click to whatever happens to be on top. The reported rect is the
+// control's real geometry whenever its centre is hittable; otherwise it is a
+// 1x1 rect placed on the hittable point, and the caller only consumes its centre.
 const probeNewProjectExpression = `(() => {
 	const norm = (value) => (value || '').replace(/\s+/g, ' ').trim().toLowerCase();
 	const nameOf = (el) => {
@@ -849,11 +858,47 @@ const probeNewProjectExpression = `(() => {
 		}
 		return /^(new project\b|新项目|新建项目)/.test(nameOf(el));
 	};
+	// clickablePoint returns a viewport point that really hit-tests to the control,
+	// preferring the geometric centre. It returns null when no point inside the
+	// control is on top, which means the control is covered or not yet settled.
+	const clickablePoint = (el, rect) => {
+		const hits = (x, y) => {
+			const top = document.elementFromPoint(x, y);
+			return !!top && (top === el || el.contains(top) || top.contains(el));
+		};
+		const cx = rect.x + rect.width / 2;
+		const cy = rect.y + rect.height / 2;
+		if (hits(cx, cy)) return { x: cx, y: cy, centred: true };
+		// Scan a small grid inset from the edges: a partially covered control can
+		// still expose a clickable region.
+		for (const fx of [0.5, 0.25, 0.75]) {
+			for (const fy of [0.5, 0.25, 0.75, 0.1, 0.9]) {
+				const x = rect.x + rect.width * fx;
+				const y = rect.y + rect.height * fy;
+				if (hits(x, y)) return { x, y, centred: false };
+			}
+		}
+		return null;
+	};
 	for (const el of nodes) {
 		if (!matchesCreationEntry(el)) continue;
-		const rect = rectOf(el);
+		let rect = rectOf(el);
 		if (!rect) continue;
-		return { found: true, loginVisible: loginVisible, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } };
+		// Scroll the entry into view inside its own scroll container, then re-measure:
+		// scrollIntoView updates layout synchronously, so the following hit test sees
+		// the post-scroll geometry.
+		el.scrollIntoView({ block: 'center', inline: 'nearest' });
+		rect = rectOf(el) || rect;
+		const point = clickablePoint(el, rect);
+		if (!point) {
+			// The control exists but is covered. Report it as not yet actionable so
+			// the caller retries instead of clicking an unrelated element.
+			continue;
+		}
+		const reported = point.centred
+			? { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+			: { x: point.x, y: point.y, width: 1, height: 1 };
+		return { found: true, loginVisible: loginVisible, rect: reported };
 	}
 	return { found: false, loginVisible: loginVisible };
 })()`
