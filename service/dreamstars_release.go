@@ -43,12 +43,11 @@ const (
 	DreamstarsReleaseSourceStale                     = "stale"
 	DreamstarsReleaseSourceUnavailable               = "unavailable"
 	dreamstarsReleaseRepository                      = "MOON-DREAM-STARS/new-api"
-	dreamstarsReleaseBranch                          = "feature/dreamstars-homepage"
 	dreamstarsReleaseAssetName                       = "dreamstars-release.json"
 	dreamstarsReleaseImage                           = "ghcr.io/moon-dream-stars/new-api"
 	dreamstarsReleaseSignatureType                   = "cosign-keyless"
 	dreamstarsReleaseSignatureIssuer                 = "https://token.actions.githubusercontent.com"
-	dreamstarsReleaseSignatureIdentity               = "https://github.com/MOON-DREAM-STARS/new-api/.github/workflows/dreamstars-fork-release.yml@refs/heads/feature/dreamstars-homepage"
+	dreamstarsReleaseWorkflowURL                     = "https://github.com/MOON-DREAM-STARS/new-api/.github/workflows/dreamstars-fork-release.yml"
 	dreamstarsReleaseGitHubReleasesURL               = "https://api.github.com/repos/MOON-DREAM-STARS/new-api/releases?per_page=20"
 	dreamstarsReleaseCacheDefaultTTL                 = 15 * time.Minute
 	dreamstarsReleaseResponseMaxBytes          int64 = 1024 * 1024
@@ -356,7 +355,7 @@ func validateDreamstarsReleaseManifest(manifest *dreamstarsReleaseManifest, rele
 	if manifest.ReleaseTag != releaseTag || manifest.Version != releaseTag {
 		return errors.New("Dreamstars release manifest version does not match release tag")
 	}
-	if manifest.Repository != dreamstarsReleaseRepository || manifest.Branch != dreamstarsReleaseBranch {
+	if manifest.Repository != dreamstarsReleaseRepository || !isDreamstarsReleaseBranch(manifest.Branch) {
 		return errors.New("Dreamstars release manifest source is not trusted")
 	}
 	if !dreamstarsReleaseCommitPattern.MatchString(manifest.Commit) {
@@ -373,10 +372,28 @@ func validateDreamstarsReleaseManifest(manifest *dreamstarsReleaseManifest, rele
 	}
 	if manifest.Signature.Type != dreamstarsReleaseSignatureType ||
 		manifest.Signature.Issuer != dreamstarsReleaseSignatureIssuer ||
-		manifest.Signature.Identity != dreamstarsReleaseSignatureIdentity {
+		manifest.Signature.Identity != dreamstarsReleaseSignatureIdentityForBranch(manifest.Branch) {
 		return errors.New("Dreamstars release manifest signature identity is invalid")
 	}
 	return nil
+}
+
+// dreamstarsReleaseBranches lists the approved release refs. main is the
+// integration branch; the feature branch is retained so already-published
+// feature Releases stay deployable and reversible.
+var dreamstarsReleaseBranches = []string{"main", "feature/dreamstars-homepage"}
+
+func isDreamstarsReleaseBranch(branch string) bool {
+	for _, approved := range dreamstarsReleaseBranches {
+		if branch == approved {
+			return true
+		}
+	}
+	return false
+}
+
+func dreamstarsReleaseSignatureIdentityForBranch(branch string) string {
+	return dreamstarsReleaseWorkflowURL + "@refs/heads/" + branch
 }
 
 func isDreamstarsReleaseVersion(version string) bool {

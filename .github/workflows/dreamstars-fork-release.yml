@@ -6,7 +6,9 @@ on:
 permissions: {}
 
 env:
-  DREAMSTARS_BRANCH: feature/dreamstars-homepage
+  # Approved release refs. main is the integration branch; the feature branch is
+  # retained so already-published feature Releases stay deployable and reversible.
+  DREAMSTARS_BRANCHES: "main feature/dreamstars-homepage"
   DREAMSTARS_IMAGE: ghcr.io/moon-dream-stars/new-api
 
 jobs:
@@ -18,17 +20,24 @@ jobs:
     outputs:
       version: ${{ steps.identity.outputs.version }}
       sha: ${{ steps.identity.outputs.sha }}
+      branch: ${{ steps.branch.outputs.branch }}
     steps:
-      - name: Reject every branch except the Dreamstars release branch
+      - name: Resolve the approved Dreamstars release branch
+        id: branch
         env:
           REF_NAME: ${{ github.ref_name }}
-          EXPECTED_BRANCH: ${{ env.DREAMSTARS_BRANCH }}
+          ALLOWED_BRANCHES: ${{ env.DREAMSTARS_BRANCHES }}
         run: |
           set -euo pipefail
-          if [ "$REF_NAME" != "$EXPECTED_BRANCH" ]; then
-            echo "::error::Dreamstars releases may only run from $EXPECTED_BRANCH; received $REF_NAME."
-            exit 1
-          fi
+          case " $ALLOWED_BRANCHES " in
+            *" $REF_NAME "*)
+              echo "branch=$REF_NAME" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::Dreamstars releases may only run from an approved branch; received $REF_NAME."
+              exit 1
+              ;;
+          esac
 
       - name: Check out the dispatch commit
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -133,6 +142,7 @@ jobs:
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
           SHA: ${{ needs.prepare.outputs.sha }}
+          BRANCH: ${{ needs.prepare.outputs.branch }}
           IMAGE: ${{ env.DREAMSTARS_IMAGE }}
           DIGEST: ${{ needs.build.outputs.digest }}
         run: |
@@ -146,14 +156,14 @@ jobs:
             --arg release_tag "$VERSION" \
             --arg version "$VERSION" \
             --arg repository "MOON-DREAM-STARS/new-api" \
-            --arg branch "feature/dreamstars-homepage" \
+            --arg branch "$BRANCH" \
             --arg commit "$SHA" \
             --arg image "$IMAGE" \
             --arg digest "$DIGEST" \
             --arg published_at "$PUBLISHED_AT" \
             --arg signature_type "cosign-keyless" \
             --arg signature_issuer "https://token.actions.githubusercontent.com" \
-            --arg signature_identity "https://github.com/MOON-DREAM-STARS/new-api/.github/workflows/dreamstars-fork-release.yml@refs/heads/feature/dreamstars-homepage" \
+            --arg signature_identity "https://github.com/MOON-DREAM-STARS/new-api/.github/workflows/dreamstars-fork-release.yml@refs/heads/$BRANCH" \
             '{
               schema_version: 1,
               release_tag: $release_tag,
@@ -182,13 +192,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.prepare.outputs.version }}
           SHA: ${{ needs.prepare.outputs.sha }}
+          BRANCH: ${{ needs.prepare.outputs.branch }}
           DIGEST: ${{ needs.build.outputs.digest }}
         run: |
           set -euo pipefail
           NOTES=$(printf '%s\n' \
             "Release tag: $VERSION" \
             "Source repository: MOON-DREAM-STARS/new-api" \
-            "Source branch: feature/dreamstars-homepage" \
+            "Source branch: $BRANCH" \
             "Source commit: $SHA" \
             "Image: ghcr.io/moon-dream-stars/new-api@$DIGEST" \
             "Deployment: manual only. The NewAPI administrator panel never deploys servers.")

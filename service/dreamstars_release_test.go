@@ -100,6 +100,60 @@ func TestFetchDreamstarsReleaseRejectsManifestFromAnotherRepository(t *testing.T
 	assert.Contains(t, err.Error(), "source is not trusted")
 }
 
+func TestFetchDreamstarsReleaseAcceptsMainBranchManifest(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/releases":
+			writer.Header().Set("Content-Type", "application/json")
+			_, err := writer.Write([]byte(`[{"tag_name":"dreamstars-20260905-120000-123456789abc","published_at":"2026-09-05T12:00:00Z","assets":[{"name":"dreamstars-release.json","browser_download_url":"` + server.URL + `/manifest"}]}]`))
+			if err != nil {
+				t.Errorf("write releases response: %v", err)
+			}
+		case "/manifest":
+			writer.Header().Set("Content-Type", "application/json")
+			_, err := writer.Write([]byte(dreamstarsManifestJSON("MOON-DREAM-STARS/new-api", "main")))
+			if err != nil {
+				t.Errorf("write manifest response: %v", err)
+			}
+		default:
+			writer.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	release, err := fetchDreamstarsRelease(
+		context.Background(),
+		server.Client(),
+		server.URL+"/releases",
+		func(rawURL, _ string) bool { return rawURL == server.URL+"/manifest" },
+	)
+
+	require.NoError(t, err)
+	assert.Equal(t, "dreamstars-20260905-120000-123456789abc", release.Version)
+}
+
+func TestDreamstarsReleaseManifestRejectsUnapprovedBranch(t *testing.T) {
+	manifest := trustedDreamstarsManifest("main")
+	manifest.Branch = "release/not-approved"
+	manifest.Signature.Identity = dreamstarsReleaseSignatureIdentityForBranch("release/not-approved")
+
+	err := validateDreamstarsReleaseManifest(manifest, "dreamstars-20260905-120000-123456789abc")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "source is not trusted")
+}
+
+func TestDreamstarsReleaseManifestRejectsSignatureIdentityFromAnotherBranch(t *testing.T) {
+	manifest := trustedDreamstarsManifest("main")
+	manifest.Signature.Identity = dreamstarsReleaseSignatureIdentityForBranch("feature/dreamstars-homepage")
+
+	err := validateDreamstarsReleaseManifest(manifest, "dreamstars-20260905-120000-123456789abc")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "signature identity is invalid")
+}
+
 func TestFetchDreamstarsReleaseRejectsNonDreamstarsTag(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
@@ -263,12 +317,16 @@ func TestDreamstarsReleaseUpdateMarksOlderReleaseAsAvailable(t *testing.T) {
 }
 
 func trustedDreamstarsManifestJSON(repository string) string {
+	return dreamstarsManifestJSON(repository, "feature/dreamstars-homepage")
+}
+
+func dreamstarsManifestJSON(repository, branch string) string {
 	return `{
   "schema_version": 1,
   "release_tag": "dreamstars-20260905-120000-123456789abc",
   "version": "dreamstars-20260905-120000-123456789abc",
   "repository": "` + repository + `",
-  "branch": "feature/dreamstars-homepage",
+  "branch": "` + branch + `",
   "commit": "0123456789abcdef0123456789abcdef01234567",
   "image": "ghcr.io/moon-dream-stars/new-api",
   "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -277,9 +335,29 @@ func trustedDreamstarsManifestJSON(repository string) string {
   "signature": {
     "type": "cosign-keyless",
     "issuer": "https://token.actions.githubusercontent.com",
-    "identity": "https://github.com/MOON-DREAM-STARS/new-api/.github/workflows/dreamstars-fork-release.yml@refs/heads/feature/dreamstars-homepage"
+    "identity": "` + dreamstarsReleaseSignatureIdentityForBranch(branch) + `"
   }
 }`
+}
+
+func trustedDreamstarsManifest(branch string) *dreamstarsReleaseManifest {
+	return &dreamstarsReleaseManifest{
+		SchemaVersion: 1,
+		ReleaseTag:    "dreamstars-20260905-120000-123456789abc",
+		Version:       "dreamstars-20260905-120000-123456789abc",
+		Repository:    "MOON-DREAM-STARS/new-api",
+		Branch:        branch,
+		Commit:        "0123456789abcdef0123456789abcdef01234567",
+		Image:         "ghcr.io/moon-dream-stars/new-api",
+		Digest:        "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		Platforms:     []string{"linux/amd64"},
+		PublishedAt:   time.Date(2026, time.September, 5, 12, 0, 0, 0, time.UTC),
+		Signature: dreamstarsReleaseSignature{
+			Type:     "cosign-keyless",
+			Issuer:   "https://token.actions.githubusercontent.com",
+			Identity: dreamstarsReleaseSignatureIdentityForBranch(branch),
+		},
+	}
 }
 
 func trustedDreamstarsRelease() *DreamstarsRelease {
