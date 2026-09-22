@@ -45,23 +45,26 @@ func checkSystemPerformance() *types.NewAPIError {
 	}
 
 	status := common.GetSystemStatus()
+	if !common.IsSystemStatusFresh(status) || !common.IsSystemStatusCurrent(status) {
+		return nil
+	}
 
 	// 检查 CPU
-	if config.CPUThreshold > 0 && int(status.CPUUsage) > config.CPUThreshold {
+	if config.CPUThreshold > 0 && status.CPUOverloaded {
 		return types.NewErrorWithStatusCode(
 			fmt.Errorf("system cpu overloaded (current: %.1f%%, threshold: %d%%)", status.CPUUsage, config.CPUThreshold),
 			"system_cpu_overloaded", http.StatusServiceUnavailable)
 	}
 
 	// 检查内存
-	if config.MemoryThreshold > 0 && int(status.MemoryUsage) > config.MemoryThreshold {
+	if config.MemoryThreshold > 0 && status.MemoryOverloaded {
 		return types.NewErrorWithStatusCode(
 			fmt.Errorf("system memory overloaded (current: %.1f%%, threshold: %d%%)", status.MemoryUsage, config.MemoryThreshold),
 			"system_memory_overloaded", http.StatusServiceUnavailable)
 	}
 
 	// 检查磁盘
-	if config.DiskThreshold > 0 && int(status.DiskUsage) > config.DiskThreshold {
+	if config.DiskThreshold > 0 && status.DiskOverloaded {
 		return types.NewErrorWithStatusCode(
 			fmt.Errorf("system disk overloaded (current: %.1f%%, threshold: %d%%)", status.DiskUsage, config.DiskThreshold),
 			"system_disk_overloaded", http.StatusServiceUnavailable)

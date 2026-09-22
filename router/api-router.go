@@ -27,6 +27,7 @@ func SetApiRouter(router *gin.Engine) {
 		apiRouter.GET("/uptime/status", controller.GetUptimeKumaStatus)
 		apiRouter.GET("/models", middleware.UserAuth(), controller.DashboardListModels)
 		apiRouter.GET("/status/test", middleware.AdminAuth(), controller.TestStatus)
+		apiRouter.GET("/update/release", middleware.AdminAuth(), controller.GetDreamstarsReleaseUpdate)
 		apiRouter.GET("/notice", controller.GetNotice)
 		apiRouter.GET("/user-agreement", controller.GetUserAgreement)
 		apiRouter.GET("/privacy-policy", controller.GetPrivacyPolicy)
@@ -69,6 +70,9 @@ func SetApiRouter(router *gin.Engine) {
 		// Universal secure verification routes
 		apiRouter.GET("/verify/methods", middleware.UserAuth(), middleware.DisableCache(), controller.GetVerificationMethods)
 		apiRouter.POST("/verify", middleware.UserAuth(), middleware.CriticalRateLimit(), middleware.UserCriticalRateLimit("security-verification"), middleware.DisableCache(), controller.UniversalVerify)
+
+		// Web Workspace 路由（/api/web-workspace）
+		SetWebWorkspaceRouter(apiRouter)
 
 		userRoute := apiRouter.Group("/user")
 		{
