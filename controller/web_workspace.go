@@ -4,7 +4,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -16,7 +15,6 @@ import (
 	"github.com/QuantumNous/new-api/setting/system_setting"
 
 	"github.com/gin-gonic/gin"
-	"github.com/gorilla/websocket"
 )
 
 const (
@@ -798,9 +796,9 @@ func WebWorkspaceKasm(c *gin.Context) {
 	proxy.ServeHTTP(c.Writer, c.Request)
 }
 
-// CreateWebWorkspaceStreamTicket issues a single-use ticket that the client
-// redeems on the WSS stream endpoint.
-func CreateWebWorkspaceStreamTicket(c *gin.Context) {
+// CreateWebWorkspaceKasmTicket issues the single-use ticket that the client
+// redeems on the KasmVNC document path.
+func CreateWebWorkspaceKasmTicket(c *gin.Context) {
 	user := requireWebWorkspaceEntitlement(c)
 	if user == nil {
 		return
@@ -826,92 +824,10 @@ func CreateWebWorkspaceStreamTicket(c *gin.Context) {
 		writeWebWorkspaceInternalError(c)
 		return
 	}
-	common.ApiSuccess(c, dto.WebWorkspaceStreamTicketDto{
+	common.ApiSuccess(c, dto.WebWorkspaceKasmTicketDto{
 		Ticket:    ticket,
 		ExpiresAt: expiresAt,
-		StreamUrl: "/api/web-workspace/session/" + session.Id + "/stream",
 	})
-}
-
-var webWorkspaceStreamUpgrader = websocket.Upgrader{
-	ReadBufferSize:  8192,
-	WriteBufferSize: 8192,
-	CheckOrigin: func(r *http.Request) bool {
-		origin := strings.TrimSpace(r.Header.Get("Origin"))
-		if origin == "" {
-			return true
-		}
-		parsed, err := url.Parse(origin)
-		if err != nil || parsed.Host == "" {
-			return false
-		}
-		return strings.EqualFold(parsed.Host, r.Host)
-	},
-}
-
-// WebWorkspaceStream is the WSS gateway: it authenticates the one-time ticket,
-// connects to the Browser Agent over the private network and proxies the raw
-// display stream. The client never learns the agent address or any credential.
-func WebWorkspaceStream(c *gin.Context) {
-	sessionId := c.Param("id")
-	ticket, err := webworkspace.ConsumeStreamTicket(c.Query("ticket"), sessionId)
-	if err != nil {
-		writeWebWorkspaceError(c, http.StatusForbidden, webWorkspaceCodeTicketInvalid, "invalid stream ticket", "")
-		return
-	}
-	session, err := webworkspace.GetSession(ticket.UserId, sessionId)
-	if err != nil || session.WorkspaceId != ticket.WorkspaceId {
-		writeWebWorkspaceError(c, http.StatusNotFound, webWorkspaceCodeSessionNotFound, "web workspace session not found", "")
-		return
-	}
-	if !webworkspace.LiveRuntimeState(session.State) {
-		writeWebWorkspaceError(c, http.StatusConflict, webWorkspaceCodeAgentUnavailable, "web workspace runtime is not running", "")
-		return
-	}
-
-	agentConn, agentResponse, err := webworkspace.DialAgentStream(c.Request.Context(), session.WorkspaceId)
-	if err != nil {
-		if agentResponse != nil && agentResponse.Body != nil {
-			_ = agentResponse.Body.Close()
-		}
-		writeWebWorkspaceSessionError(c, err)
-		return
-	}
-	defer func() { _ = agentConn.Close() }()
-
-	clientConn, err := webWorkspaceStreamUpgrader.Upgrade(c.Writer, c.Request, nil)
-	if err != nil {
-		return
-	}
-	defer func() { _ = clientConn.Close() }()
-
-	_ = webworkspace.TouchSession(ticket.UserId, sessionId)
-	proxyWebWorkspaceStream(clientConn, agentConn)
-	_ = webworkspace.MarkSessionIdle(ticket.UserId, sessionId)
-}
-
-// proxyWebWorkspaceStream pumps messages in both directions until either side
-// closes, then closes the peer so the other pump can finish.
-func proxyWebWorkspaceStream(client *websocket.Conn, agent *websocket.Conn) {
-	done := make(chan struct{}, 2)
-	pump := func(source *websocket.Conn, target *websocket.Conn) {
-		defer func() { done <- struct{}{} }()
-		for {
-			messageType, payload, err := source.ReadMessage()
-			if err != nil {
-				return
-			}
-			if err := target.WriteMessage(messageType, payload); err != nil {
-				return
-			}
-		}
-	}
-	go pump(client, agent)
-	go pump(agent, client)
-	<-done
-	_ = client.Close()
-	_ = agent.Close()
-	<-done
 }
 
 // writeWebWorkspaceOwnershipError reports an ownership push that failed after a

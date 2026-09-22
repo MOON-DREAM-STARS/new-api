@@ -1,7 +1,7 @@
 import { act, render, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
-import { createWebWorkspaceStreamTicket } from '../../api'
+import { createWebWorkspaceKasmTicket } from '../../api'
 import {
   buildKasmClientUrl,
   useRemoteSurface,
@@ -9,10 +9,10 @@ import {
 } from '../use-remote-surface'
 
 vi.mock('../../api', () => ({
-  createWebWorkspaceStreamTicket: vi.fn(),
+  createWebWorkspaceKasmTicket: vi.fn(),
 }))
 
-const createTicket = vi.mocked(createWebWorkspaceStreamTicket)
+const createTicket = vi.mocked(createWebWorkspaceKasmTicket)
 
 let controller: RemoteSurfaceController | null = null
 
@@ -20,10 +20,6 @@ function Harness() {
   const surface = useRemoteSurface({ sessionId: 'session-1', enabled: true })
   controller = surface
   return <div ref={surface.containerRef} data-testid='surface' />
-}
-
-function ticket(id: string) {
-  return { ticket: id, expires_at: 1, stream_url: `/stream/${id}` }
 }
 
 async function reportConnected(frame: HTMLIFrameElement) {
@@ -45,7 +41,7 @@ afterEach(() => {
 
 describe('useRemoteSurface', () => {
   test('keeps reporting connection state after a reconnect reuses the iframe', async () => {
-    createTicket.mockResolvedValue(ticket('ticket-1') as never)
+    createTicket.mockResolvedValue('ticket-1')
     render(<Harness />)
 
     const frame = await waitFor(() => {
@@ -59,7 +55,7 @@ describe('useRemoteSurface', () => {
     await reportConnected(frame)
     await waitFor(() => expect(controller?.status).toBe('connected'))
 
-    createTicket.mockResolvedValue(ticket('ticket-2') as never)
+    createTicket.mockResolvedValue('ticket-2')
     await act(async () => {
       controller?.reconnect()
     })
@@ -75,18 +71,39 @@ describe('useRemoteSurface', () => {
 })
 
 describe('buildKasmClientUrl', () => {
-  test('keeps the ticket path and disables KasmVNC clipboard and IME', () => {
+  test('locks the Kasm ticket, clipboard, IME, and low-latency profile', () => {
     const url = new URL(
       'http://localhost' +
         buildKasmClientUrl('session value', 'ticket/value')
     )
     expect(url.pathname).toContain('/session/session%20value/kasm/t/ticket%2Fvalue/vnc.html')
-    expect(url.searchParams.get('path')).toBe(
-      'api/web-workspace/session/session%20value/kasm/t/ticket%2Fvalue/websockify'
-    )
-    expect(url.searchParams.get('clipboard_up')).toBe('0')
-    expect(url.searchParams.get('clipboard_down')).toBe('0')
-    expect(url.searchParams.get('clipboard_seamless')).toBe('0')
-    expect(url.searchParams.has('enable_ime')).toBe(false)
+    expect(Array.from(url.searchParams.entries())).toEqual([
+      ['autoconnect', '1'],
+      ['resize', 'scale'],
+      [
+        'path',
+        'api/web-workspace/session/session%20value/kasm/t/ticket%2Fvalue/websockify',
+      ],
+      ['clipboard_up', '0'],
+      ['clipboard_down', '0'],
+      ['clipboard_seamless', '0'],
+      ['enable_ime', '0'],
+      ['quality', '6'],
+      ['dynamic_quality_min', '6'],
+      ['dynamic_quality_max', '8'],
+      ['treat_lossless', '8'],
+      ['framerate', '30'],
+      ['jpeg_video_quality', '6'],
+      ['webp_video_quality', '6'],
+      ['video_area', '65'],
+      ['video_time', '5'],
+      ['video_out_time', '3'],
+      ['video_scaling', '1'],
+      ['max_video_resolution_x', '1920'],
+      ['max_video_resolution_y', '1080'],
+    ])
+    for (const key of ['webrtc', 'h264']) {
+      expect(url.searchParams.has(key)).toBe(false)
+    }
   })
 })

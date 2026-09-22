@@ -40,7 +40,6 @@ type routerFakeAgent struct {
 	runtimes map[int]webworkspace.AgentRuntime
 	create   int
 	stop     int
-	echo     bool
 
 	ownership                map[int]webworkspace.OwnershipSnapshot
 	observations             map[int][]webworkspace.Observation
@@ -115,7 +114,6 @@ func newRouterFakeAgent(t *testing.T) *routerFakeAgent {
 		ownership:    make(map[int]webworkspace.OwnershipSnapshot),
 		observations: make(map[int][]webworkspace.Observation),
 		acked:        make(map[int]int),
-		echo:         true,
 	}
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	agent.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -142,24 +140,6 @@ func newRouterFakeAgent(t *testing.T) *routerFakeAgent {
 			}
 			_, _ = w.Write([]byte("kasm:" + r.URL.Path))
 			return
-		}
-		if strings.HasSuffix(r.URL.Path, "/stream") {
-			conn, err := upgrader.Upgrade(w, r, nil)
-			if err != nil {
-				return
-			}
-			defer conn.Close()
-			for {
-				messageType, payload, err := conn.ReadMessage()
-				if err != nil {
-					return
-				}
-				if agent.echo {
-					if err := conn.WriteMessage(messageType, payload); err != nil {
-						return
-					}
-				}
-			}
 		}
 		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		path := strings.TrimPrefix(r.URL.Path, "/internal/v1/runtimes")
@@ -714,12 +694,22 @@ func TestWebWorkspaceRouterSessionLifecycle(t *testing.T) {
 	foreignStop := doWebWorkspaceRequest(fixture.engine, http.MethodDelete, "/api/web-workspace/session/"+startPayload.Data.SessionId, otherToken, "")
 	assert.Equal(t, http.StatusNotFound, foreignStop.Code)
 
-	foreignTicket := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/session/"+startPayload.Data.SessionId+"/stream-ticket", otherToken, "")
+	anonymousTicket := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/session/"+startPayload.Data.SessionId+"/kasm-ticket", "", "")
+	assert.Equal(t, http.StatusUnauthorized, anonymousTicket.Code)
+
+	foreignTicket := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/session/"+startPayload.Data.SessionId+"/kasm-ticket", otherToken, "")
 	assert.Equal(t, http.StatusNotFound, foreignTicket.Code)
 
-	ticket := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/session/"+startPayload.Data.SessionId+"/stream-ticket", token, "")
+	ticket := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/session/"+startPayload.Data.SessionId+"/kasm-ticket", token, "")
 	require.Equal(t, http.StatusOK, ticket.Code, ticket.Body.String())
-	assert.Contains(t, ticket.Body.String(), `"stream_url":"/api/web-workspace/session/`)
+	assert.Contains(t, ticket.Body.String(), `"ticket":"`)
+	assert.NotContains(t, ticket.Body.String(), "stream_url")
+
+	// The removed raw RFB entry points must not come back as alternate paths.
+	legacyTicket := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/session/"+startPayload.Data.SessionId+"/stream-ticket", token, "")
+	assert.Equal(t, http.StatusNotFound, legacyTicket.Code)
+	legacyStream := doWebWorkspaceRequest(fixture.engine, http.MethodGet, "/api/web-workspace/session/"+startPayload.Data.SessionId+"/stream", token, "")
+	assert.Equal(t, http.StatusNotFound, legacyStream.Code)
 
 	stop := doWebWorkspaceRequest(fixture.engine, http.MethodDelete, "/api/web-workspace/session/"+startPayload.Data.SessionId, token, "")
 	assert.Equal(t, http.StatusOK, stop.Code)
@@ -1025,77 +1015,6 @@ func TestWebWorkspaceRouterSessionPollRefreshesFromAgent(t *testing.T) {
 	assert.Contains(t, current.Body.String(), `"stream_bytes_out":123456`)
 	assert.Contains(t, current.Body.String(), `"stream_bytes_in":789`)
 }
-func TestWebWorkspaceRouterStreamGateway(t *testing.T) {
-	agent := newRouterFakeAgent(t)
-	fixture := setupWebWorkspaceSessionRouterTest(t, agent.server.URL)
-	token := webWorkspaceBearer(t, fixture.userA)
-
-	start := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/session", token, "")
-	require.Equal(t, http.StatusOK, start.Code, start.Body.String())
-	var startPayload struct {
-		Data struct {
-			SessionId string `json:"session_id"`
-		} `json:"data"`
-	}
-	require.NoError(t, common.Unmarshal(start.Body.Bytes(), &startPayload))
-	sessionId := startPayload.Data.SessionId
-	require.NotEmpty(t, sessionId)
-
-	ticketRecorder := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/session/"+sessionId+"/stream-ticket", token, "")
-	require.Equal(t, http.StatusOK, ticketRecorder.Code, ticketRecorder.Body.String())
-	var ticketPayload struct {
-		Data struct {
-			Ticket    string `json:"ticket"`
-			StreamUrl string `json:"stream_url"`
-		} `json:"data"`
-	}
-	require.NoError(t, common.Unmarshal(ticketRecorder.Body.Bytes(), &ticketPayload))
-	require.NotEmpty(t, ticketPayload.Data.Ticket)
-
-	server := httptest.NewServer(fixture.engine)
-	t.Cleanup(server.Close)
-	wsBase := "ws" + strings.TrimPrefix(server.URL, "http")
-	streamPath := ticketPayload.Data.StreamUrl + "?ticket=" + ticketPayload.Data.Ticket
-
-	conn, response, err := websocket.DefaultDialer.Dial(wsBase+streamPath, nil)
-	if response != nil && response.Body != nil {
-		defer response.Body.Close()
-	}
-	require.NoError(t, err, "stream dial failed")
-	defer conn.Close()
-
-	require.NoError(t, conn.WriteMessage(websocket.BinaryMessage, []byte("rfb-probe")))
-	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	messageType, payload, err := conn.ReadMessage()
-	require.NoError(t, err)
-	assert.Equal(t, websocket.BinaryMessage, messageType)
-	assert.Equal(t, "rfb-probe", string(payload))
-
-	// The ticket is single use: replaying it must be rejected.
-	replay, replayResponse, err := websocket.DefaultDialer.Dial(wsBase+streamPath, nil)
-	if replay != nil {
-		_ = replay.Close()
-	}
-	if replayResponse != nil && replayResponse.Body != nil {
-		defer replayResponse.Body.Close()
-	}
-	require.Error(t, err)
-	require.NotNil(t, replayResponse)
-	assert.Equal(t, http.StatusForbidden, replayResponse.StatusCode)
-
-	// No ticket at all is rejected as well.
-	missing, missingResponse, err := websocket.DefaultDialer.Dial(wsBase+ticketPayload.Data.StreamUrl, nil)
-	if missing != nil {
-		_ = missing.Close()
-	}
-	if missingResponse != nil && missingResponse.Body != nil {
-		defer missingResponse.Body.Close()
-	}
-	require.Error(t, err)
-	require.NotNil(t, missingResponse)
-	assert.Equal(t, http.StatusForbidden, missingResponse.StatusCode)
-}
-
 func TestWebWorkspaceRouterKasmProxy(t *testing.T) {
 	agent := newRouterFakeAgent(t)
 	fixture := setupWebWorkspaceSessionRouterTest(t, agent.server.URL)
@@ -1112,7 +1031,7 @@ func TestWebWorkspaceRouterKasmProxy(t *testing.T) {
 	sessionID := startPayload.Data.SessionId
 	require.NotEmpty(t, sessionID)
 
-	ticketRecorder := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/session/"+sessionID+"/stream-ticket", token, "")
+	ticketRecorder := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/session/"+sessionID+"/kasm-ticket", token, "")
 	require.Equal(t, http.StatusOK, ticketRecorder.Code, ticketRecorder.Body.String())
 	var ticketPayload struct {
 		Data struct {

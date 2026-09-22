@@ -31,7 +31,6 @@ import type {
   WebWorkspaceNavigationAction,
   WebWorkspaceSession,
   WebWorkspaceStatus,
-  WebWorkspaceStreamTicket,
 } from './types'
 
 const BASE_PATH = '/api/web-workspace'
@@ -298,11 +297,14 @@ export async function getWebWorkspaceInputCaret(
   return res.data.data?.caret ?? null
 }
 
-export async function createWebWorkspaceStreamTicket(
+/** Issues one single-use ticket accepted by the KasmVNC iframe path. */
+export async function createWebWorkspaceKasmTicket(
   sessionId: string
-): Promise<WebWorkspaceStreamTicket> {
-  const res = await api.post<ApiEnvelope<WebWorkspaceStreamTicket>>(
-    `${BASE_PATH}/session/${encodeURIComponent(sessionId)}/stream-ticket`
+): Promise<string> {
+  const res = await api.post<
+    ApiEnvelope<{ ticket: string; expires_at: number }>
+  >(
+    `${BASE_PATH}/session/${encodeURIComponent(sessionId)}/kasm-ticket`
   )
-  return res.data.data
+  return res.data.data.ticket
 }

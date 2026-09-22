@@ -178,11 +178,10 @@ type WebWorkspaceSessionDto struct {
 	IMEState        string                          `json:"ime_state"`
 }
 
-// WebWorkspaceStreamTicketDto carries the one-time ticket for a stream attach.
-// StreamUrl is a same-origin API path; the client derives the ws/wss URL from
-// the page origin and never receives an internal address.
-type WebWorkspaceStreamTicketDto struct {
+// WebWorkspaceKasmTicketDto carries the one-time ticket for one KasmVNC attach.
+// The client only receives the ticket and builds the same-origin Kasm path
+// itself, so no internal address ever leaves the control plane.
+type WebWorkspaceKasmTicketDto struct {
 	Ticket    string `json:"ticket"`
 	ExpiresAt int64  `json:"expires_at"`
-	StreamUrl string `json:"stream_url"`
 }

@@ -1,24 +1,23 @@
 package router
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/gin-gonic/gin"
-	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// TestWebWorkspaceRouterAgentEndToEnd drives the complete Phase 2 path against
-// a real Browser Agent: authenticated HTTP API -> session -> one-time stream
-// ticket -> New API WSS gateway -> agent -> runtime VNC. It only runs when the
-// acceptance harness provides the agent endpoint and service token.
+// TestWebWorkspaceRouterAgentEndToEnd drives the complete KasmVNC path against
+// a real Browser Agent: authenticated HTTP API -> session -> one-time KasmVNC
+// ticket -> same-origin Kasm document served by the runtime. It only runs when
+// the acceptance harness provides the agent endpoint and service token.
 func TestWebWorkspaceRouterAgentEndToEnd(t *testing.T) {
 	agentURL := strings.TrimSpace(os.Getenv("WEB_WORKSPACE_E2E_AGENT_URL"))
 	agentToken := strings.TrimSpace(os.Getenv("WEB_WORKSPACE_E2E_AGENT_TOKEN"))
@@ -47,35 +46,33 @@ func TestWebWorkspaceRouterAgentEndToEnd(t *testing.T) {
 		_ = doWebWorkspaceRequest(fixture.engine, http.MethodDelete, "/api/web-workspace/session/"+sessionId, authToken, "")
 	})
 
-	ticketRecorder := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/session/"+sessionId+"/stream-ticket", authToken, "")
+	ticketRecorder := doWebWorkspaceRequest(fixture.engine, http.MethodPost, "/api/web-workspace/session/"+sessionId+"/kasm-ticket", authToken, "")
 	require.Equal(t, http.StatusOK, ticketRecorder.Code, ticketRecorder.Body.String())
 	var ticketPayload struct {
 		Data struct {
 			Ticket    string `json:"ticket"`
-			StreamUrl string `json:"stream_url"`
+			ExpiresAt int64  `json:"expires_at"`
 		} `json:"data"`
 	}
 	require.NoError(t, common.Unmarshal(ticketRecorder.Body.Bytes(), &ticketPayload))
 	require.NotEmpty(t, ticketPayload.Data.Ticket)
+	assert.Positive(t, ticketPayload.Data.ExpiresAt)
 
 	server := httptest.NewServer(fixture.engine)
 	t.Cleanup(server.Close)
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + ticketPayload.Data.StreamUrl + "?ticket=" + ticketPayload.Data.Ticket
+	documentURL := server.URL + "/api/web-workspace/session/" + sessionId + "/kasm/t/" + ticketPayload.Data.Ticket + "/vnc.html?autoconnect=1"
 
-	conn, response, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if response != nil && response.Body != nil {
-		defer response.Body.Close()
-	}
-	require.NoError(t, err, "stream dial through the New API gateway failed")
-	defer conn.Close()
+	response, err := http.Get(documentURL)
+	require.NoError(t, err)
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode, string(body))
+	assert.NotEmpty(t, body, "the KasmVNC document must be proxied from the runtime")
 
-	require.NoError(t, conn.SetReadDeadline(time.Now().Add(30*time.Second)))
-	messageType, payload, err := conn.ReadMessage()
-	require.NoError(t, err, "reading the display banner through the gateway failed")
-	head := payload
-	if len(head) > 20 {
-		head = head[:20]
-	}
-	assert.Equal(t, websocket.BinaryMessage, messageType)
-	assert.Truef(t, strings.HasPrefix(string(payload), "RFB "), "expected an RFB banner, got %q", string(head))
+	// The ticket stays bound to its session: another session must not accept it.
+	foreign, err := http.Get(server.URL + "/api/web-workspace/session/foreign-session/kasm/t/" + ticketPayload.Data.Ticket + "/vnc.html")
+	require.NoError(t, err)
+	defer foreign.Body.Close()
+	assert.Equal(t, http.StatusForbidden, foreign.StatusCode)
 }

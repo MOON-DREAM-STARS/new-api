@@ -101,10 +101,18 @@ function IframeLocalInputHarness(props: {
 }
 
 afterEach(() => {
+  vi.useRealTimers()
   insertText.mockReset()
   getCaret.mockReset()
   dispatchKey.mockReset()
 })
+
+async function flushMicrotasks() {
+  await act(async () => {
+    await Promise.resolve()
+    await Promise.resolve()
+  })
+}
 
 describe('useLocalInput', () => {
   test('injects compositionend once and skips the trailing input event', async () => {
@@ -149,8 +157,10 @@ describe('useLocalInput', () => {
 
     act(() => controllerRef.current?.toggle())
     await waitFor(() => expect(document.activeElement).toBe(anchor))
+    await waitFor(() => expect(getCaret).toHaveBeenCalledTimes(1))
 
     // The operator clicks the remote page to place its caret.
+    getCaret.mockClear()
     anchor.blur()
     expect(document.activeElement).not.toBe(anchor)
     act(() => {
@@ -160,6 +170,123 @@ describe('useLocalInput', () => {
     })
 
     await waitFor(() => expect(document.activeElement).toBe(anchor))
+    await waitFor(() => expect(getCaret).toHaveBeenCalledTimes(1))
+  })
+
+  test('debounces caret refresh after success and cancels the pending refresh', async () => {
+    vi.useFakeTimers()
+    getCaret.mockResolvedValue(null)
+    insertText.mockResolvedValue(undefined)
+    const controllerRef: { current: LocalInputController | null } = { current: null }
+    const view = render(
+      <LocalInputHarness
+        onReady={(next) => {
+          controllerRef.current = next
+        }}
+      />
+    )
+    const input = view.getByRole('textbox', { name: 'Local input' }) as HTMLInputElement
+    act(() => controllerRef.current?.toggle())
+    await flushMicrotasks()
+    expect(getCaret).toHaveBeenCalledTimes(1)
+    getCaret.mockClear()
+
+    input.value = 'first'
+    fireEvent.input(input)
+    await flushMicrotasks()
+    expect(insertText).toHaveBeenNthCalledWith(1, 'session-1', 'first')
+    expect(getCaret).not.toHaveBeenCalled()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    input.value = 'second'
+    fireEvent.input(input)
+    await flushMicrotasks()
+    expect(insertText).toHaveBeenNthCalledWith(2, 'session-1', 'second')
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(149)
+    })
+    expect(getCaret).not.toHaveBeenCalled()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1)
+    })
+    expect(getCaret).toHaveBeenCalledTimes(1)
+  })
+
+  test('does not replay a caret failure over successful text injection', async () => {
+    vi.useFakeTimers()
+    getCaret.mockResolvedValue(null)
+    insertText.mockResolvedValue(undefined)
+    const controllerRef: { current: LocalInputController | null } = { current: null }
+    const view = render(
+      <LocalInputHarness
+        onReady={(next) => {
+          controllerRef.current = next
+        }}
+      />
+    )
+    const input = view.getByRole('textbox', { name: 'Local input' }) as HTMLInputElement
+    act(() => controllerRef.current?.toggle())
+    await flushMicrotasks()
+
+    getCaret.mockReset()
+    getCaret.mockRejectedValue(new Error('caret probe failed'))
+    input.value = '已注入'
+    fireEvent.input(input)
+    await flushMicrotasks()
+    expect(insertText).toHaveBeenCalledWith('session-1', '已注入')
+    expect(input.value).toBe('')
+    expect(controllerRef.current?.errorCode).toBeNull()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(150)
+    })
+    await flushMicrotasks()
+    expect(input.value).toBe('')
+    expect(controllerRef.current?.errorCode).toBeNull()
+  })
+
+  test('ignores a stale caret failure after a newer text injection succeeds', async () => {
+    vi.useFakeTimers()
+    let rejectCaret!: (error: Error) => void
+    getCaret.mockResolvedValue(null)
+    getCaret.mockImplementationOnce(
+      () =>
+        new Promise<never>((_, reject) => {
+          rejectCaret = reject
+        })
+    )
+    insertText.mockResolvedValue(undefined)
+    const controllerRef: { current: LocalInputController | null } = { current: null }
+    const view = render(
+      <LocalInputHarness
+        onReady={(next) => {
+          controllerRef.current = next
+        }}
+      />
+    )
+    const input = view.getByRole('textbox', { name: 'Local input' }) as HTMLInputElement
+    act(() => controllerRef.current?.toggle())
+
+    input.value = '新文本'
+    fireEvent.input(input)
+    await flushMicrotasks()
+    expect(insertText).toHaveBeenCalledWith('session-1', '新文本')
+    expect(input.value).toBe('')
+
+    await act(async () => {
+      rejectCaret(new Error('stale caret probe failed'))
+      await Promise.resolve()
+    })
+    expect(controllerRef.current?.errorCode).toBeNull()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(150)
+    })
+    expect(controllerRef.current?.errorCode).toBeNull()
   })
 
   test('keeps failed committed text visible and reports the real error code', async () => {
