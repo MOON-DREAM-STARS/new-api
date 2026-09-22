@@ -18,6 +18,19 @@ func TestProjectDeletionExpressionMatchesNormalizedProviderLabels(t *testing.T) 
 	assert.Contains(t, projectDeletionExpression, "delete from chat and work")
 }
 
+// The runtime forces --lang=zh-CN, so the provider renders "打开 <name> 的项目选项"
+// and "删除项目". A probe that only matched English failed closed with
+// ERR_PROJECT_DELETE_UI_NOT_FOUND; both languages must stay accepted.
+func TestProjectDeletionExpressionAcceptsSimplifiedChineseLabels(t *testing.T) {
+	assert.Contains(t, projectDeletionExpression, "项目选项")
+	assert.Contains(t, projectDeletionExpression, "删除项目")
+	assert.Contains(t, projectDeletionExpression, "显示更多")
+
+	// The option button is only locatable if the attribute selector also carries
+	// the Chinese wording, because the live aria-label is Chinese.
+	assert.Contains(t, projectDeletionExpression, "[aria-label*=\"项目选项\"]")
+}
+
 func TestProjectDeletionWritesCommandReceipt(t *testing.T) {
 	f := newFakeCDP(t)
 	dir := t.TempDir()

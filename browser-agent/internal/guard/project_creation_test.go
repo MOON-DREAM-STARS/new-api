@@ -3,8 +3,10 @@ package guard
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -415,6 +417,50 @@ func TestProjectCreationFailsClosedWhenTheProviderIsSignedOut(t *testing.T) {
 	assert.Equal(t, "permit-create-1", created.PermitID)
 	assert.Empty(t, created.Error)
 	run.assertRunning(100 * time.Millisecond)
+}
+
+// TestCreationProbesAcceptBothLocales pins the accepted provider wording. The
+// runtime forces --lang=zh-CN, so a probe that only matches English silently
+// fails closed with ERR_PROJECT_UI_NOT_FOUND; every probe must keep matching the
+// Simplified Chinese shell as well as the English one.
+func TestCreationProbesAcceptBothLocales(t *testing.T) {
+	// The probes are asserted through their shipped JavaScript, so a probe that
+	// stops accepting one language fails here instead of only in production.
+	assert.Contains(t, probeNewProjectExpression, "新项目", "creation entry must accept the Simplified Chinese label")
+	assert.Contains(t, probeNewProjectExpression, "new project", "creation entry must keep the English label")
+	assert.Contains(t, probeNewProjectExpression, "登录", "login detection must accept the Simplified Chinese label")
+
+	assert.Contains(t, probeProjectNameExpression, "项目", "name field must accept the Simplified Chinese label")
+	assert.Contains(t, probeProjectNameExpression, "name", "name field must keep the English label")
+
+	assert.Contains(t, probeSubmitExpression, "创建", "submit control must accept the Simplified Chinese label")
+	assert.Contains(t, probeSubmitExpression, "create", "submit control must keep the English label")
+
+	assert.Contains(t, syncControlledProjectNameExpression, "项目", "controlled input sync must accept the Simplified Chinese label")
+
+	// The live sidebar control is <button aria-label="新项目">, which the probe
+	// anchors on the start of the accessible name.
+	assert.Regexp(t, regexp.MustCompile(`\^\(new project\\b\|新项目\|新建项目\)`), probeNewProjectExpression)
+	assert.Regexp(t, regexp.MustCompile(`\^\(log in\\b\|sign in\\b\|sign up\\b\|create account\\b\|登录\|注册\|创建账户\|创建帐户\)`), probeNewProjectExpression)
+}
+
+// TestCreationExpressionsKeepFormatVerbsIntact guards the generated probes: the
+// expressions are rendered with fmt.Sprintf, and an unsubstituted verb would
+// ship a probe that can never match.
+func TestCreationExpressionsKeepFormatVerbsIntact(t *testing.T) {
+	rendered := map[string]string{
+		"probeNewProject":     probeNewProjectExpression,
+		"probeProjectName":    probeProjectNameExpression,
+		"probeSubmit":         probeSubmitExpression,
+		"probeNameRejected":   probeNameRejectedExpression,
+		"syncControlledInput": fmt.Sprintf(syncControlledProjectNameExpression, `"LSM-test"`),
+	}
+	for name, expression := range rendered {
+		t.Run(name, func(t *testing.T) {
+			require.NotEmpty(t, expression)
+			assert.NotContains(t, expression, "%!", "failed format verb")
+		})
+	}
 }
 
 func TestProjectCreationReportsUINotFoundWhenNoLoginIsVisible(t *testing.T) {

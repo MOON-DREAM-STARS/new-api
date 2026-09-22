@@ -564,17 +564,19 @@ func (c *projectCreationController) syncControlledProjectName(ctx context.Contex
 
 const syncControlledProjectNameExpression = `(() => {
 	const desired = %s;
+	const norm = (value) => (value || '').replace(/\s+/g, ' ').trim().toLowerCase();
 	const visible = (el) => {
 		const rect = el.getBoundingClientRect();
 		return rect.width > 0 && rect.height > 0;
 	};
-	const fieldName = (el) => (
+	const fieldName = (el) => norm(
 		(el.getAttribute('aria-label') || '') + ' ' +
 		(el.getAttribute('placeholder') || '') + ' ' +
-		(el.getAttribute('name') || '')
-	).toLowerCase();
+		(el.getAttribute('name') || '') + ' ' +
+		(el.getAttribute('data-testid') || '')
+	);
 	const fields = Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"], [role="textbox"]'))
-		.filter((el) => visible(el) && /project|name/.test(fieldName(el)));
+		.filter((el) => visible(el) && /project|name|项目|名称/.test(fieldName(el)));
 	const el = fields[0];
 	if (!el) return { found: false };
 	const tracker = el._valueTracker;
@@ -815,6 +817,12 @@ func permitConsumedByDir(dir string, permitID string) bool {
 // accessible name. It never reads a provider class name, and it reports whether
 // a sign-in control is visible so a missing entry can be told apart from a
 // signed-out shell.
+//
+// The runtime starts Chromium with --lang=zh-CN, so the provider renders its
+// shell in Simplified Chinese and the visible label is "新项目". A
+// language-independent hint is tried first; the current provider build exposes
+// no data-testid on this control, so the accessible-name list is the path that
+// actually matches and it has to cover both languages.
 const probeNewProjectExpression = `(() => {
 	const norm = (value) => (value || '').replace(/\s+/g, ' ').trim().toLowerCase();
 	const nameOf = (el) => {
@@ -832,10 +840,17 @@ const probeNewProjectExpression = `(() => {
 	const nodes = Array.from(document.querySelectorAll('button, a, [role="button"], [role="menuitem"], [role="link"]'));
 	const loginVisible = nodes.some((el) => {
 		if (!rectOf(el)) return false;
-		return /^(log in|sign in|sign up|create account)\b/.test(nameOf(el));
+		return /^(log in\b|sign in\b|sign up\b|create account\b|登录|注册|创建账户|创建帐户)/.test(nameOf(el));
 	});
+	const matchesCreationEntry = (el) => {
+		const testid = norm(el.getAttribute('data-testid'));
+		if (testid === 'new-project' || testid === 'create-project' || testid === 'sidebar-new-project') {
+			return true;
+		}
+		return /^(new project\b|新项目|新建项目)/.test(nameOf(el));
+	};
 	for (const el of nodes) {
-		if (!/^new project\b/.test(nameOf(el))) continue;
+		if (!matchesCreationEntry(el)) continue;
 		const rect = rectOf(el);
 		if (!rect) continue;
 		return { found: true, loginVisible: loginVisible, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } };
@@ -845,26 +860,38 @@ const probeNewProjectExpression = `(() => {
 
 // probeProjectNameExpression locates the creation name field. Only a field whose
 // accessible name or placeholder mentions the project name is accepted, so the
-// controller never types the project name into an unrelated composer.
+// controller never types the project name into an unrelated composer. The
+// accepted wording covers the Simplified Chinese provider shell.
 const probeProjectNameExpression = `(() => {
+	const norm = (value) => (value || '').replace(/\s+/g, ' ').trim().toLowerCase();
 	const rectOf = (el) => {
 		const rect = el.getBoundingClientRect();
 		if (rect.width <= 0 || rect.height <= 0) return null;
 		return rect;
 	};
+	const fieldName = (el) => norm(
+		(el.getAttribute('aria-label') || '') + ' ' +
+		(el.getAttribute('placeholder') || '') + ' ' +
+		(el.getAttribute('name') || '') + ' ' +
+		(el.getAttribute('data-testid') || '')
+	);
+	const matchesNameField = (el) => {
+		const field = fieldName(el);
+		return /project|name|项目|名称/.test(field);
+	};
 	const fields = Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"], [role="textbox"]'));
 	for (const el of fields) {
 		const rect = rectOf(el);
 		if (!rect) continue;
-		const label = ((el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('placeholder') || '') + ' ' + (el.getAttribute('name') || '')).toLowerCase();
-		if (!/project|name/.test(label)) continue;
+		if (!matchesNameField(el)) continue;
 		return { found: true, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } };
 	}
 	return { found: false };
 })()`
 
 // probeSubmitExpression locates the explicit submit control of the creation
-// form, if the provider offers one instead of submitting on Enter.
+// form, if the provider offers one instead of submitting on Enter. The accepted
+// wording covers the Simplified Chinese provider shell.
 const probeSubmitExpression = `(() => {
 	const norm = (value) => (value || '').replace(/\s+/g, ' ').trim().toLowerCase();
 	const visible = (el) => {
@@ -874,19 +901,22 @@ const probeSubmitExpression = `(() => {
 	const fieldName = (el) => (
 		(el.getAttribute('aria-label') || '') + ' ' +
 		(el.getAttribute('placeholder') || '') + ' ' +
-		(el.getAttribute('name') || '')
+		(el.getAttribute('name') || '') + ' ' +
+		(el.getAttribute('data-testid') || '')
 	).toLowerCase();
+	const isNameField = (el) => /project|name|项目|名称/.test(fieldName(el));
+	const isSubmitLabel = (value) => /^(create\b|create project\b|save\b|save project\b|done\b|创建|保存|完成)/.test(value);
 	const dialogs = Array.from(document.querySelectorAll('dialog, [role="dialog"]')).filter(visible);
-	const preferred = dialogs.find((scope) => Array.from(scope.querySelectorAll('input, textarea, [contenteditable="true"], [role="textbox"]')).some((el) => visible(el) && /project|name/.test(fieldName(el)))) || dialogs[0];
+	const preferred = dialogs.find((scope) => Array.from(scope.querySelectorAll('input, textarea, [contenteditable="true"], [role="textbox"]')).some((el) => visible(el) && isNameField(el))) || dialogs[0];
 	const scopes = preferred ? [preferred] : [document];
 	const nodes = Array.from(scopes[0].querySelectorAll('button, [role="button"], input[type="submit"]'));
 	const named = (el) => norm(el.getAttribute('aria-label')) || norm(el.getAttribute('title')) || norm(el.getAttribute('value')) || norm(el.innerText);
 	const explicit = nodes.find((el) => {
 		if (!visible(el)) return false;
 		const type = norm(el.getAttribute('type'));
-		return type === 'submit' && /^(create|create project|save|save project|done)\b/.test(named(el));
+		return type === 'submit' && isSubmitLabel(named(el));
 	});
-	const control = explicit || nodes.find((el) => visible(el) && /^(create|create project|save|save project|done)\b/.test(named(el)));
+	const control = explicit || nodes.find((el) => visible(el) && isSubmitLabel(named(el)));
 	if (!control) return { found: false };
 	const rect = control.getBoundingClientRect();
 	return { found: true, disabled: !!control.disabled, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } };

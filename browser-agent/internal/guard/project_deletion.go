@@ -240,7 +240,7 @@ const projectDeletionExpression = `(async () => {
 	};
 	const matchingOptions = () => Array.from(document.querySelectorAll('button, [role="button"]')).filter((el) => {
 		const label = norm(el.getAttribute('aria-label'));
-		return label.includes('open project options') && label.includes(projectName);
+		return /(open project options|项目选项)/.test(label) && label.includes(projectName);
 	});
 	const revealOptions = async () => {
 		for (let attempt = 0; attempt < 4; attempt++) {
@@ -257,7 +257,7 @@ const projectDeletionExpression = `(async () => {
 			for (const anchor of named) {
 				let node = anchor;
 				for (let depth = 0; depth < 7 && node; depth++, node = node.parentElement) {
-					const candidate = node.querySelector && node.querySelector('button[aria-label*="Open project options"], [role="button"][aria-label*="Open project options"]');
+					const candidate = node.querySelector && node.querySelector('button[aria-label*="open project options"], [role="button"][aria-label*="open project options"], button[aria-label*="项目选项"], [role="button"][aria-label*="项目选项"]');
 					if (candidate) {
 						candidate.scrollIntoView({ block: 'center', inline: 'nearest' });
 						await new Promise((resolve) => setTimeout(resolve, 250));
