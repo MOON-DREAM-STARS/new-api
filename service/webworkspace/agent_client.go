@@ -14,7 +14,6 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/setting/system_setting"
-	"github.com/gorilla/websocket"
 )
 
 // Browser Agent runtime states reported by the execution plane.
@@ -794,32 +793,4 @@ func (c *AgentClient) PullObservations(ctx context.Context, workspaceId int) ([]
 func (c *AgentClient) AckObservations(ctx context.Context, workspaceId int, offset int64) error {
 	path := fmt.Sprintf("/internal/v1/runtimes/%d/observations/ack", workspaceId)
 	return c.do(ctx, http.MethodPost, path, agentAckRequest{Offset: offset}, nil)
-}
-
-// DialStream opens the agent-side display stream for one workspace. The caller
-// (New API) is the only client that ever holds this connection.
-func (c *AgentClient) DialStream(ctx context.Context, workspaceId int) (*websocket.Conn, *http.Response, error) {
-	endpoint, err := url.Parse(c.baseURL)
-	if err != nil {
-		return nil, nil, fmt.Errorf("%w: %v", ErrAgentUnavailable, err)
-	}
-	if endpoint.Scheme == "http" {
-		endpoint.Scheme = "ws"
-	} else {
-		endpoint.Scheme = "wss"
-	}
-	endpoint.Path = fmt.Sprintf("/internal/v1/runtimes/%d/stream", workspaceId)
-	header := http.Header{}
-	header.Set("Authorization", "Bearer "+c.token)
-	dialer := websocket.Dialer{HandshakeTimeout: agentHTTPTimeout()}
-	return dialer.DialContext(ctx, endpoint.String(), header)
-}
-
-// DialAgentStream opens the agent-side display stream for the control plane.
-func DialAgentStream(ctx context.Context, workspaceId int) (*websocket.Conn, *http.Response, error) {
-	client, err := newAgentClient()
-	if err != nil {
-		return nil, nil, err
-	}
-	return client.DialStream(ctx, workspaceId)
 }

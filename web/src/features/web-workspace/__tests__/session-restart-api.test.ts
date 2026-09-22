@@ -19,7 +19,11 @@ For commercial licensing, please contact support@quantumnous.com
 
 import { api } from '@/lib/api'
 
-import { restartWebWorkspaceSession, startWebWorkspaceSession } from '../api'
+import {
+  createWebWorkspaceKasmTicket,
+  restartWebWorkspaceSession,
+  startWebWorkspaceSession,
+} from '../api'
 
 type ApiPost = (url: string, data?: unknown) => Promise<{ data: unknown }>
 
@@ -83,6 +87,27 @@ describe('web workspace session requests', () => {
       {
         url: '/api/web-workspace/session',
         data: { screen_width: 1540, screen_height: 720 },
+      },
+    ])
+  })
+
+  test('requests a Kasm ticket from the Kasm endpoint', async () => {
+    const posts: Array<{ url: string; data: unknown }> = []
+    apiClient.post = async (url, data) => {
+      posts.push({ url, data })
+      return {
+        data: {
+          success: true,
+          data: { ticket: 'kasm-1', expires_at: 123 },
+        },
+      }
+    }
+
+    await expect(createWebWorkspaceKasmTicket('s 1/2')).resolves.toBe('kasm-1')
+    expect(posts).toEqual([
+      {
+        url: '/api/web-workspace/session/s%201%2F2/kasm-ticket',
+        data: undefined,
       },
     ])
   })

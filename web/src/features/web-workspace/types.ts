@@ -162,13 +162,6 @@ export type WebProjectPermit = {
   expires_at: number
 }
 
-/** Single-use stream ticket for one WSS attach. */
-export type WebWorkspaceStreamTicket = {
-  ticket: string
-  expires_at: number
-  stream_url: string
-}
-
 /** Standard New API envelope. */
 export type ApiEnvelope<T> = {
   success: boolean

@@ -29,7 +29,7 @@ func SetWebWorkspaceRouter(apiRouter *gin.RouterGroup) {
 		webWorkspaceRoute.POST("/session/:id/restart", controller.RestartWebWorkspaceSession)
 		webWorkspaceRoute.POST("/session/:id/navigation", controller.NavigateWebWorkspaceSession)
 		webWorkspaceRoute.POST("/session/:id/activity", controller.TouchWebWorkspaceActivity)
-		webWorkspaceRoute.POST("/session/:id/stream-ticket", controller.CreateWebWorkspaceStreamTicket)
+		webWorkspaceRoute.POST("/session/:id/kasm-ticket", controller.CreateWebWorkspaceKasmTicket)
 		webWorkspaceRoute.GET("/session/:id/file-chooser", controller.GetWebWorkspaceFileChooser)
 		webWorkspaceRoute.POST("/session/:id/file-chooser/:chooser_id/files", controller.UploadWebWorkspaceFileChooserFiles)
 		webWorkspaceRoute.POST("/session/:id/file-chooser/:chooser_id/cancel", controller.CancelWebWorkspaceFileChooser)
@@ -40,13 +40,12 @@ func SetWebWorkspaceRouter(apiRouter *gin.RouterGroup) {
 		webWorkspaceRoute.GET("/session/:id/input/caret", controller.GetWebWorkspaceInputCaret)
 	}
 
-	// Stream and KasmVNC attaches authenticate with a short-lived ticket instead
-	// of a bearer header, because browser WebSocket clients and iframe documents
-	// cannot set headers. Each ticket is bound to the user, workspace and session;
-	// the Kasm asset path also carries the ticket so relative assets are covered.
+	// The KasmVNC attach authenticates with a short-lived ticket instead of a
+	// bearer header, because an iframe document and its websocket cannot set
+	// headers. Each ticket is bound to the user, workspace and session, and the
+	// Kasm asset path also carries the ticket so relative assets are covered.
 	webWorkspaceTicketRoute := apiRouter.Group("/web-workspace")
 	{
-		webWorkspaceTicketRoute.GET("/session/:id/stream", controller.WebWorkspaceStream)
 		webWorkspaceTicketRoute.GET("/session/:id/kasm/*rest", controller.WebWorkspaceKasm)
 		webWorkspaceTicketRoute.POST("/session/:id/kasm/*rest", controller.WebWorkspaceKasm)
 	}

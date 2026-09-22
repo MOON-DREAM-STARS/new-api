@@ -161,10 +161,10 @@ export function WebWorkspace() {
     navigationMutation.isPending
 
   // The KasmVNC client can only be fetched once the runtime has finished
-  // bringing up X, the RFB server and websockify. Attaching earlier makes the
-  // first request fail with a gateway error that no retry can turn into a
-  // picture, so the surface waits for the runtime's own page-health signal,
-  // which the viewport already renders while it is not READY.
+  // bringing up X and its native HTTP/WebSocket transport. Attaching earlier
+  // makes the first request fail with a gateway error that no retry can turn
+  // into a picture, so the surface waits for the runtime's own page-health
+  // signal, which the viewport already renders while it is not READY.
   const pageReady = session?.page?.state === 'READY'
   const surface = useRemoteSurface({
     sessionId: session?.session_id ?? '',

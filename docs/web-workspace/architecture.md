@@ -207,7 +207,7 @@ allow_popups
 - Browser Agent 只在私有网络可见，不 publish 端口到公网；服务间通信需要服务认证（短期 service token 或请求签名），不接受仅凭来源 IP 的信任。
 - New API 容器不挂载 Docker socket，不以特权方式管理宿主。
 - CDP 只允许监听 Workspace runtime 内部 loopback；不 publish 到宿主；不把 CDP WebSocket URL 返回给客户端；Browser Guard 是唯一 CDP consumer。
-- 显示协议（KasmVNC/noVNC/其他）在 Browser Agent 内部封装为抽象接口，核心业务不绑定具体实现。
+- 显示协议（KasmVNC 原生 HTTP/WebSocket）在 Browser Agent 内部封装为 Kasm proxy 边界，核心业务不直接持有 runtime 地址或端口。
 
 ### 5.1 组件职责
 
@@ -353,12 +353,10 @@ Chromium 在 runtime 中使用 `--password-store=basic`：Provider cookie、loca
 ## 8. 浏览器运行时（Browser Runtime）
 
 - Chromium 运行在服务器端 Linux；本地 PC 不运行、也不控制 Chromium。
-- 主交互环境使用正常 GUI Chromium + 虚拟显示（Xvfb 或等价物），不以真正的 `chromium --headless` 作为主要交互形态。
-- 显示传输候选（实施阶段比较后选定）：
-  - KasmVNC；
-  - noVNC + x11vnc + websockify。
-- 比较维度：WebSocket 支持、剪贴板控制、输入控制、尺寸调整、TLS 终止兼容性、嵌入能力、维护复杂度、攻击面。
-- 无论选择哪种实现，Browser Agent 必须通过抽象接口（如 DisplayTransport）封装远程显示，避免核心业务绑定单一实现。
+- 主交互环境使用正常 GUI Chromium + KasmVNC Xvnc 虚拟显示，不以真正的 `chromium --headless` 作为主要交互形态。
+- 显示传输实现：KasmVNC 1.5.0 原生 HTTP/WebSocket，运行时仅监听私有 network 内的 6901；通过 Agent 的 Kasm reverse proxy 暴露给 New API。
+- 不再保留传统 RFB 5900、websockify 或 raw RFB DisplayTransport；Kasm ticket 与 New API session ownership 是唯一流式授权路径。
+- 显示传输仍由 Browser Agent 的 Kasm proxy 边界封装，核心业务不直接持有 runtime 地址或端口。
 
 ### 8.1 生命周期与状态
 
@@ -552,24 +550,25 @@ authenticated thin client = display stream + input
 而不是 remote Chrome credential holder
 ```
 
-## 14. Stream Ticket 与 WSS 网关
+## 14. Kasm Ticket 与同源 WebSocket 网关
 
-Stream ticket 定义：
+Kasm ticket 定义：
 
 ```text
 绑定：user_id、workspace_id、browser_session_id
-属性：short TTL、single use、WebSocket upgrade 后失效、不可跨用户 / Workspace 复用
+属性：short TTL、single use、Kasm WebSocket upgrade 后失效、不可跨用户 / Workspace 复用
 ```
 
 客户端连接形式（示意）：
 
 ```text
-wss://<newapi-host>/api/web-workspace/sessions/{session_id}/stream
+POST /api/web-workspace/session/{session_id}/kasm-ticket
+GET/POST /api/web-workspace/session/{session_id}/kasm/t/{ticket}/...
 ```
 
 - ticket 由已认证的 HTTPS API 调用签发；
-- 客户端始终连接 New API 的 WSS endpoint，不连接 Browser Agent；
-- 不返回 `ws://browser-agent:6080` 或任何带 `password=` 的地址；
+- 客户端始终通过 New API 同源 Kasm iframe/WebSocket 路径连接，不连接 Browser Agent；
+- Agent 仅以私有 service token 代理到 runtime 6901；
 - ticket 校验失败、重放或过期 → 直接关闭连接，不降级、不重试放行。
 ## 15. Shared Upstream Account 风险（重要）
 
@@ -607,8 +606,9 @@ POST   /api/web-workspace/session
 DELETE /api/web-workspace/session/:id
 POST   /api/web-workspace/session/:id/restart
 
-POST   /api/web-workspace/session/:id/stream-ticket
-WS     /api/web-workspace/session/:id/stream
+POST   /api/web-workspace/session/:id/kasm-ticket
+GET    /api/web-workspace/session/:id/kasm/*
+POST   /api/web-workspace/session/:id/kasm/*
 
 GET    /api/web-workspace/projects
 POST   /api/web-workspace/projects
@@ -687,7 +687,7 @@ admin entitlement change
 实施按 checklist 的六个阶段推进（细节与验收标准见 [implementation-checklist.md](./implementation-checklist.md)）：
 
 1. Phase 1 核心模型与权限：global setting、entitlement、三张表、ownership service、三数据库 migration 验证。
-2. Phase 2 Browser Agent MVP：runtime manager、虚拟显示、GUI Chromium、per-workspace profile、stream broker、stream ticket、生命周期。
+2. Phase 2 Browser Agent MVP：runtime manager、虚拟显示、GUI Chromium、per-workspace profile、Kasm proxy、Kasm ticket、生命周期。
 3. Phase 3 Network / Browser Guard：default-deny egress、私网与 metadata 拒绝、Login / Locked Mode、CDP loopback、navigation / popup / download / clipboard guard。
 4. Phase 4 ChatGPT Provider Adapter：URL parser、资源发现与观察、unknown deny。
 5. Phase 5 前端：sidebar 一级入口、route guard、Project 管理、remote surface、错误态、i18n 与可访问性。
@@ -697,7 +697,7 @@ admin entitlement change
 
 ## 20. 待决事项（实施阶段必须先确认）
 
-- 显示实现选择（KasmVNC 对比 noVNC + x11vnc + websockify）与抽象接口边界。
+- 显示实现已选定 KasmVNC 原生 HTTP/WebSocket；后续只需保持 Kasm proxy/ticket 边界不泄漏 runtime 地址。
 - entitlement 的存储位置（系统设置 / 用户组 / 独立表）与缓存策略。
 - user override 是否进入首版。
 - runtime 调度形态：每 Workspace 一容器，还是共享 agent 中的隔离进程（无论哪种都必须满足第 7 节隔离要求）。

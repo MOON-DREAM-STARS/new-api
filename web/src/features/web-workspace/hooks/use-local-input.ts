@@ -70,6 +70,7 @@ export type LocalInputController = {
 }
 
 const CENTER_STYLE: CSSProperties = { left: '50%', top: '50%' }
+const CARET_REFRESH_DEBOUNCE_MS = 150
 
 export function useLocalInput(
   options: UseLocalInputOptions
@@ -80,6 +81,8 @@ export function useLocalInput(
   const compositionActiveRef = useRef(false)
   const skipNextInputRef = useRef(false)
   const injectionChainRef = useRef<Promise<void>>(Promise.resolve())
+  const caretRefreshTimerRef = useRef<number | null>(null)
+  const caretProbeIdRef = useRef(0)
   const [mode, setModeState] = useState<WebWorkspaceInputMode>('remote')
   const [anchorStyle, setAnchorStyle] = useState<CSSProperties>(CENTER_STYLE)
   const [errorCode, setErrorCode] = useState<string | null>(null)
@@ -89,17 +92,37 @@ export function useLocalInput(
     setErrorCode(info.code ?? 'WEB_WORKSPACE_INPUT_UNAVAILABLE')
   }, [])
 
-  const refreshCaret = useCallback(async () => {
+  const refreshCaret = useCallback(async (reportFailure = true) => {
     if (!enabled || !sessionId) return
+    const probeId = ++caretProbeIdRef.current
     try {
       const caret = await getWebWorkspaceInputCaret(sessionId)
+      if (probeId !== caretProbeIdRef.current) return
       const canvas = surface.getCanvasMetrics()
       const mapped = mapCaretToAnchor(caret, canvas) ?? centerOfCanvas(canvas)
       setAnchorStyle(mapped ? { left: mapped.left, top: mapped.top } : CENTER_STYLE)
     } catch (error) {
-      reportError(error)
+      if (reportFailure && probeId === caretProbeIdRef.current) reportError(error)
     }
   }, [enabled, reportError, sessionId, surface])
+
+  const clearCaretRefresh = useCallback(() => {
+    // A newer injection owns the caret position; ignore any probe that was
+    // already in flight so its failure cannot overwrite the newer success.
+    caretProbeIdRef.current += 1
+    if (caretRefreshTimerRef.current !== null) {
+      window.clearTimeout(caretRefreshTimerRef.current)
+      caretRefreshTimerRef.current = null
+    }
+  }, [])
+
+  const scheduleCaretRefresh = useCallback(() => {
+    clearCaretRefresh()
+    caretRefreshTimerRef.current = window.setTimeout(() => {
+      caretRefreshTimerRef.current = null
+      void refreshCaret(false)
+    }, CARET_REFRESH_DEBOUNCE_MS)
+  }, [clearCaretRefresh, refreshCaret])
 
   const setMode = useCallback(
     (next: WebWorkspaceInputMode) => {
@@ -111,35 +134,44 @@ export function useLocalInput(
         void refreshCaret()
         window.requestAnimationFrame(() => anchorRef.current?.focus())
       } else {
+        clearCaretRefresh()
         surface.focusSurface()
       }
     },
-    [enabled, refreshCaret, surface]
+    [clearCaretRefresh, enabled, refreshCaret, surface]
   )
 
   const injectText = useCallback(
     (text: string) => {
       if (!enabled || !sessionId || !text) return
       const run = async () => {
+        clearCaretRefresh()
         try {
           await insertWebWorkspaceInputText(sessionId, text)
-          setErrorCode(null)
-          if (anchorRef.current?.value === text) {
-            anchorRef.current.value = ''
-          }
-          await refreshCaret()
         } catch (error) {
           // Keep the local composition intact on failure so the operator can
           // retry without silently replaying raw keys into the remote browser.
           if (anchorRef.current) anchorRef.current.value = text
           reportError(error)
           anchorRef.current?.focus()
+          return
         }
+        setErrorCode(null)
+        if (anchorRef.current?.value === text) {
+          anchorRef.current.value = ''
+        }
+        scheduleCaretRefresh()
       }
       const next = injectionChainRef.current.catch(() => undefined).then(run)
       injectionChainRef.current = next.catch(() => undefined)
     },
-    [enabled, refreshCaret, reportError, sessionId]
+    [
+      clearCaretRefresh,
+      enabled,
+      reportError,
+      scheduleCaretRefresh,
+      sessionId,
+    ]
   )
 
   const dispatchKey = useCallback(
@@ -228,13 +260,16 @@ export function useLocalInput(
 
   useEffect(() => {
     if (enabled) return undefined
+    clearCaretRefresh()
     modeRef.current = 'remote'
     setModeState('remote')
     setErrorCode(null)
     compositionActiveRef.current = false
     skipNextInputRef.current = false
     return undefined
-  }, [enabled])
+  }, [clearCaretRefresh, enabled])
+
+  useEffect(() => clearCaretRefresh, [clearCaretRefresh])
 
   // While local input owns typing, a click inside the remote page must hand
   // focus back to the anchor: the iframe would otherwise keep the keyboard and

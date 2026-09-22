@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 
-import { createWebWorkspaceStreamTicket } from '../api'
+import { createWebWorkspaceKasmTicket } from '../api'
 import { WEB_WORKSPACE_RECONNECT_MAX_ATTEMPTS } from '../constants'
 import { classifyWebWorkspaceError } from '../lib/errors'
 import type { LocalCanvasMetrics } from '../lib/local-input'
@@ -74,6 +74,24 @@ export function buildKasmClientUrl(sessionId: string, ticket: string): string {
     clipboard_up: '0',
     clipboard_down: '0',
     clipboard_seamless: '0',
+    // Keep KasmVNC's own IME path off even if localStorage still has it on;
+    // the workspace-local input anchor is the only IME owner.
+    enable_ime: '0',
+    // Keep the balanced low-latency profile explicit so stale localStorage
+    // values cannot override the server-side defaults.
+    quality: '6',
+    dynamic_quality_min: '6',
+    dynamic_quality_max: '8',
+    treat_lossless: '8',
+    framerate: '30',
+    jpeg_video_quality: '6',
+    webp_video_quality: '6',
+    video_area: '65',
+    video_time: '5',
+    video_out_time: '3',
+    video_scaling: '1',
+    max_video_resolution_x: '1920',
+    max_video_resolution_y: '1080',
   })
   return `${base}?${params.toString()}`
 }
@@ -323,8 +341,8 @@ export function useRemoteSurface(
       armAttempt()
     }
 
-    void createWebWorkspaceStreamTicket(sessionId)
-      .then(({ ticket }) => {
+    void createWebWorkspaceKasmTicket(sessionId)
+      .then((ticket) => {
         if (generationRef.current !== generation) return
         attachSurface(ticket)
       })
