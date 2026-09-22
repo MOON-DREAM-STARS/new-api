@@ -22,6 +22,7 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
+import { SystemUpdateAction } from '@/features/system-update/system-update-action'
 import { formatTimestamp, formatTimestampToDate } from '@/lib/format'
 
 import { getDreamstarsReleaseUpdate } from '../api'
@@ -142,6 +143,8 @@ export function UpdateCheckerSection({
           />
           {checking ? t('Checking updates...') : t('Check for updates')}
         </Button>
+
+        <SystemUpdateAction compact={false} />
 
         {update && (
           <div

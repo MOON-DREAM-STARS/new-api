@@ -57,6 +57,7 @@ SectionPageLayoutBreadcrumb.displayName = 'SectionPageLayout.Breadcrumb'
 export type SectionPageLayoutProps = {
   children: ReactNode
   fixedContent?: boolean
+  stackActionsOnMobile?: boolean
 }
 
 export function SectionPageLayout(props: SectionPageLayoutProps) {
@@ -95,7 +96,11 @@ export function SectionPageLayout(props: SectionPageLayoutProps) {
             <div className='flex min-w-0 flex-1 items-center gap-x-3 sm:gap-x-4'>
               <div
                 className={
-                  center != null ? 'min-w-0 shrink-0' : 'min-w-0 flex-1'
+                  center != null
+                    ? 'min-w-0 shrink-0'
+                    : props.stackActionsOnMobile
+                      ? 'min-w-0 flex-1 max-sm:basis-full'
+                      : 'min-w-0 flex-1'
                 }
               >
                 <h2 className='truncate text-base font-bold tracking-tight sm:text-lg'>
