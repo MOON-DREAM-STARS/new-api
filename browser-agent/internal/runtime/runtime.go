@@ -1,23 +1,20 @@
-// Package runtime defines the contracts shared by the workspace Manager, the
-// Docker driver and the display transport. The Manager depends only on these
-// interfaces so that Docker specific behaviour stays replaceable in tests.
+// Package runtime defines the contracts shared by the workspace Manager and
+// the Docker driver. The Manager depends only on these interfaces so that
+// Docker-specific behaviour stays replaceable in tests.
 package runtime
 
 import (
 	"context"
 	"errors"
-	"io"
 	"time"
 )
 
 const (
 	// WorkspaceMountTarget is the only mount point the runtime container gets.
 	WorkspaceMountTarget = "/workspace"
-	// VNCPort is the RFB display port exposed inside the runtime container.
-	VNCPort = 5900
-	// KasmPort is the KasmVNC web client and websocket port exposed inside the
-	// runtime container. Both display ports remain private to the runtime
-	// network; the agent is the only proxy in front of them.
+	// KasmPort is the KasmVNC native WebSocket port exposed inside the runtime
+	// container. It remains private to the runtime network; the agent is the
+	// only proxy in front of it.
 	KasmPort = 6901
 
 	// RuntimeUID and RuntimeGID are the non-root identity the runtime image
@@ -81,7 +78,8 @@ type Driver interface {
 	List(ctx context.Context) ([]ContainerInfo, error)
 }
 
-// DisplayTransport opens the raw RFB byte stream of a running workspace runtime.
-type DisplayTransport interface {
-	Connect(ctx context.Context, workspaceID int64) (io.ReadWriteCloser, error)
+// DisplayProbe verifies that a running workspace runtime accepts connections
+// to its KasmVNC WebSocket listener.
+type DisplayProbe interface {
+	Probe(ctx context.Context, workspaceID int64) error
 }

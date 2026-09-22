@@ -17,7 +17,7 @@ import (
 const (
 	inputStateFileName   = "input.json"
 	inputCommandFileName = "input-command.json"
-	inputPollInterval    = 300 * time.Millisecond
+	inputPollInterval    = 50 * time.Millisecond
 	inputTextMaxRunes    = 4096
 )
 

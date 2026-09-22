@@ -53,7 +53,6 @@ const (
 	envDisplay      = "WW_DISPLAY"
 	envScreenWidth  = "WW_SCREEN_WIDTH"
 	envScreenHeight = "WW_SCREEN_HEIGHT"
-	envVNCPort      = "WW_VNC_PORT"
 	envKasmPort     = "WW_KASM_PORT"
 	envProvider     = "WW_PROVIDER"
 	envProxyServer  = "WW_PROXY_SERVER"
@@ -62,9 +61,9 @@ const (
 	featureNavigation = "navigation"
 	featureInput      = "input"
 
-	// A started container is not a ready display: Xvfb and x11vnc need a moment
-	// before the RFB port accepts connections, so the runtime only becomes
-	// RUNNING once a probe connection succeeded.
+	// A started container is not a ready display: KasmVNC needs a moment
+	// before its WebSocket listener accepts connections, so the runtime only
+	// becomes RUNNING once a probe connection succeeded.
 	displayProbeInterval = 250 * time.Millisecond
 	displayProbeTimeout  = 20 * time.Second
 
@@ -249,7 +248,7 @@ func (h *streamHandle) close() {
 // Manager implements the runtime scheduling and stream attachment contract.
 type Manager struct {
 	driver            runtime.Driver
-	display           runtime.DisplayTransport
+	probe             runtime.DisplayProbe
 	dataRoot          string
 	hostDataRoot      string
 	egressProxyURL    string
@@ -269,11 +268,11 @@ type Manager struct {
 	ipIndex      map[string]int64
 }
 
-// New returns a manager bound to a runtime driver and a display transport.
-func New(driver runtime.Driver, display runtime.DisplayTransport, opts Options) *Manager {
+// New returns a manager bound to a runtime driver and display probe.
+func New(driver runtime.Driver, probe runtime.DisplayProbe, opts Options) *Manager {
 	manager := &Manager{
 		driver:            driver,
-		display:           display,
+		probe:             probe,
 		dataRoot:          opts.DataRoot,
 		hostDataRoot:      opts.HostDataRoot,
 		egressProxyURL:    opts.EgressProxyURL,
@@ -631,27 +630,6 @@ func (m *Manager) AckObservations(workspaceID int64, offset int64) (int64, error
 	return offset, nil
 }
 
-// OpenDisplayStream returns a raw display connection for a streamable runtime.
-// It returns runtime.ErrNotRunning when the workspace has no runtime that can
-// serve a display connection.
-func (m *Manager) OpenDisplayStream(ctx context.Context, workspaceID int64) (io.ReadWriteCloser, error) {
-	m.mu.Lock()
-	rt := m.runtimes[workspaceID]
-	streamable := rt != nil && (rt.state == StateRunning || rt.state == StateIdle)
-	m.mu.Unlock()
-	if !streamable {
-		return nil, runtime.ErrNotRunning
-	}
-
-	conn, err := m.display.Connect(ctx, workspaceID)
-	if err != nil {
-		m.logger.Warn("display transport connect failed", "workspace_id", workspaceID, "error", err)
-		return nil, runtime.ErrNotRunning
-	}
-	m.Touch(workspaceID)
-	return conn, nil
-}
-
 // AttachStream registers a stream connection with the runtime. The returned
 // channel is closed, and the connection closed, as soon as the runtime stops or
 // fails. The returned function must be called when the stream ends.
@@ -910,7 +888,6 @@ func (m *Manager) startLocked(ctx context.Context, workspaceID int64, opts Start
 			envDisplay + "=" + displayNumber,
 			envScreenWidth + "=" + strconv.Itoa(opts.Width),
 			envScreenHeight + "=" + strconv.Itoa(opts.Height),
-			envVNCPort + "=" + strconv.Itoa(runtime.VNCPort),
 			envKasmPort + "=" + strconv.Itoa(runtime.KasmPort),
 			envProvider + "=" + opts.Provider,
 			envProxyServer + "=" + m.egressProxyURL,
@@ -963,16 +940,15 @@ func (m *Manager) startLocked(ctx context.Context, workspaceID int64, opts Start
 	return snapshot, nil
 }
 
-// waitForDisplayReady polls the display transport until Xvfb and x11vnc accept
-// a connection. A started container is not a ready display: without this gate
-// the control plane could attach a stream during the seconds between container
-// start and display readiness and observe a failing runtime.
+// waitForDisplayReady polls the KasmVNC listener until it accepts a
+// connection. A started container is not a ready display: without this gate the
+// control plane could attach a stream during the seconds between container
+// start and listener readiness and observe a failing runtime.
 func (m *Manager) waitForDisplayReady(ctx context.Context, workspaceID int64) error {
 	deadline := time.Now().Add(displayProbeTimeout)
 	for {
-		conn, err := m.display.Connect(ctx, workspaceID)
+		err := m.probe.Probe(ctx, workspaceID)
 		if err == nil {
-			_ = conn.Close()
 			return nil
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {

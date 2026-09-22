@@ -20,7 +20,6 @@ import (
 	"github.com/QuantumNous/new-api/browser-agent/internal/manager"
 	"github.com/QuantumNous/new-api/browser-agent/internal/policy"
 	"github.com/QuantumNous/new-api/browser-agent/internal/runtime"
-	"github.com/QuantumNous/new-api/browser-agent/internal/stream"
 )
 
 const (
@@ -93,7 +92,6 @@ func New(mgr *manager.Manager, token string, logger *slog.Logger) http.Handler {
 	mux.Handle("POST /internal/v1/runtimes/{workspace_id}/permits", server.authenticate(http.HandlerFunc(server.handleIssuePermit)))
 	mux.Handle("GET /internal/v1/runtimes/{workspace_id}/observations", server.authenticate(http.HandlerFunc(server.handleObservations)))
 	mux.Handle("POST /internal/v1/runtimes/{workspace_id}/observations/ack", server.authenticate(http.HandlerFunc(server.handleAckObservations)))
-	mux.Handle("GET /internal/v1/runtimes/{workspace_id}/stream", server.authenticate(server.streamRoute(stream.NewHandler(mgr, server.logger))))
 	mux.Handle("GET /internal/v1/runtimes/{workspace_id}/kasm/{rest...}", server.authenticate(http.HandlerFunc(server.handleKasmProxy)))
 	mux.Handle("POST /internal/v1/runtimes/{workspace_id}/kasm/{rest...}", server.authenticate(http.HandlerFunc(server.handleKasmProxy)))
 	mux.Handle("/", server.authenticate(http.HandlerFunc(server.handleNotFound)))
@@ -574,18 +572,6 @@ func (s *Server) handleAckObservations(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleNotFound(w http.ResponseWriter, _ *http.Request) {
 	writeError(w, http.StatusNotFound, errorNotFound)
-}
-
-// streamRoute validates the workspace id and hands it to the stream handler.
-func (s *Server) streamRoute(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		workspaceID, ok := parseWorkspaceID(r.PathValue("workspace_id"))
-		if !ok {
-			writeError(w, http.StatusBadRequest, errorInvalidRequest)
-			return
-		}
-		next.ServeHTTP(w, stream.WithWorkspaceID(r, workspaceID))
-	})
 }
 
 func (s *Server) writeManagerError(w http.ResponseWriter, workspaceID int64, err error) {

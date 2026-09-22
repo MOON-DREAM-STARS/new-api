@@ -46,7 +46,7 @@ func (c *testClock) Advance(duration time.Duration) {
 type harness struct {
 	mgr      *Manager
 	driver   *runtimetest.FakeDriver
-	display  *runtimetest.FakeDisplay
+	probe    *runtimetest.FakeDisplayProbe
 	clock    *testClock
 	dataRoot string
 }
@@ -61,9 +61,9 @@ func newHarness(t *testing.T) *harness {
 func newHarnessWithRoots(t *testing.T, dataRoot string, hostDataRoot string) *harness {
 	t.Helper()
 	driver := runtimetest.NewFakeDriver()
-	display := &runtimetest.FakeDisplay{}
+	probe := &runtimetest.FakeDisplayProbe{}
 	clock := newTestClock()
-	mgr := New(driver, display, Options{
+	mgr := New(driver, probe, Options{
 		DataRoot:       dataRoot,
 		HostDataRoot:   hostDataRoot,
 		EgressProxyURL: "http://ws-agent:8731",
@@ -73,7 +73,7 @@ func newHarnessWithRoots(t *testing.T, dataRoot string, hostDataRoot string) *ha
 		Now:            clock.Now,
 		Chown:          workspaceChownHandover(),
 	})
-	return &harness{mgr: mgr, driver: driver, display: display, clock: clock, dataRoot: dataRoot}
+	return &harness{mgr: mgr, driver: driver, probe: probe, clock: clock, dataRoot: dataRoot}
 }
 
 // workspaceChownHandover uses the real ownership handover when the test process
@@ -90,9 +90,9 @@ func newHarnessWithMaxActive(t *testing.T, maxActive int) *harness {
 	t.Helper()
 	dataRoot := t.TempDir()
 	driver := runtimetest.NewFakeDriver()
-	display := &runtimetest.FakeDisplay{}
+	probe := &runtimetest.FakeDisplayProbe{}
 	clock := newTestClock()
-	mgr := New(driver, display, Options{
+	mgr := New(driver, probe, Options{
 		DataRoot:          dataRoot,
 		EgressProxyURL:    "http://ws-agent:8731",
 		IdleTimeout:       10 * time.Minute,
@@ -102,7 +102,7 @@ func newHarnessWithMaxActive(t *testing.T, maxActive int) *harness {
 		Now:               clock.Now,
 		Chown:             workspaceChownHandover(),
 	})
-	return &harness{mgr: mgr, driver: driver, display: display, clock: clock, dataRoot: dataRoot}
+	return &harness{mgr: mgr, driver: driver, probe: probe, clock: clock, dataRoot: dataRoot}
 }
 
 // The agent owns the ownership document, so it is the last line of defence for
@@ -163,7 +163,6 @@ func TestStartCreatesRuntimeAndWorkspaceMount(t *testing.T) {
 	assert.Contains(t, spec.Env, "WW_DISPLAY=:99")
 	assert.Contains(t, spec.Env, "WW_SCREEN_WIDTH=1280")
 	assert.Contains(t, spec.Env, "WW_SCREEN_HEIGHT=720")
-	assert.Contains(t, spec.Env, "WW_VNC_PORT=5900")
 	assert.Contains(t, spec.Env, "WW_KASM_PORT=6901")
 	assert.Contains(t, spec.Env, "WW_PROVIDER=chatgpt")
 	assert.Contains(t, spec.Env, "WW_PROXY_SERVER=http://ws-agent:8731")
@@ -245,11 +244,7 @@ func TestStreamDisconnectIdlesAndIdleTimeoutStops(t *testing.T) {
 	_, err := h.mgr.Start(context.Background(), 42, StartOptions{Provider: "chatgpt"})
 	require.NoError(t, err)
 
-	display, err := h.mgr.OpenDisplayStream(context.Background(), 42)
-	require.NoError(t, err)
-	defer display.Close()
-
-	done, release := h.mgr.AttachStream(42, display)
+	done, release := h.mgr.AttachStream(42, io.NopCloser(strings.NewReader("")))
 	select {
 	case <-done:
 		t.Fatal("stream must stay open while the runtime is live")
@@ -302,9 +297,7 @@ func TestCrashedContainerFailsRuntimeAndRestartRecovers(t *testing.T) {
 	_, err := h.mgr.Start(context.Background(), 77, StartOptions{Provider: "chatgpt"})
 	require.NoError(t, err)
 
-	display, err := h.mgr.OpenDisplayStream(context.Background(), 77)
-	require.NoError(t, err)
-	done, release := h.mgr.AttachStream(77, display)
+	done, release := h.mgr.AttachStream(77, io.NopCloser(strings.NewReader("")))
 	defer release()
 
 	h.driver.SetRunning(77, false)
@@ -457,21 +450,6 @@ func TestRestartCapacityReservationSurvivesStop(t *testing.T) {
 	assert.Equal(t, StateRunning, snapshot.State)
 }
 
-func TestOpenDisplayStreamRequiresLiveRuntime(t *testing.T) {
-	h := newHarness(t)
-
-	_, err := h.mgr.OpenDisplayStream(context.Background(), 1)
-	require.ErrorIs(t, err, runtime.ErrNotRunning)
-
-	_, err = h.mgr.Start(context.Background(), 1, StartOptions{Provider: "chatgpt"})
-	require.NoError(t, err)
-	_, err = h.mgr.Stop(context.Background(), 1)
-	require.NoError(t, err)
-
-	_, err = h.mgr.OpenDisplayStream(context.Background(), 1)
-	require.ErrorIs(t, err, runtime.ErrNotRunning)
-}
-
 func TestStartRejectsInvalidParameters(t *testing.T) {
 	h := newHarness(t)
 
@@ -518,35 +496,24 @@ func TestStartFailsClosedWhenContainerExitsImmediately(t *testing.T) {
 	assert.Equal(t, StateFailed, stored.State)
 	assert.Zero(t, stored.IdleDeadlineAt)
 
-	_, err = h.mgr.OpenDisplayStream(context.Background(), 15)
-	require.ErrorIs(t, err, runtime.ErrNotRunning)
 }
 
 func TestStartWaitsForDisplayReadiness(t *testing.T) {
 	h := newHarness(t)
-	probeConn := runtimetest.NewFakeConn()
-	h.display.FailFirst = 2
-	h.display.ConnectFunc = func(context.Context, int64) (io.ReadWriteCloser, error) {
-		return probeConn, nil
-	}
+	h.probe.FailFirst = 2
 
 	started := time.Now()
 	snapshot, err := h.mgr.Start(context.Background(), 61, StartOptions{Provider: "chatgpt"})
 	require.NoError(t, err)
 
 	assert.Equal(t, StateRunning, snapshot.State)
-	assert.Equal(t, 3, h.display.Connects, "the probe must retry until the display answers")
+	assert.Equal(t, 3, h.probe.Probes, "the probe must retry until the listener answers")
 	assert.GreaterOrEqual(t, time.Since(started), 2*displayProbeInterval)
-	select {
-	case <-probeConn.Closed:
-	default:
-		t.Fatal("the readiness probe connection must be closed")
-	}
 }
 
 func TestStartFailsClosedWhenDisplayNeverBecomesReady(t *testing.T) {
 	h := newHarness(t)
-	h.display.Err = runtime.ErrNotRunning
+	h.probe.Err = runtime.ErrNotRunning
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -559,8 +526,6 @@ func TestStartFailsClosedWhenDisplayNeverBecomesReady(t *testing.T) {
 	require.True(t, found)
 	assert.Equal(t, StateFailed, stored.State)
 
-	_, err = h.mgr.OpenDisplayStream(context.Background(), 62)
-	require.ErrorIs(t, err, runtime.ErrNotRunning)
 }
 func TestStartDefaultAndLoginModesAreInjectedAndIndexed(t *testing.T) {
 	h := newHarness(t)

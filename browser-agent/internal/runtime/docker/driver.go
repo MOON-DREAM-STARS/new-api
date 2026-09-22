@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -45,7 +44,7 @@ type Options struct {
 	PidsLimit   int64
 }
 
-// Driver implements runtime.Driver and runtime.DisplayTransport.
+// Driver implements runtime.Driver and runtime.DisplayProbe.
 type Driver struct {
 	client *Client
 	opts   Options
@@ -211,25 +210,26 @@ func (d *Driver) List(ctx context.Context) ([]runtime.ContainerInfo, error) {
 	return infos, nil
 }
 
-// Connect implements runtime.DisplayTransport: it dials the RFB port of the
-// workspace container directly without publishing anything on the host.
-func (d *Driver) Connect(ctx context.Context, workspaceID int64) (io.ReadWriteCloser, error) {
+// Probe implements runtime.DisplayProbe: it dials the private KasmVNC
+// WebSocket listener of the workspace container and closes the probe socket
+// immediately.
+func (d *Driver) Probe(ctx context.Context, workspaceID int64) error {
 	info, err := d.Inspect(ctx, workspaceID)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if !info.Running {
-		return nil, runtime.ErrNotRunning
+		return runtime.ErrNotRunning
 	}
 	if info.IP == "" {
-		return nil, fmt.Errorf("runtime container for workspace %d has no usable network address", workspaceID)
+		return fmt.Errorf("runtime container for workspace %d has no usable network address", workspaceID)
 	}
 	dialer := &net.Dialer{Timeout: connectTimeout}
-	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(info.IP, strconv.Itoa(runtime.VNCPort)))
+	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(info.IP, strconv.Itoa(runtime.KasmPort)))
 	if err != nil {
-		return nil, fmt.Errorf("dial runtime display: %w", err)
+		return fmt.Errorf("dial runtime KasmVNC listener: %w", err)
 	}
-	return conn, nil
+	return conn.Close()
 }
 
 func (d *Driver) createRequest(spec runtime.CreateSpec) createRequest {

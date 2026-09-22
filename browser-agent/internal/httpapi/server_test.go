@@ -6,17 +6,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -31,48 +28,17 @@ type harness struct {
 	server   *httptest.Server
 	mgr      *manager.Manager
 	driver   *runtimetest.FakeDriver
-	display  *runtimetest.FakeDisplay
-	pipes    *displayPipes
+	probe    *runtimetest.FakeDisplayProbe
 	dataRoot string
-}
-
-// displayPipes hands out a fresh net.Pipe pair per display connection so the
-// readiness probe and the stream proxy never share a connection. Pair 0 is the
-// readiness probe, pair 1 the proxied stream.
-type displayPipes struct {
-	mu    sync.Mutex
-	pairs []displayPair
-}
-
-type displayPair struct {
-	agent net.Conn
-	peer  net.Conn
-}
-
-func (p *displayPipes) connect(context.Context, int64) (io.ReadWriteCloser, error) {
-	agent, peer := net.Pipe()
-	p.mu.Lock()
-	p.pairs = append(p.pairs, displayPair{agent: agent, peer: peer})
-	p.mu.Unlock()
-	return agent, nil
-}
-
-func (p *displayPipes) pair(t *testing.T, index int) (net.Conn, net.Conn) {
-	t.Helper()
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	require.Lessf(t, index, len(p.pairs), "display connection %d was never opened", index)
-	return p.pairs[index].agent, p.pairs[index].peer
 }
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	dataRoot := t.TempDir()
 	driver := runtimetest.NewFakeDriver()
-	pipes := &displayPipes{}
-	display := &runtimetest.FakeDisplay{ConnectFunc: pipes.connect}
+	probe := &runtimetest.FakeDisplayProbe{}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr := manager.New(driver, display, manager.Options{
+	mgr := manager.New(driver, probe, manager.Options{
 		DataRoot:       dataRoot,
 		EgressProxyURL: "http://ws-agent:8731",
 		IdleTimeout:    10 * time.Minute,
@@ -82,7 +48,7 @@ func newHarness(t *testing.T) *harness {
 	})
 	server := httptest.NewServer(New(mgr, testToken, logger))
 	t.Cleanup(server.Close)
-	return &harness{server: server, mgr: mgr, driver: driver, display: display, pipes: pipes, dataRoot: dataRoot}
+	return &harness{server: server, mgr: mgr, driver: driver, probe: probe, dataRoot: dataRoot}
 }
 
 // workspaceChownHandover keeps the HTTP tests independent of the process uid;
@@ -123,14 +89,6 @@ func (h *harness) startRuntime(t *testing.T, workspaceID int64) runtimeJSON {
 	return parsed
 }
 
-func (h *harness) dialStream(t *testing.T, workspaceID int64) *websocket.Conn {
-	t.Helper()
-	endpoint := "ws" + strings.TrimPrefix(h.server.URL, "http") + fmt.Sprintf("/internal/v1/runtimes/%d/stream", workspaceID)
-	conn, _, err := websocket.DefaultDialer.Dial(endpoint, http.Header{"Authorization": []string{"Bearer " + testToken}})
-	require.NoError(t, err)
-	return conn
-}
-
 type runtimeJSON struct {
 	RuntimeID      string                    `json:"runtime_id"`
 	WorkspaceID    int64                     `json:"workspace_id"`
@@ -165,7 +123,6 @@ func TestProtectedEndpointsRequireBearerToken(t *testing.T) {
 		{http.MethodPost, "/internal/v1/runtimes/1/observations/ack"},
 		{http.MethodPost, "/internal/v1/runtimes/1/clipboard/copy"},
 		{http.MethodPost, "/internal/v1/runtimes/1/clipboard/paste"},
-		{http.MethodGet, "/internal/v1/runtimes/1/stream"},
 		{http.MethodGet, "/internal/v1/runtimes/1/kasm/vnc.html"},
 		{http.MethodGet, "/internal/v1/unknown"},
 	}
@@ -323,7 +280,7 @@ func TestRuntimeResponsesDoNotLeakInternals(t *testing.T) {
 	response, body := h.request(t, http.MethodGet, "/internal/v1/runtimes/321", "Bearer "+testToken, "")
 	require.Equal(t, http.StatusOK, response.StatusCode)
 
-	for _, forbidden := range []string{h.dataRoot, testToken, "10.77.0.1", "container-1", "/workspace", "5900", "newapi-ws-runtime-321", "WW_"} {
+	for _, forbidden := range []string{h.dataRoot, testToken, "10.77.0.1", "container-1", "/workspace", "6901", "newapi-ws-runtime-321", "WW_"} {
 		assert.NotContains(t, string(body), forbidden)
 	}
 
@@ -333,61 +290,6 @@ func TestRuntimeResponsesDoNotLeakInternals(t *testing.T) {
 		"runtime_id", "workspace_id", "state", "mode", "created_at", "last_activity_at", "idle_deadline_at",
 		"navigation", "page", "project_creation", "stream_bytes_out", "stream_bytes_in", "ime_state",
 	}, mapKeys(raw))
-}
-
-func TestStreamReturnsConflictWhenRuntimeIsNotRunning(t *testing.T) {
-	h := newHarness(t)
-	response, body := h.request(t, http.MethodGet, "/internal/v1/runtimes/404/stream", "Bearer "+testToken, "")
-	assert.Equal(t, http.StatusConflict, response.StatusCode)
-	assert.JSONEq(t, `{"success":false,"error":"runtime_not_running"}`, string(body))
-}
-
-func TestStreamProxiesRawRFBBytes(t *testing.T) {
-	h := newHarness(t)
-	h.startRuntime(t, 321)
-
-	conn := h.dialStream(t, 321)
-	defer conn.Close()
-
-	_, proxySide := h.pipes.pair(t, 1)
-	defer proxySide.Close()
-
-	require.NoError(t, conn.WriteMessage(websocket.BinaryMessage, []byte("RFB 003.008\n")))
-	_ = proxySide.SetReadDeadline(time.Now().Add(3 * time.Second))
-	buffer := make([]byte, 64)
-	read, err := proxySide.Read(buffer)
-	require.NoError(t, err)
-	assert.Equal(t, "RFB 003.008\n", string(buffer[:read]))
-
-	_, err = proxySide.Write([]byte{1, 2, 3, 4, 5})
-	require.NoError(t, err)
-	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	messageType, payload, err := conn.ReadMessage()
-	require.NoError(t, err)
-	assert.Equal(t, websocket.BinaryMessage, messageType)
-	assert.Equal(t, []byte{1, 2, 3, 4, 5}, payload)
-}
-
-func TestStreamClosesWhenRuntimeFails(t *testing.T) {
-	h := newHarness(t)
-	h.startRuntime(t, 900)
-
-	conn := h.dialStream(t, 900)
-	defer conn.Close()
-
-	_, proxySide := h.pipes.pair(t, 1)
-	defer proxySide.Close()
-
-	h.driver.SetRunning(900, false)
-	h.mgr.ScanOnce(context.Background())
-
-	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	_, _, err := conn.ReadMessage()
-	require.Error(t, err)
-
-	snapshot, found := h.mgr.Get(900)
-	require.True(t, found)
-	assert.Equal(t, string(manager.StateFailed), string(snapshot.State))
 }
 
 func TestStartFailsClosedWhenContainerExitsImmediately(t *testing.T) {
@@ -405,9 +307,6 @@ func TestStartFailsClosedWhenContainerExitsImmediately(t *testing.T) {
 	require.NoError(t, json.Unmarshal(body, &stored))
 	assert.Equal(t, string(manager.StateFailed), stored.State)
 
-	response, body = h.request(t, http.MethodGet, "/internal/v1/runtimes/15/stream", "Bearer "+testToken, "")
-	assert.Equal(t, http.StatusConflict, response.StatusCode)
-	assert.JSONEq(t, `{"success":false,"error":"runtime_not_running"}`, string(body))
 }
 func mapKeys(values map[string]any) []string {
 	keys := make([]string, 0, len(values))

@@ -9,7 +9,6 @@ WW_WORKSPACE_DIR="${WW_WORKSPACE_DIR:-/workspace}"
 WW_DISPLAY="${WW_DISPLAY:-:99}"
 WW_SCREEN_WIDTH="${WW_SCREEN_WIDTH:-1280}"
 WW_SCREEN_HEIGHT="${WW_SCREEN_HEIGHT:-720}"
-WW_VNC_PORT="${WW_VNC_PORT:-5900}"
 WW_KASM_PORT="${WW_KASM_PORT:-6901}"
 WW_PROVIDER="${WW_PROVIDER:-unknown}"
 WW_START_URL="${WW_START_URL:-}"
@@ -51,7 +50,6 @@ WW_IME_STATE_DIR="$WW_WORKSPACE_DIR/.guard"
 WW_IME_STATE_FILE="$WW_IME_STATE_DIR/ime-state.json"
 
 KASM_PID=""
-WEBSOCKIFY_PID=""
 CHROMIUM_PID=""
 GUARD_PID=""
 CLIPD_PID=""
@@ -126,10 +124,31 @@ desktop:
   allow_resize: false
 network:
   protocol: http
+  websocket_port: ${WW_KASM_PORT}
   ssl:
     require_ssl: false
     pem_certificate: /usr/local/share/kasmvnc/snakeoil.pem
     pem_key: /usr/local/share/kasmvnc/snakeoil.key
+encoding:
+  max_frame_rate: 30
+  rect_encoding_mode:
+    min_quality: 6
+    max_quality: 8
+    consider_lossless_quality: 8
+    rectangle_compress_threads: 1
+  video_encoding_mode:
+    jpeg_quality: 6
+    webp_quality: 6
+    max_resolution:
+      width: 1920
+      height: 1080
+    enter_video_encoding_mode:
+      time_threshold: 5
+      area_threshold: 65%
+    exit_video_encoding_mode:
+      time_threshold: 3
+    scaling_algorithm: bilinear
+    webp_encoding_time: 15
 EOF
 
     # KasmVNC's wrapper requires a password file even when websocket/basic
@@ -141,12 +160,11 @@ EOF
     chmod 600 "$HOME/.kasmpasswd" 2>/dev/null || true
     unset KASM_DUMMY_PASSWORD
 
-    log "starting KasmVNC display=${WW_DISPLAY} rfb_port=${WW_VNC_PORT} websocket_port=${WW_KASM_PORT}"
+    log "starting KasmVNC display=${WW_DISPLAY} websocket_port=${WW_KASM_PORT}"
     vncserver "$WW_DISPLAY" \
         -geometry "${WW_SCREEN_WIDTH}x${WW_SCREEN_HEIGHT}" \
         -depth 24 \
-        -rfbport "$WW_VNC_PORT" \
-        -noWebsocket \
+        -websocketPort "$WW_KASM_PORT" \
         -interface 0.0.0.0 \
         -select-de manual \
         -SecurityTypes None \
@@ -195,59 +213,32 @@ EOF
     done
 
     i=0
-    while ! port_is_listening "$WW_VNC_PORT"; do
+    while ! port_is_listening "$WW_KASM_PORT"; do
         if ! process_running "$KASM_PID"; then
-            log "KasmVNC exited before its RFB port became ready"
+            log "KasmVNC exited before its websocket port became ready"
             [ -f /tmp/kasmvnc.log ] && cat /tmp/kasmvnc.log >&2
             return 1
         fi
         i=$((i + 1))
         if [ "$i" -ge 300 ]; then
-            log "timed out waiting for KasmVNC RFB port ${WW_VNC_PORT}"
+            log "timed out waiting for KasmVNC websocket port ${WW_KASM_PORT}"
             [ -f /tmp/kasmvnc.log ] && cat /tmp/kasmvnc.log >&2
             return 1
         fi
         sleep 0.1 2>/dev/null || sleep 1
     done
 
-    log "KasmVNC ready pid=$KASM_PID rfb_port=$WW_VNC_PORT"
-}
-
-start_kasm_web_client() {
-    # KasmVNC 1.5.0 binds either its websocket listener or its traditional RFB
-    # listener, not both. Keep KasmVNC's X server and RFB on 5900, and publish
-    # KasmVNC's own web client assets plus the websocket transport on 6901.
-    log "starting KasmVNC web client transport websocket_port=${WW_KASM_PORT} rfb_target=127.0.0.1:${WW_VNC_PORT}"
-    websockify --web=/usr/share/kasmvnc/www "${WW_KASM_PORT}" "127.0.0.1:${WW_VNC_PORT}" >/tmp/websockify.log 2>&1 &
-    WEBSOCKIFY_PID=$!
-
-    i=0
-    while ! port_is_listening "$WW_KASM_PORT"; do
-        if ! process_running "$WEBSOCKIFY_PID"; then
-            log "websockify exited before port $WW_KASM_PORT became ready"
-            [ -f /tmp/websockify.log ] && cat /tmp/websockify.log >&2
-            return 1
-        fi
-        i=$((i + 1))
-        if [ "$i" -ge 100 ]; then
-            log "timed out waiting for websockify port $WW_KASM_PORT"
-            [ -f /tmp/websockify.log ] && cat /tmp/websockify.log >&2
-            return 1
-        fi
-        sleep 0.1 2>/dev/null || sleep 1
-    done
-    log "websockify ready pid=$WEBSOCKIFY_PID websocket_port=$WW_KASM_PORT"
+    log "KasmVNC ready pid=$KASM_PID websocket_port=$WW_KASM_PORT"
 }
 
 cleanup() {
     status=$?
     trap - EXIT INT TERM
 
-    log "shutting down: workspace-guard -> chromium -> workspace-clipd -> websockify -> KasmVNC"
+    log "shutting down: workspace-guard -> chromium -> workspace-clipd -> KasmVNC"
     terminate_process "$GUARD_PID" workspace-guard
     terminate_process "$CHROMIUM_PID" chromium
     terminate_process "$CLIPD_PID" workspace-clipd
-    terminate_process "$WEBSOCKIFY_PID" websockify
     terminate_process "$KASM_PID" Xvnc
     vncserver -kill "$WW_DISPLAY" >/dev/null 2>&1 || true
     log "shutdown complete"
@@ -257,7 +248,7 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-log "starting provider=${WW_PROVIDER} workspace=${WW_WORKSPACE_DIR} display=${WW_DISPLAY} screen=${WW_SCREEN_WIDTH}x${WW_SCREEN_HEIGHT} kasm_port=${WW_KASM_PORT} rfb_port=${WW_VNC_PORT} guard_mode=${WW_GUARD_MODE} start_url=${WW_START_URL}"
+log "starting provider=${WW_PROVIDER} workspace=${WW_WORKSPACE_DIR} display=${WW_DISPLAY} screen=${WW_SCREEN_WIDTH}x${WW_SCREEN_HEIGHT} kasm_port=${WW_KASM_PORT} guard_mode=${WW_GUARD_MODE} start_url=${WW_START_URL}"
 
 umask 077
 mkdir -p "$WW_WORKSPACE_DIR/profile" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_RUNTIME_DIR" "$WW_WORKSPACE_DIR/tmp" "$WW_IME_STATE_DIR"
@@ -283,11 +274,6 @@ write_ime_state UNAVAILABLE 2>/dev/null || true
 if ! start_kasmvnc; then
     write_ime_state UNAVAILABLE 2>/dev/null || log "warning: failed to write UNAVAILABLE to $WW_IME_STATE_FILE"
     log "KasmVNC failed to start: failing closed"
-    exit 1
-fi
-if ! start_kasm_web_client; then
-    write_ime_state UNAVAILABLE 2>/dev/null || true
-    log "KasmVNC web client transport failed to start: failing closed"
     exit 1
 fi
 write_ime_state READY 2>/dev/null || log "warning: failed to write READY to $WW_IME_STATE_FILE"
@@ -323,6 +309,8 @@ chromium --no-sandbox \
     --no-pings \
     --disable-breakpad \
     --force-device-scale-factor=1 \
+    --lang=zh-CN \
+    "--accept-lang=zh-CN,zh;q=0.9,en;q=0.8" \
     --js-flags=--max-old-space-size=256 \
     --password-store=basic \
     --user-data-dir="$WW_WORKSPACE_DIR/profile" \
@@ -354,10 +342,6 @@ while :; do
         GUARD_STATUS=0
         wait "$GUARD_PID" 2>/dev/null || GUARD_STATUS=$?
         log "workspace-guard exited with status ${GUARD_STATUS}: failing closed"
-        exit 1
-    fi
-    if ! process_running "$WEBSOCKIFY_PID"; then
-        log "websockify exited: failing closed"
         exit 1
     fi
     if ! process_running "$CHROMIUM_PID"; then

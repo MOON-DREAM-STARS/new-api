@@ -1,7 +1,7 @@
 # Browser Agent（Web Workspace 执行平面）
 
 独立 Go 模块：`github.com/QuantumNous/new-api/browser-agent`。它管理每个 Web Workspace 的
-runtime 容器（Xvfb + x11vnc + GUI Chromium）、per-workspace profile 挂载、远程显示字节流代理、
+runtime 容器（KasmVNC 原生 HTTP/WebSocket + GUI Chromium）、per-workspace profile 挂载、Kasm 反向代理、
 session 生命周期（idle timeout / crash recovery / reconcile）与资源限制。
 
 依赖仅 stdlib + `github.com/gorilla/websocket`（+ testify，仅测试）；Docker 交互使用 stdlib
@@ -66,7 +66,7 @@ services:
   到 `10001:10001`（以 root/CAP_CHOWN 运行，或以 10001 运行）。
 - **私有 network**：Agent 启动时先检查 `WEB_WORKSPACE_RUNTIME_NETWORK`；不存在则创建 `Driver=bridge`、`Internal=true` 的 network，已存在但 `Internal != true` 时拒绝启动。runtime 不 publish 任何端口，也没有除 Agent proxy 外的出网通道。
 - **不暴露 runtime 端口**：runtime 容器 `PortBindings` 为空、`NetworkMode` 为上述私有 network；
-  VNC（5900）只在容器网络内可达，由 agent 直连。
+  KasmVNC 原生 HTTP/WebSocket（6901）只在容器网络内可达，由 agent 反向代理访问；不再保留传统 RFB 5900。
 
 ## default-deny egress（Phase 3A）
 
@@ -94,13 +94,13 @@ Agent 自身不挂载、也不把 Docker socket 暴露给 runtime 容器。
 | POST | `/internal/v1/runtimes/{id}/stop` | 停止并删除容器，保留 profile。 |
 | POST | `/internal/v1/runtimes/{id}/restart` | 停 + 启；body 可省略以复用上次 provider/尺寸/mode，也可用 `mode` 覆盖为 `LOCKED`/`LOGIN`。非法 mode 返回 400 `invalid_request`。 |
 | POST | `/internal/v1/runtimes/{id}/activity` | 刷新 `last_activity_at` / idle deadline。 |
-| GET | `/internal/v1/runtimes/{id}/stream` | WebSocket，代理容器内 VNC(5900) 的原始 RFB 字节；非 RUNNING/IDLE 返回 409 `runtime_not_running`。 |
+| GET/POST | `/internal/v1/runtimes/{id}/kasm/{rest...}` | 代理容器内 KasmVNC 原生 HTTP/WebSocket（6901）；非 RUNNING/IDLE 返回 409 `runtime_not_running`。 |
 
 运行时 JSON 只含 `runtime_id`、`workspace_id`、`state`、`created_at`、`last_activity_at`、
 `idle_deadline_at`，不含容器 IP、端口、Docker 路径、profile 绝对路径或 token。
 
 状态机：`STARTING → RUNNING → IDLE → STOPPING → STOPPED`，异常 `FAILED`。
-`RUNNING` 只在“容器确认运行中 **且** display 探测连通”后才返回（探测间隔 250ms，上限 20s）；
+`RUNNING` 只在“容器确认运行中 **且** KasmVNC 6901 transport 探测连通”后才返回（探测间隔 250ms，上限 20s）；
 容器启动后立即退出或 display 一直不可用时，容器会被移除、状态置 `FAILED` 并返回错误。
 
 ## 构建与测试
