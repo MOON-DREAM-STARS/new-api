@@ -1,6 +1,7 @@
 package oaichat
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -202,6 +203,73 @@ func TestChatCompletionsStreamToResponsesEmitsReasoningSummaryPartLifecycle(t *t
 	assert.Equal(t, "resp_1_reasoning_0", partDone.ItemID)
 	require.NotNil(t, partDone.Part)
 	assert.Equal(t, dto.ResponsesReasoningSummaryPart{Type: "summary_text", Text: "think"}, *partDone.Part)
+}
+
+// TestChatCompletionsStreamToResponsesReasoningItemWireShape pins the exact
+// JSON field set of the reasoning output_item.added item. Responses clients
+// key their reasoning-item state on this payload and drop the item when
+// summary is missing, which orphans every following reasoning delta.
+func TestChatCompletionsStreamToResponsesReasoningItemWireShape(t *testing.T) {
+	state := NewChatToResponsesStreamState("resp_1", "gpt-test")
+	events := mustResponsesEventsFromChatChunk(t, state, &dto.ChatCompletionsStreamResponse{
+		Id: "chatcmpl_1", Model: "gpt-test",
+		Choices: []dto.ChatCompletionsStreamResponseChoice{{
+			Delta: dto.ChatCompletionsStreamResponseChoiceDelta{ReasoningContent: lo.ToPtr("think")},
+		}},
+	})
+
+	var added *dto.ResponsesStreamResponse
+	for i := range events {
+		if events[i].Type == responsesEventOutputItemAdded && events[i].Payload.Item != nil &&
+			events[i].Payload.Item.Type == responsesOutputTypeReasoning {
+			added = &events[i].Payload
+			break
+		}
+	}
+	require.NotNil(t, added, "reasoning output_item.added must be emitted")
+
+	raw, err := json.Marshal(added.Item)
+	require.NoError(t, err)
+
+	var item map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(raw, &item))
+
+	// summary must be present on the wire even before any text arrives.
+	summary, ok := item["summary"]
+	require.True(t, ok, "reasoning item must always carry summary, got %s", raw)
+	require.JSONEq(t, `[]`, string(summary))
+
+	_, ok = item["content"]
+	require.True(t, ok, "reasoning item must carry content, got %s", raw)
+
+	require.JSONEq(t, `"reasoning"`, string(item["type"]))
+	require.JSONEq(t, `"resp_1_reasoning_0"`, string(item["id"]))
+	require.JSONEq(t, `"in_progress"`, string(item["status"]))
+
+	// role/quality/size/content keep their legacy shape; only summary is fixed.
+	for _, legacy := range []string{"role", "quality", "size", "content"} {
+		_, present := item[legacy]
+		assert.Truef(t, present, "reasoning item must keep legacy field %q, got %s", legacy, raw)
+	}
+
+	// The client keys the item on summary, so it must be present for every
+	// summary variant, not just the nil case exercised above.
+	for name, summary := range map[string][]dto.ResponsesReasoningSummaryPart{
+		"nil":   nil,
+		"empty": {},
+		"populated": {
+			{Type: "summary_text", Text: "think"},
+		},
+	} {
+		rawVariant, err := json.Marshal(dto.ResponsesOutput{
+			Type: responsesOutputTypeReasoning, ID: "r", Status: "in_progress", Summary: summary,
+		})
+		require.NoError(t, err)
+		var variant map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(rawVariant, &variant))
+		_, present := variant["summary"]
+		assert.Truef(t, present, "reasoning item (%s summary) must carry summary, got %s", name, rawVariant)
+	}
 }
 
 func TestChatCompletionsStreamToResponsesReopensItemsAfterMidStreamFinishReason(t *testing.T) {

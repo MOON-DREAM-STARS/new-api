@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -266,6 +267,82 @@ func TestOaiChatToResponsesStreamHandlerConvertsSSEOrderAndUsage(t *testing.T) {
 		`event: response.function_call_arguments.done`,
 		`event: response.completed`,
 	)
+}
+
+// TestOaiChatToResponsesStreamHandlerReasoningAddedCarriesSummary asserts on the
+// actual SSE bytes this handler writes: the reasoning output_item.added item
+// must contain "summary" even before any reasoning text arrives. Responses
+// clients drop the item when it is absent, orphaning every following
+// reasoning_summary_text.delta for the whole turn.
+func TestOaiChatToResponsesStreamHandlerReasoningAddedCarriesSummary(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	body := strings.Join([]string{
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1710000000,"model":"gpt-test","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"think"},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1710000000,"model":"gpt-test","choices":[{"index":0,"delta":{"content":"answer"},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1710000000,"model":"gpt-test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	c, recorder, resp, info := newResponsesChatTestContext(t, body, true)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	usage, apiErr := OaiChatToResponsesStreamHandler(c, info, resp)
+	require.Nil(t, apiErr)
+	require.NotNil(t, usage)
+
+	got := recorder.Body.String()
+
+	var reasoningItem string
+	for _, block := range strings.Split(got, "\n\n") {
+		if !strings.Contains(block, "event: response.output_item.added") {
+			continue
+		}
+		for _, line := range strings.Split(block, "\n") {
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			var event dto.ResponsesStreamResponse
+			require.NoError(t, common.UnmarshalJsonStr(strings.TrimPrefix(line, "data: "), &event))
+			if event.Item != nil && event.Item.Type == "reasoning" {
+				reasoningItem = strings.TrimPrefix(line, "data: ")
+			}
+		}
+	}
+	require.NotEmpty(t, reasoningItem, "handler must emit a reasoning output_item.added; SSE was:\n%s", got)
+
+	// Assert on the raw nested item JSON so struct tags (omitempty!) cannot
+	// hide the defect by re-marshaling the Go value.
+	var envelope struct {
+		Item json.RawMessage `json:"item"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(reasoningItem), &envelope))
+	require.NotEmpty(t, envelope.Item)
+	var item map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(envelope.Item, &item))
+	summary, ok := item["summary"]
+	require.Truef(t, ok, "reasoning output_item.added must carry summary, got %s", reasoningItem)
+	require.JSONEq(t, `[]`, string(summary))
+	// Log the exact post-fix wire bytes so the emitted shape stays inspectable.
+	t.Logf("reasoning output_item.added item = %s", envelope.Item)
+
+	// The delta that follows must reference the same item, otherwise the client
+	// still has nothing to attach it to.
+	addedID := ""
+	{
+		var event dto.ResponsesStreamResponse
+		require.NoError(t, common.UnmarshalJsonStr(reasoningItem, &event))
+		addedID = event.Item.ID
+	}
+	require.Contains(t, got, `"item_id":"`+addedID+`"`)
+	require.Contains(t, got, `"delta":"think"`)
 }
 
 func requireOrderedSubstrings(t *testing.T, s string, parts ...string) {

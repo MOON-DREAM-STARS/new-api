@@ -396,6 +396,38 @@ type ResponsesOutput struct {
 // calls, whose fields must not leak into web_search_call or mcp_call items.
 func (r ResponsesOutput) MarshalJSON() ([]byte, error) {
 	switch r.Type {
+	case "reasoning":
+		// A reasoning item must always carry summary on the wire. Responses
+		// clients key their reasoning-item state on this payload and drop the
+		// item when summary is absent, which orphans every following
+		// reasoning delta and loses the reasoning block for the whole turn.
+		// Summary carries omitempty (which also drops an empty slice), so for
+		// reasoning items it is serialized explicitly without that tag. Every
+		// other field keeps the exact legacy shape.
+		type reasoningItem struct {
+			Type    string                          `json:"type"`
+			ID      string                          `json:"id"`
+			Status  string                          `json:"status"`
+			Role    string                          `json:"role"`
+			Content []ResponsesOutputContent        `json:"content"`
+			Summary []ResponsesReasoningSummaryPart `json:"summary"`
+			Quality string                          `json:"quality"`
+			Size    string                          `json:"size"`
+		}
+		summary := r.Summary
+		if summary == nil {
+			summary = []ResponsesReasoningSummaryPart{}
+		}
+		return kitutil.Marshal(reasoningItem{
+			Type:    r.Type,
+			ID:      r.ID,
+			Status:  r.Status,
+			Role:    r.Role,
+			Content: r.Content,
+			Summary: summary,
+			Quality: r.Quality,
+			Size:    r.Size,
+		})
 	case "web_search_call":
 		return kitutil.Marshal(struct {
 			Type   string          `json:"type"`
