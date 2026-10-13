@@ -84,8 +84,11 @@
 <p align="center">
   <a href="#-quick-start">Quick Start</a> •
   <a href="#-key-features">Key Features</a> •
-  <a href="#-deployment">Deployment</a> •
-  <a href="#-documentation">Documentation</a> •
+  <a href="#screenshots">Screenshots</a> •
+  <a href="#capabilities">Capabilities</a> •
+  <a href="#deployment">Deployment</a> •
+  <a href="#development">Development</a> •
+  <a href="#documentation">Documentation</a> •
   <a href="#-help-support">Help</a>
 </p>
 
@@ -98,6 +101,20 @@
 > - Users must lawfully obtain upstream API keys, accounts, model services, and interface permissions, and must comply with upstream terms of service and applicable laws and regulations.
 > - Users should ensure their use complies with upstream terms of service and applicable laws and regulations.
 > - When providing generative AI services to the public, users should comply with applicable regulatory requirements and fulfill all filing, licensing, content safety, real-name verification, log retention, tax, and upstream authorization obligations required by their jurisdiction.
+
+---
+
+<a id="screenshots"></a>
+
+## Screenshots
+
+Accounts, channels, plugin installation states, usage, prices, and costs shown below are simulated data. The marketplace displays the official plugin catalog. Click an image to view it at full size.
+
+| Usage dashboard | Plugin marketplace |
+| --- | --- |
+| [![Usage dashboard with simulated requests, costs, and performance metrics](assets/screenshots/dashboard.en.jpg)](assets/screenshots/dashboard.en.jpg) | [![Official plugin marketplace with simulated installation status](assets/screenshots/plugin-marketplace.en.jpg)](assets/screenshots/plugin-marketplace.en.jpg) |
+| **Model square** | **Usage logs** |
+| [![Model square with simulated model pricing and availability](assets/screenshots/models.en.jpg)](assets/screenshots/models.en.jpg) | [![Usage logs with simulated tokens, costs, and response times](assets/screenshots/usage-logs.en.jpg)](assets/screenshots/usage-logs.en.jpg) |
 
 ---
 
@@ -116,9 +133,6 @@
   </a><!--
   --><a href="https://bda.pku.edu.cn/" target="_blank">
     <img src="./docs/images/pku.png" alt="Peking University" height="80" />
-  </a><!--
-  --><a href="https://www.compshare.cn/?ytag=GPU_yy_gh_newapi" target="_blank">
-    <img src="./docs/images/ucloud.png" alt="UCloud" height="80" />
   </a><!--
   --><a href="https://www.aliyun.com/" target="_blank">
     <img src="./docs/images/aliyun.png" alt="Alibaba Cloud" height="80" />
@@ -216,11 +230,11 @@ docker run --name new-api -d --restart always \
 | ❓ FAQ | [FAQ](https://docs.newapi.pro/en/docs/support/faq) |
 | 💬 Community Interaction | [Communication Channels](https://docs.newapi.pro/en/docs/support/community-interaction) |
 
-### 🧪 Web Workspace (Design / Planned, Not Implemented)
+### 🧪 Web Workspace
 
-> ⚠️ Status: **design / planned — not implemented**. This repository currently contains architecture documentation only; no Browser Agent, runtime, API, or UI has been shipped yet.
+> Status: **implemented in this fork**. Availability in a deployment depends on its New API release and the separately managed Browser Agent and runtime.
 
-Server-side isolated browser workspace design for controlled Web AI access: New API acts as the control plane / auth gateway, a private Browser Agent runs isolated server-side Chromium runtimes, and the local PC stays a thin client that receives only the remote display stream and sends input.
+Web Workspace provides an isolated server-side browser for controlled Web AI access: New API acts as the control plane and auth gateway, a private Browser Agent manages isolated Chromium runtimes, and the local PC stays a thin client that receives the remote display stream and sends input.
 
 - 📐 [Web Workspace Architecture](docs/web-workspace/architecture.md)
 - ✅ [Web Workspace Implementation Checklist](docs/web-workspace/implementation-checklist.md)
@@ -273,8 +287,8 @@ Server-side isolated browser workspace design for controlled Web AI access: New 
 **Format Conversion:**
 - 🔄 **OpenAI Compatible ⇄ Claude Messages**
 - 🔄 **OpenAI Compatible → Google Gemini**
-- 🔄 **Google Gemini → OpenAI Compatible** - Text only, function calling not supported yet
-- 🚧 **OpenAI Compatible ⇄ OpenAI Responses** - In development
+- 🔄 **Google Gemini → OpenAI Compatible** - Text and function calling for supported models
+- 🔄 **OpenAI Compatible ⇄ OpenAI Responses** - Conversion implemented; available capabilities depend on the upstream model and endpoint
 - 🔄 **Thinking-to-content functionality**
 
 **Reasoning Effort Support:**

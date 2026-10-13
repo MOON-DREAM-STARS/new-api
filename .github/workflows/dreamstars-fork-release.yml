@@ -6,7 +6,7 @@ on:
 permissions: {}
 
 env:
-  DREAMSTARS_BRANCH: feature/dreamstars-homepage
+  DREAMSTARS_BRANCH: main
   DREAMSTARS_IMAGE: ghcr.io/moon-dream-stars/new-api
 
 jobs:
@@ -146,14 +146,14 @@ jobs:
             --arg release_tag "$VERSION" \
             --arg version "$VERSION" \
             --arg repository "MOON-DREAM-STARS/new-api" \
-            --arg branch "feature/dreamstars-homepage" \
+            --arg branch "main" \
             --arg commit "$SHA" \
             --arg image "$IMAGE" \
             --arg digest "$DIGEST" \
             --arg published_at "$PUBLISHED_AT" \
             --arg signature_type "cosign-keyless" \
             --arg signature_issuer "https://token.actions.githubusercontent.com" \
-            --arg signature_identity "https://github.com/MOON-DREAM-STARS/new-api/.github/workflows/dreamstars-fork-release.yml@refs/heads/feature/dreamstars-homepage" \
+            --arg signature_identity "https://github.com/MOON-DREAM-STARS/new-api/.github/workflows/dreamstars-fork-release.yml@refs/heads/main" \
             '{
               schema_version: 1,
               release_tag: $release_tag,
@@ -188,7 +188,7 @@ jobs:
           NOTES=$(printf '%s\n' \
             "Release tag: $VERSION" \
             "Source repository: MOON-DREAM-STARS/new-api" \
-            "Source branch: feature/dreamstars-homepage" \
+            "Source branch: main" \
             "Source commit: $SHA" \
             "Image: ghcr.io/moon-dream-stars/new-api@$DIGEST" \
             "Deployment: manual only. The NewAPI administrator panel never deploys servers.")

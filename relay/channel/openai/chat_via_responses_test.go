@@ -12,7 +12,9 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/relayconvert"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -278,11 +280,9 @@ func TestOaiChatToResponsesStreamHandlerReasoningAddedCarriesSummary(t *testing.
 	oldMode := gin.Mode()
 	gin.SetMode(gin.TestMode)
 	t.Cleanup(func() { gin.SetMode(oldMode) })
-
 	oldTimeout := constant.StreamingTimeout
 	constant.StreamingTimeout = 30
 	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
-
 	body := strings.Join([]string{
 		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1710000000,"model":"gpt-test","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"think"},"finish_reason":null}]}`,
 		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1710000000,"model":"gpt-test","choices":[{"index":0,"delta":{"content":"answer"},"finish_reason":null}]}`,
@@ -290,16 +290,12 @@ func TestOaiChatToResponsesStreamHandlerReasoningAddedCarriesSummary(t *testing.
 		`data: [DONE]`,
 		``,
 	}, "\n")
-
 	c, recorder, resp, info := newResponsesChatTestContext(t, body, true)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-
 	usage, apiErr := OaiChatToResponsesStreamHandler(c, info, resp)
 	require.Nil(t, apiErr)
 	require.NotNil(t, usage)
-
 	got := recorder.Body.String()
-
 	var reasoningItem string
 	for _, block := range strings.Split(got, "\n\n") {
 		if !strings.Contains(block, "event: response.output_item.added") {
@@ -317,9 +313,6 @@ func TestOaiChatToResponsesStreamHandlerReasoningAddedCarriesSummary(t *testing.
 		}
 	}
 	require.NotEmpty(t, reasoningItem, "handler must emit a reasoning output_item.added; SSE was:\n%s", got)
-
-	// Assert on the raw nested item JSON so struct tags (omitempty!) cannot
-	// hide the defect by re-marshaling the Go value.
 	var envelope struct {
 		Item json.RawMessage `json:"item"`
 	}
@@ -330,19 +323,59 @@ func TestOaiChatToResponsesStreamHandlerReasoningAddedCarriesSummary(t *testing.
 	summary, ok := item["summary"]
 	require.Truef(t, ok, "reasoning output_item.added must carry summary, got %s", reasoningItem)
 	require.JSONEq(t, `[]`, string(summary))
-	// Log the exact post-fix wire bytes so the emitted shape stays inspectable.
 	t.Logf("reasoning output_item.added item = %s", envelope.Item)
-
-	// The delta that follows must reference the same item, otherwise the client
-	// still has nothing to attach it to.
-	addedID := ""
-	{
-		var event dto.ResponsesStreamResponse
-		require.NoError(t, common.UnmarshalJsonStr(reasoningItem, &event))
-		addedID = event.Item.ID
-	}
-	require.Contains(t, got, `"item_id":"`+addedID+`"`)
+	var event dto.ResponsesStreamResponse
+	require.NoError(t, common.UnmarshalJsonStr(reasoningItem, &event))
+	require.Contains(t, got, `"item_id":"`+event.Item.ID+`"`)
 	require.Contains(t, got, `"delta":"think"`)
+}
+
+func TestOaiChatToResponsesStreamHandlerRestoresCodexCustomToolCall(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+	body := strings.Join([]string{
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1710000000,"model":"gpt-test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_exec","type":"function","function":{"name":"exec","arguments":"{\"input\":"}}]},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1710000000,"model":"gpt-test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"ls -la\"}"}}]},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1710000000,"model":"gpt-test","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	c, recorder, resp, info := newResponsesChatTestContext(t, body, true)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	tools, marshalErr := common.Marshal([]map[string]any{
+		{"type": "custom", "name": "exec", "description": "Run a shell command", "format": map[string]any{"type": "text"}},
+	})
+	require.NoError(t, marshalErr)
+	converted, convertErr := service.ConvertRequestByID(c, info, relayconvert.ConverterOpenAIResponsesToOpenAIChat, &dto.OpenAIResponsesRequest{
+		Model: "gpt-test",
+		Input: []byte(`"list files"`),
+		Tools: tools,
+	})
+	require.NoError(t, convertErr)
+	chatRequest, ok := converted.Value.(*dto.GeneralOpenAIRequest)
+	require.True(t, ok)
+	require.Len(t, chatRequest.Tools, 1)
+	assert.Equal(t, "function", chatRequest.Tools[0].Type)
+	assert.Equal(t, "exec", chatRequest.Tools[0].Function.Name)
+	_, err := OaiChatToResponsesStreamHandler(c, info, resp)
+	require.Nil(t, err)
+	got := recorder.Body.String()
+	assert.NotContains(t, got, `event: response.function_call_arguments`)
+	assert.Contains(t, got, `"delta":"ls -la"`)
+	assert.Contains(t, got, `"input":"ls -la"`)
+	requireOrderedSubstrings(t, got,
+		`event: response.output_item.added`,
+		`"type":"custom_tool_call"`,
+		`event: response.custom_tool_call_input.delta`,
+		`event: response.custom_tool_call_input.done`,
+		`event: response.output_item.done`,
+		`event: response.completed`,
+		`"type":"custom_tool_call"`,
+	)
 }
 
 func requireOrderedSubstrings(t *testing.T, s string, parts ...string) {
