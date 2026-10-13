@@ -250,11 +250,13 @@ func TestConvertOpenAIResponsesRequestToGeminiCodexToolCompatibility(t *testing.
 	require.Len(t, tools, 2)
 	assert.True(t, gjson.GetBytes(geminiReq.Tools, "0.googleSearch").Exists())
 	assert.Equal(t, "lookup", gjson.GetBytes(geminiReq.Tools, "1.functionDeclarations.0.name").String())
+	assert.Equal(t, "apply_patch", gjson.GetBytes(geminiReq.Tools, "1.functionDeclarations.1.name").String())
 	assert.NotContains(t, string(geminiReq.Tools), "namespace")
 	assert.NotContains(t, string(geminiReq.Tools), "tool_search")
-	assert.NotContains(t, string(geminiReq.Tools), "apply_patch")
+	assert.NotContains(t, string(geminiReq.Tools), "allowed_domains")
+	assert.NotContains(t, string(geminiReq.Tools), "external_web_access")
 
-	require.Len(t, geminiReq.Contents, 3)
+	require.Len(t, geminiReq.Contents, 5)
 	assert.Equal(t, "user", geminiReq.Contents[0].Role)
 	assert.Equal(t, "look up the weather", geminiReq.Contents[0].Parts[0].Text)
 	assert.Equal(t, "model", geminiReq.Contents[1].Role)
@@ -263,9 +265,25 @@ func TestConvertOpenAIResponsesRequestToGeminiCodexToolCompatibility(t *testing.
 	assert.Equal(t, "user", geminiReq.Contents[2].Role)
 	require.NotNil(t, geminiReq.Contents[2].Parts[0].FunctionResponse)
 	assert.Equal(t, "lookup", geminiReq.Contents[2].Parts[0].FunctionResponse.Name)
+	assert.Equal(t, "model", geminiReq.Contents[3].Role)
+	require.Len(t, geminiReq.Contents[3].Parts, 1)
+	customCall := geminiReq.Contents[3].Parts[0].FunctionCall
+	require.NotNil(t, customCall)
+	assert.Equal(t, "call_patch", customCall.ID)
+	assert.Equal(t, "apply_patch", customCall.FunctionName)
+	assert.Equal(t, map[string]any{"input": "patch body"}, customCall.Arguments)
+	assert.Equal(t, "user", geminiReq.Contents[4].Role)
+	require.Len(t, geminiReq.Contents[4].Parts, 2)
+	for i, output := range []string{"ok", "legacy custom output"} {
+		response := geminiReq.Contents[4].Parts[i].FunctionResponse
+		require.NotNil(t, response)
+		assert.Equal(t, "apply_patch", response.Name)
+		assert.Equal(t, map[string]any{"content": output}, response.Response)
+		assert.JSONEq(t, `"call_patch"`, string(response.ID))
+	}
 	contentsJSON, err := common.Marshal(geminiReq.Contents)
 	require.NoError(t, err)
-	assert.NotContains(t, string(contentsJSON), "call_patch")
+	assert.Contains(t, string(contentsJSON), "call_patch")
 
 	diagnosticCodes := make(map[string]struct{})
 	for _, diagnostic := range info.ConversionDiagnostics() {
@@ -275,7 +293,7 @@ func TestConvertOpenAIResponsesRequestToGeminiCodexToolCompatibility(t *testing.
 	}
 	for _, code := range []string{
 		"unsupported_function_strict",
-		"custom_tool_omitted",
+		"custom_tool_as_function",
 		"unsupported_opaque_tool",
 		"unsupported_search_constraints",
 		"unsupported_search_tuning",
