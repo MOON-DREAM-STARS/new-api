@@ -6,6 +6,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -151,6 +152,119 @@ func TestConvertOpenAIResponsesRequestToGeminiSkipsCustomToolCalls(t *testing.T)
 	require.Len(t, got.Contents[1].Parts, 1)
 	assert.Equal(t, "next turn", got.Contents[1].Parts[0].Text)
 	assert.Nil(t, got.Contents[1].Parts[0].FunctionResponse)
+}
+
+func TestConvertOpenAIResponsesRequestToGeminiCodexToolCompatibility(t *testing.T) {
+	req := dto.OpenAIResponsesRequest{
+		Model: "gemini-test",
+		Input: mustGeminiRawMessage(t, []map[string]any{
+			{"role": "user", "content": "look up the weather"},
+			{
+				"type":      "function_call",
+				"call_id":   "call_lookup",
+				"name":      "lookup",
+				"arguments": map[string]any{"city": "Paris"},
+			},
+			{
+				"type":    "function_call_output",
+				"call_id": "call_lookup",
+				"output":  map[string]any{"temperature": 18},
+			},
+			{
+				"type":    "custom_tool_call",
+				"call_id": "call_patch",
+				"name":    "apply_patch",
+				"input":   "patch body",
+			},
+			{
+				"type":    "custom_tool_call_output",
+				"call_id": "call_patch",
+				"output":  "ok",
+			},
+			{
+				"type":    "function_call_output",
+				"call_id": "call_patch",
+				"output":  "legacy custom output",
+			},
+		}),
+		Tools: mustGeminiRawMessage(t, []map[string]any{
+			{
+				"type":        "function",
+				"name":        "lookup",
+				"description": "Look up weather",
+				"strict":      true,
+				"parameters": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"city": map[string]any{"type": "string"},
+					},
+				},
+			},
+			{"type": "custom", "name": "apply_patch"},
+			{"type": "namespace", "name": "workspace"},
+			{"type": "tool_search", "name": "find"},
+			{
+				"type":                "web_search_preview",
+				"external_web_access": false,
+				"filters": map[string]any{
+					"allowed_domains": []string{"example.com"},
+				},
+				"user_location": map[string]any{
+					"type":    "approximate",
+					"country": "FR",
+				},
+			},
+		}),
+	}
+	info := &relaycommon.RelayInfo{
+		OriginModelName: req.Model,
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: req.Model,
+		},
+	}
+
+	got, err := (&Adaptor{}).ConvertOpenAIResponsesRequest(nil, info, req)
+	require.NoError(t, err)
+	geminiReq, ok := got.(*dto.GeminiChatRequest)
+	require.True(t, ok)
+	assert.Equal(t, types.ConversionLossPolicyAllow, info.ConvOptions().EffectiveToolLossPolicy())
+
+	tools := geminiReq.GetTools()
+	require.Len(t, tools, 2)
+	assert.True(t, gjson.GetBytes(geminiReq.Tools, "0.googleSearch").Exists())
+	assert.Equal(t, "lookup", gjson.GetBytes(geminiReq.Tools, "1.functionDeclarations.0.name").String())
+	assert.NotContains(t, string(geminiReq.Tools), "namespace")
+	assert.NotContains(t, string(geminiReq.Tools), "tool_search")
+	assert.NotContains(t, string(geminiReq.Tools), "apply_patch")
+
+	require.Len(t, geminiReq.Contents, 3)
+	assert.Equal(t, "user", geminiReq.Contents[0].Role)
+	assert.Equal(t, "look up the weather", geminiReq.Contents[0].Parts[0].Text)
+	assert.Equal(t, "model", geminiReq.Contents[1].Role)
+	require.NotNil(t, geminiReq.Contents[1].Parts[0].FunctionCall)
+	assert.Equal(t, "lookup", geminiReq.Contents[1].Parts[0].FunctionCall.FunctionName)
+	assert.Equal(t, "user", geminiReq.Contents[2].Role)
+	require.NotNil(t, geminiReq.Contents[2].Parts[0].FunctionResponse)
+	assert.Equal(t, "lookup", geminiReq.Contents[2].Parts[0].FunctionResponse.Name)
+	contentsJSON, err := common.Marshal(geminiReq.Contents)
+	require.NoError(t, err)
+	assert.NotContains(t, string(contentsJSON), "call_patch")
+
+	diagnosticCodes := make(map[string]struct{})
+	for _, diagnostic := range info.ConversionDiagnostics() {
+		diagnosticCodes[diagnostic.Code] = struct{}{}
+		assert.Equal(t, types.RelayFormat(types.RelayFormatOpenAIResponses), diagnostic.From)
+		assert.Equal(t, types.RelayFormat(types.RelayFormatGemini), diagnostic.To)
+	}
+	for _, code := range []string{
+		"unsupported_function_strict",
+		"custom_tool_omitted",
+		"unsupported_opaque_tool",
+		"unsupported_search_constraints",
+		"unsupported_search_tuning",
+	} {
+		assert.Contains(t, diagnosticCodes, code)
+	}
 }
 
 func mustConvertResponsesToGemini(t *testing.T, req dto.OpenAIResponsesRequest) *dto.GeminiChatRequest {
