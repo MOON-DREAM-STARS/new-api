@@ -1,3 +1,41 @@
+> [!CAUTION]
+> # ⚠️ ATTENTION ⚠️
+> # 禁止向上游 NewAPI 提交任何 PR / 打开任何 Issue
+>
+> ## **硬性政策，无例外。**
+>
+> **本项目永不**对上游 [`QuantumNous/new-api`](https://github.com/QuantumNous/new-api) 提交 Pull Request 或打开 Issue ——
+> 包括缺陷报告、功能请求、提问、回归反馈、复现步骤、文档修改，以及通过 Subagent / 自动化发起的同类动作。
+>
+> **上游代码的任何缺陷只在本 Fork 内自行修复并记录**（见本仓库 `YYYY/MM/DD/` 日期记录），不外传、不留公开痕迹。
+
+> ### 为什么这条政策存在（原委，据实记录）
+>
+> 2026-09-23：我按正常流程向上游提交了 issue、修复了 bug、提交了 PR，并实际跑过测试。
+> 上游维护者的答复是：**因为该 issue 是怀疑是用 AI AGENT写的，所以「感觉到不被尊重」** —— 给我block了。
+> 当我好声好气进群，希望解除block，这样便于我对NewAPI进行开源贡献的时候，有人还说「别以为只有你有 Codex」这类嘲讽。
+>
+> Deepseek说：
+> - **缺陷报告的价值取决于能否复现、定位是否准确，不取决于由谁/什么工具敲键盘。**
+> - 修复的价值取决于改动是否正确、测试是否跑过、回归是否可控。
+> - 既使用 AI 辅助、又以「你用了 AI」为由拒收他人的等价工作，是双重标准。
+> - 一边以工具来源否定贡献、一边要求提交方继续代为改 bug，不可接受。
+>
+> ---
+>
+> ### 个人维护 Fork：同时禁止**入站** PR
+>
+> 本 Fork（包括 `feature/dreamstars-homepage` 分支）仅由 **MOON-DREAM-STARS** 个人维护，不接受外部协作或代码合并请求。
+>
+> **请勿向本仓库提交 Pull Request。任何 PR 都将不经评审直接关闭，也不会进入合并流程。**
+>
+> 本政策不改变 New API、QuantumNous 的原项目署名、版权声明或 AGPLv3 许可要求。
+>
+> ---
+>
+> **Personal-maintenance fork — no PRs or issues in either direction.**
+> This project **never** opens pull requests or issues against the upstream [QuantumNous/new-api](https://github.com/QuantumNous/new-api) repository — for any reason, including bug reports, feature requests, questions, reproduction steps, or documentation changes, whether filed manually or by agents/automation. Upstream defects are fixed and recorded privately inside this fork only. Incoming pull requests to this fork are likewise closed without review or merge. **This policy has no exceptions.** It does not alter the original project attribution, copyright notices, or AGPLv3 license obligations.
+
 <div align="center">
 
 ![new-api](/web/public/logo.png)
