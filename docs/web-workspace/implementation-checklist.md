@@ -909,8 +909,9 @@ POST   /api/web-workspace/session
 DELETE /api/web-workspace/session/:id
 POST   /api/web-workspace/session/:id/restart
 
-POST   /api/web-workspace/session/:id/stream-ticket
-WS     /api/web-workspace/session/:id/stream
+POST   /api/web-workspace/session/:id/kasm-ticket
+GET    /api/web-workspace/session/:id/kasm/*
+POST   /api/web-workspace/session/:id/kasm/*
 
 GET    /api/web-workspace/projects
 POST   /api/web-workspace/projects
@@ -1728,7 +1729,7 @@ remote Chrome credential holder
 - 发现并修复的真实缺陷（P1，容器 → 宿主越权写）：runtime 容器以 uid 10001 拥有 `/workspace` bind mount，可把 `.guard`（或状态文件）替换成符号链接。**修复前**实测 `PUT /internal/v1/runtimes/701/ownership` → `status=200`，agent 跟随链接把 `ownership.json` 写入 `/tmp/victim/` 并把该宿主目录 chown 成 `10001:10001`。**修复后**（同一环境、替换为新二进制、同一命令）：start / PUT ownership / GET observations / POST ack / POST permits 全部 `status=500 {"success":false,"error":"internal_error"}`，`/tmp/victim` 保持为空且属主不变；`.guard → ../workspace-702/.guard` 相对跨 workspace 链接同样 500 且 `workspace-702/.guard` 无写入；恢复真实 `.guard` 后 start → `200 RUNNING`、PUT ownership → 200、observations → 200、ack → 200、permits → 200（正常路径不受影响，`.guard` 自动重建为 10001:10001）；状态文件 symlink 读（`observations.jsonl → /tmp/secret.jsonl`）→ 500 且不泄露内容；状态文件 symlink 写（`ownership.json → /tmp/victim-own.json`）→ 200 且被指向文件内容不变（rename 替换链接而非跟随）。
 - 逐项证据（§31 32 项）：
   - horizontal privilege escalation / IDOR / forged workspace·project·conversation ID：Phase 1–4 既有测试 + 本阶段聚焦复跑（`CrossUserAccessDenied`、`IgnoresForgedIdentifiers`、三方言 ownership 隔离）；guard 侧 `TestGuardDeniesUnregisteredProjectNavigation`、`TestGuardDeniesConversationsWithoutRegisteredProject`、`TestGuardDeniesUnknownResourceShapes` + Phase 4 真实 CDP 探针（外来 project / 无 project 会话 / 未知形态一律 `survived=false`）。
-  - stale / replayed stream ticket、session fixation：`TestWebWorkspaceStreamTicketRejectsMismatchAndExpiry`（过期 / session 不匹配 / 空 ticket）、`TestWebWorkspaceStreamTicketIsSingleUse`（消费即失效）；`controller.WebWorkspaceStream` 在消费后仍用 `GetSession(ticket.UserId, sessionId)` + `WorkspaceId` 比对才会连 agent。
+  - stale / replayed stream ticket、session fixation：`TestWebWorkspaceStreamTicketRejectsMismatchAndExpiry`（过期 / session 不匹配 / 空 ticket）、`TestWebWorkspaceStreamTicketIsSingleUse`（消费即失效）；Kasm ticket 在 WebSocket 升级时消费后，`WebWorkspaceKasm` 仍以 user/session/workspace ownership 校验才会连 agent。
   - browser-agent direct access / CDP exposure / VNC exposure：`docker port ws-agent` 与 `docker port newapi-ws-runtime-701` 均为空；宿主 `127.0.0.1:8730/8731/9222/5900` 全部 refused；runtime 内 CDP 仅 `127.0.0.1:9222`（同网络 helper 连接被拒）；x11vnc 只在容器私有网络内监听，地址/端口从不返回客户端（`Snapshot` 只有 runtime_id/state/时间戳）。
   - SSRF / private IP / host.docker.internal / cloud metadata：真实 CDP 探针（guard 是唯一 CDP consumer）：`https://chatgpt.com/` `survived=true`（对照）；`https://example.com/`、`http://169.254.169.254/latest/meta-data/`、`http://10.0.0.5/`、`http://127.0.0.1:9222/json/version`、`http://host.docker.internal:8730/` 全部 `survived=false`；runtime 日志 `target_deny`（`ip literal` / `port not allowed` / `host not in LOCKED allowlist`），agent 侧 egress proxy 对同批目标记录 `policy_deny`（双层强制）。
   - redirect bypass / service worker / WebSocket·aux hosts：guard 以 `Fetch.enable pattern=*` 拦截并逐请求判定（redirect 每一跳都是新的 Document 请求 → 重新判定），非 Document 依赖 egress proxy；实测经代理 `https://example.com/`（CONNECT）与 `http://example.com/`（明文）分别被拒（Forbidden / 403），`https://chatgpt.com/robots.txt` 200（对照）；`accounts.google.com` Script 实测被 guard `policy_deny`。SW 请求同样只能经 `--proxy-server`（无 bypass、`--disable-quic`、`--webrtc-ip-handling-policy=disable_non_proxied_udp`）。
