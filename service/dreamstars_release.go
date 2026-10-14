@@ -378,10 +378,10 @@ func validateDreamstarsReleaseManifest(manifest *dreamstarsReleaseManifest, rele
 	return nil
 }
 
-// dreamstarsReleaseBranches lists the approved release refs. main is the
-// integration branch; the feature branch is retained so already-published
-// feature Releases stay deployable and reversible.
-var dreamstarsReleaseBranches = []string{"main", "feature/dreamstars-homepage"}
+// dreamstarsReleaseBranches lists the only release ref trusted for new
+// Dreamstars releases. Previously published releases from other branches are
+// intentionally not trusted by the current manifest checker.
+var dreamstarsReleaseBranches = []string{"main"}
 
 func isDreamstarsReleaseBranch(branch string) bool {
 	for _, approved := range dreamstarsReleaseBranches {

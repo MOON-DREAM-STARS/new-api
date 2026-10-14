@@ -2,7 +2,19 @@
 > # ⚠️ ATTENTION ⚠️
 > # 禁止向上游 NewAPI 提交任何 PR / 打开任何 Issue
 >
-> ## **硬性政策，无例外。**
+> ## Fork 分支与发布流程
+
+| 分支 | 职责 |
+| --- | --- |
+| `main` | upstream 同步和唯一 VPS 发布源 |
+| `dev` | 日常开发，验证后合入 `main` |
+| `web-workspace` | 仅保存 Web Workspace / Browser Agent 及必要接入，暂停开发 |
+
+上游更新按 `upstream/main → main → dev` 合并；日常开发按 `dev → main` 合并。同步采用 merge，保留 Fork 历史。新的 Dreamstars Release 只允许从 `main` 手动发起，VPS 更新仍须经过受控发布脚本和即时授权。
+
+Web Workspace 已从活动代码线剥离，源代码与相关历史验收记录保存在 `web-workspace` 分支。恢复开发需单独决定何时重新整合。此次分支重组不更新 VPS；线上当前发布的功能仍以实际部署版本为准。
+
+## **硬性政策，无例外。**
 >
 > **本项目永不**对上游 [`QuantumNous/new-api`](https://github.com/QuantumNous/new-api) 提交 Pull Request 或打开 Issue ——
 > 包括缺陷报告、功能请求、提问、回归反馈、复现步骤、文档修改，以及通过 Subagent / 自动化发起的同类动作。
@@ -25,7 +37,7 @@
 >
 > ### 个人维护 Fork：同时禁止**入站** PR
 >
-> 本 Fork（包括 `feature/dreamstars-homepage` 分支）仅由 **MOON-DREAM-STARS** 个人维护，不接受外部协作或代码合并请求。
+> 本 Fork仅由 **MOON-DREAM-STARS** 个人维护，不接受外部协作或代码合并请求。
 >
 > **请勿向本仓库提交 Pull Request。任何 PR 都将不经评审直接关闭，也不会进入合并流程。**
 >
@@ -230,14 +242,6 @@ docker run --name new-api -d --restart always \
 | ❓ FAQ | [FAQ](https://docs.newapi.pro/en/docs/support/faq) |
 | 💬 Community Interaction | [Communication Channels](https://docs.newapi.pro/en/docs/support/community-interaction) |
 
-### 🧪 Web Workspace
-
-> Status: **implemented in this fork**. Availability in a deployment depends on its New API release and the separately managed Browser Agent and runtime.
-
-Web Workspace provides an isolated server-side browser for controlled Web AI access: New API acts as the control plane and auth gateway, a private Browser Agent manages isolated Chromium runtimes, and the local PC stays a thin client that receives the remote display stream and sends input.
-
-- 📐 [Web Workspace Architecture](docs/web-workspace/architecture.md)
-- ✅ [Web Workspace Implementation Checklist](docs/web-workspace/implementation-checklist.md)
 
 ---
 

@@ -6,9 +6,8 @@ on:
 permissions: {}
 
 env:
-  # Approved release refs. main is the integration branch; the feature branch is
-  # retained so already-published feature Releases stay deployable and reversible.
-  DREAMSTARS_BRANCHES: "main feature/dreamstars-homepage"
+  # Only the main integration branch may publish new Dreamstars releases.
+  DREAMSTARS_BRANCHES: "main"
   DREAMSTARS_IMAGE: ghcr.io/moon-dream-stars/new-api
 
 jobs:

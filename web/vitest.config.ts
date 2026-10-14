@@ -42,7 +42,6 @@ export default defineConfig({
     // ~4x slowdown observed on shared runners.
     testTimeout: 20000,
     clearMocks: true,
-    isolate: true,
     restoreMocks: true,
     include: [
       'src/**/*.{test,spec}.{ts,tsx}',

@@ -134,14 +134,16 @@ func TestFetchDreamstarsReleaseAcceptsMainBranchManifest(t *testing.T) {
 }
 
 func TestDreamstarsReleaseManifestRejectsUnapprovedBranch(t *testing.T) {
-	manifest := trustedDreamstarsManifest("main")
-	manifest.Branch = "release/not-approved"
-	manifest.Signature.Identity = dreamstarsReleaseSignatureIdentityForBranch("release/not-approved")
+	for _, branch := range []string{"dev", "web-workspace", "feature/dreamstars-homepage", "release/not-approved"} {
+		t.Run(branch, func(t *testing.T) {
+			manifest := trustedDreamstarsManifest(branch)
 
-	err := validateDreamstarsReleaseManifest(manifest, "dreamstars-20260905-120000-123456789abc")
+			err := validateDreamstarsReleaseManifest(manifest, "dreamstars-20260905-120000-123456789abc")
 
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "source is not trusted")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "source is not trusted")
+		})
+	}
 }
 
 func TestDreamstarsReleaseManifestRejectsSignatureIdentityFromAnotherBranch(t *testing.T) {
@@ -317,7 +319,7 @@ func TestDreamstarsReleaseUpdateMarksOlderReleaseAsAvailable(t *testing.T) {
 }
 
 func trustedDreamstarsManifestJSON(repository string) string {
-	return dreamstarsManifestJSON(repository, "feature/dreamstars-homepage")
+	return dreamstarsManifestJSON(repository, "main")
 }
 
 func dreamstarsManifestJSON(repository, branch string) string {
