@@ -17,22 +17,31 @@ func TestEnsureWorkspaceDirsHandsTreeToRuntimeIdentity(t *testing.T) {
 	expected := workspaceTreeNames()
 
 	type chownCall struct {
-		root string
-		name string
-		uid  int
-		gid  int
+		rootSameFile bool
+		name         string
+		uid          int
+		gid          int
 	}
 	var calls []chownCall
 	err := ensureWorkspaceDirs(workspaceDir, func(root *os.Root, name string, uid int, gid int) error {
-		calls = append(calls, chownCall{root: root.Name(), name: name, uid: uid, gid: gid})
+		opened, err := root.Stat(".")
+		require.NoError(t, err)
+		workspace, err := os.Stat(workspaceDir)
+		require.NoError(t, err)
+		calls = append(calls, chownCall{
+			rootSameFile: os.SameFile(workspace, opened),
+			name:         name,
+			uid:          uid,
+			gid:          gid,
+		})
 		return nil
 	}, ownerOfRoot)
 	require.NoError(t, err)
 
 	require.Len(t, calls, len(expected))
 	for index, call := range calls {
+		assert.True(t, call.rootSameFile)
 		assert.Equal(t, expected[index], call.name)
-		assert.Equal(t, workspaceDir, filepath.Clean(call.root))
 		assert.Equal(t, runtime.RuntimeUID, call.uid)
 		assert.Equal(t, runtime.RuntimeGID, call.gid)
 	}

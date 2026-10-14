@@ -143,6 +143,40 @@ func TestAccessTokenRouteRulesCoverEveryDashboardRoute(t *testing.T) {
 	}
 }
 
+func TestSensitiveDashboardRoutesRequireBrowserSession(t *testing.T) {
+	for _, key := range []string{
+		"GET /api/web-workspace/config",
+		"GET /api/web-workspace/status",
+		"GET /api/web-workspace/projects",
+		"POST /api/web-workspace/projects",
+		"GET /api/web-workspace/projects/:id",
+		"PATCH /api/web-workspace/projects/:id",
+		"DELETE /api/web-workspace/projects/:id",
+		"GET /api/web-workspace/projects/:id/conversations",
+		"GET /api/web-workspace/session",
+		"POST /api/web-workspace/session",
+		"DELETE /api/web-workspace/session/:id",
+		"POST /api/web-workspace/session/:id/restart",
+		"POST /api/web-workspace/session/:id/navigation",
+		"POST /api/web-workspace/session/:id/activity",
+		"POST /api/web-workspace/session/:id/kasm-ticket",
+		"GET /api/web-workspace/session/:id/file-chooser",
+		"POST /api/web-workspace/session/:id/file-chooser/:chooser_id/files",
+		"POST /api/web-workspace/session/:id/file-chooser/:chooser_id/cancel",
+		"POST /api/web-workspace/session/:id/clipboard/copy",
+		"POST /api/web-workspace/session/:id/clipboard/paste",
+		"POST /api/web-workspace/session/:id/input/text",
+		"POST /api/web-workspace/session/:id/input/key",
+		"GET /api/web-workspace/session/:id/input/caret",
+		"GET /api/web-workspace/session/:id/kasm/*rest",
+		"POST /api/web-workspace/session/:id/kasm/*rest",
+	} {
+		rule, ok := middleware.AccessTokenRouteRule(key)
+		require.True(t, ok, key)
+		assert.Equal(t, "session", rule.Kind(), key)
+	}
+}
+
 func TestAccessTokenCatalogCoversEveryPermission(t *testing.T) {
 	catalog := service.AccessTokenCatalog(1, common.RoleRootUser)
 	scopes := map[string]bool{}

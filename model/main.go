@@ -379,7 +379,6 @@ func migrateDB() error {
 		&WebWorkspace{},
 		&WebProject{},
 		&WebConversation{},
-
 	)
 	if err != nil {
 		return err

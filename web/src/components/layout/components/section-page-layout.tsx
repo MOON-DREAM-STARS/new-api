@@ -95,11 +95,17 @@ export function SectionPageLayout(props: SectionPageLayoutProps) {
           )}
           <div className='flex flex-wrap items-center justify-between gap-x-3 gap-y-2 sm:gap-x-4'>
             <div
-              className={props.stackActionsOnMobile
-                ? 'flex min-w-0 flex-1 items-center gap-x-3 sm:gap-x-4 max-sm:basis-full'
-                : 'flex min-w-0 flex-1 items-center gap-x-3 sm:gap-x-4'}
+              className={
+                props.stackActionsOnMobile
+                  ? 'flex min-w-0 flex-1 items-center gap-x-3 max-sm:basis-full sm:gap-x-4'
+                  : 'flex min-w-0 flex-1 items-center gap-x-3 sm:gap-x-4'
+              }
             >
-              <div className={center != null ? 'min-w-0 shrink-0' : 'min-w-0 flex-1'}>
+              <div
+                className={
+                  center != null ? 'min-w-0 shrink-0' : 'min-w-0 flex-1'
+                }
+              >
                 <h2 className='truncate text-base font-bold tracking-tight sm:text-lg'>
                   {title}
                 </h2>
