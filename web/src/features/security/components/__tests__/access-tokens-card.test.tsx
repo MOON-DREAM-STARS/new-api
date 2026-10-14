@@ -654,3 +654,31 @@ describe('access tokens card', () => {
     )
   })
 })
+
+it('Common hides all Access records entries and never requests audit/self', async () => {
+  useAuthStore.getState().auth.setUser({ id: 1, username: 'common', role: 1 })
+  list = {
+    items: [tokenItem({})],
+    legacy: {
+      token_ref: 'legacy',
+      token_hint: '1234',
+      created_at: NOW,
+      last_used_at: 0,
+      last_used_ip: '',
+      retire_at: NOW + 86400,
+    },
+  }
+  const user = userEvent.setup()
+  renderCard()
+  await screen.findByText('deploy script')
+  expect(
+    screen.queryByRole('button', { name: 'Access records' })
+  ).not.toBeInTheDocument()
+  await user.click(screen.getByRole('button', { name: 'Open menu' }))
+  expect(
+    screen.queryByRole('menuitem', { name: 'Access records' })
+  ).not.toBeInTheDocument()
+  expect(
+    vi.mocked(api.get).mock.calls.some(([url]) => url === '/api/audit/self')
+  ).toBe(false)
+})

@@ -25,6 +25,8 @@ import { checkIsActive } from '@/components/layout/lib/url-utils'
 import {
   parseSidebarModulesAdmin,
   serializeSidebarModulesAdmin,
+  recommendedSidebarRoles,
+  sidebarModuleAllowed,
 } from '@/features/system-settings/maintenance/config'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -45,7 +47,12 @@ afterEach(() => {
   useAuthStore.getState().auth.reset()
 })
 
-function sidebarFor(admin?: object, user?: object, canConfigure = true) {
+function sidebarFor(
+  admin?: object,
+  user?: object,
+  canConfigure = true,
+  role = 1
+) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -55,7 +62,7 @@ function sidebarFor(admin?: object, user?: object, canConfigure = true) {
   useAuthStore.getState().auth.setUser({
     id: 1,
     username: 'alice',
-    role: 1,
+    role,
     permissions: { sidebar_settings: canConfigure },
     sidebar_modules: user ? JSON.stringify(user) : '',
   })
@@ -178,5 +185,64 @@ describe('audit log sidebar entry', () => {
       .map((item) => item.title)
     expect(titles).not.toContain('Usage Logs')
     expect(titles).toContain('Audit Logs')
+  })
+})
+
+describe('role sidebar policies', () => {
+  it.each([1, 10, 100])(
+    'round-trips role %i without converting roles to a section',
+    (role) => {
+      const config = parseSidebarModulesAdmin('')
+      Object.assign(config, { roles: recommendedSidebarRoles(config) })
+      const saved = parseSidebarModulesAdmin(
+        serializeSidebarModulesAdmin(config)
+      )
+      expect(sidebarModuleAllowed(saved, role, 'console', 'audit')).toBe(
+        role !== 1
+      )
+      expect(sidebarModuleAllowed(saved, role, 'console', 'log')).toBe(true)
+      const { result } = sidebarFor(
+        saved,
+        {
+          console: { enabled: true, audit: true, midjourney: true, task: true },
+        },
+        true,
+        role
+      )
+      const titles = result.current
+        .flatMap((group) => group.items)
+        .map((item) => item.title)
+      expect(titles.includes('Audit Logs')).toBe(role !== 1)
+      expect(titles).toContain('Usage Logs')
+      expect(titles.includes('Task Logs')).toBe(role !== 1)
+    }
+  )
+  it('global disables win over role allows and personal settings can further hide', () => {
+    const config = parseSidebarModulesAdmin('')
+    Object.assign(config, { roles: recommendedSidebarRoles(config) })
+    config.console.audit = false
+    expect(sidebarModuleAllowed(config, 100, 'console', 'audit')).toBe(false)
+    const { result } = sidebarFor(config, { console: { log: false } }, true, 10)
+    expect(
+      result.current.flatMap((group) => group.items).map((item) => item.title)
+    ).not.toContain('Usage Logs')
+  })
+  it('Root ignores stale personal settings but respects its role policy', () => {
+    const config = parseSidebarModulesAdmin('')
+    Object.assign(config, { roles: recommendedSidebarRoles(config) })
+    const roles = recommendedSidebarRoles(config)
+    roles['100'].console.audit = false
+    Object.assign(config, { roles })
+    const { result } = sidebarFor(
+      config,
+      { personal: { security: false } },
+      false,
+      100
+    )
+    const titles = result.current
+      .flatMap((group) => group.items)
+      .map((item) => item.title)
+    expect(titles).toContain('Security & Access')
+    expect(titles).not.toContain('Audit Logs')
   })
 })

@@ -36,7 +36,11 @@ export type SidebarSectionConfig = {
   [key: string]: boolean
 }
 
-export type SidebarModulesAdminConfig = Record<string, SidebarSectionConfig>
+export type SidebarModulesConfig = Record<string, SidebarSectionConfig>
+export type SidebarRoleConfig = Record<string, SidebarModulesConfig>
+export type SidebarModulesAdminConfig = SidebarModulesConfig & {
+  roles?: SidebarRoleConfig
+}
 
 export const HEADER_NAV_DEFAULT: HeaderNavModulesConfig = {
   home: true,
@@ -53,7 +57,7 @@ export const HEADER_NAV_DEFAULT: HeaderNavModulesConfig = {
   about: true,
 }
 
-export const SIDEBAR_MODULES_DEFAULT: SidebarModulesAdminConfig = {
+export const SIDEBAR_MODULES_DEFAULT: SidebarModulesConfig = {
   chat: {
     enabled: true,
     playground: true,
@@ -126,8 +130,8 @@ const parseAccessModule = (
   return { ...fallback }
 }
 
-const cloneSidebarDefault = (): SidebarModulesAdminConfig =>
-  Object.entries(SIDEBAR_MODULES_DEFAULT).reduce<SidebarModulesAdminConfig>(
+const cloneSidebarDefault = (): SidebarModulesConfig =>
+  Object.entries(SIDEBAR_MODULES_DEFAULT).reduce<SidebarModulesConfig>(
     (acc, [section, config]) => {
       acc[section] = { ...config }
       return acc
@@ -194,7 +198,7 @@ export function parseSidebarModulesAdmin(
     const result: SidebarModulesAdminConfig = {}
 
     Object.entries(parsed).forEach(([sectionKey, raw]) => {
-      if (!raw || typeof raw !== 'object') return
+      if (sectionKey === 'roles' || !raw || typeof raw !== 'object') return
 
       const defaultSection = defaults[sectionKey] ?? { enabled: true }
       const sectionConfig: SidebarSectionConfig = {
@@ -231,6 +235,20 @@ export function parseSidebarModulesAdmin(
       })
     })
 
+    if (
+      parsed.roles &&
+      typeof parsed.roles === 'object' &&
+      !Array.isArray(parsed.roles)
+    ) {
+      const roles: SidebarRoleConfig = {}
+      for (const role of ['1', '10', '100']) {
+        const rawRole = (parsed.roles as Record<string, unknown>)[role]
+        if (rawRole && typeof rawRole === 'object' && !Array.isArray(rawRole)) {
+          roles[role] = parseSidebarModulesAdmin(JSON.stringify(rawRole))
+        }
+      }
+      Object.assign(result, { roles })
+    }
     return result
   } catch {
     return defaults
@@ -241,4 +259,39 @@ export function serializeSidebarModulesAdmin(
   config: SidebarModulesAdminConfig
 ): string {
   return JSON.stringify(config)
+}
+
+/** Role policies only narrow the global master switches. Missing policy is legacy. */
+export function sidebarModuleAllowed(
+  config: SidebarModulesAdminConfig,
+  role: number | undefined,
+  section: string,
+  module: string
+): boolean {
+  const global = config[section]
+  if (!global?.enabled || global[module] !== true) return false
+  const policy = config.roles?.[String(role)]?.[section]
+  return !policy || (policy.enabled !== false && policy[module] !== false)
+}
+
+export function recommendedSidebarRoles(
+  config: SidebarModulesAdminConfig
+): SidebarRoleConfig {
+  const roles: SidebarRoleConfig = {}
+  for (const role of ['1', '10', '100']) {
+    roles[role] = Object.fromEntries(
+      Object.entries(config)
+        .filter(([key]) => key !== 'roles')
+        .map(([section, modules]) => [
+          section,
+          Object.fromEntries(Object.keys(modules).map((key) => [key, true])),
+        ])
+    ) as SidebarModulesConfig
+  }
+  Object.assign(roles['1'].console, {
+    audit: false,
+    midjourney: false,
+    task: false,
+  })
+  return roles
 }

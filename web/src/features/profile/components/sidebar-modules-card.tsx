@@ -31,6 +31,11 @@ import {
 } from '@/components/ui/card'
 import { IconBadge } from '@/components/ui/icon-badge'
 import { Switch } from '@/components/ui/switch'
+import {
+  parseSidebarModulesAdmin,
+  sidebarModuleAllowed,
+} from '@/features/system-settings/maintenance/config'
+import { useStatus } from '@/hooks/use-status'
 import { api } from '@/lib/api'
 import { handleServerError } from '@/lib/handle-server-error'
 import { useAuthStore } from '@/stores/auth-store'
@@ -54,6 +59,10 @@ export function SidebarModulesCard() {
   const [loading, setLoading] = useState(false)
   const [config, setConfig] = useState<SidebarModulesConfig>({})
   const currentUser = useAuthStore((s) => s.auth.user)
+  const { status } = useStatus()
+  const adminConfig = parseSidebarModulesAdmin(
+    status?.SidebarModulesAdmin as string | undefined
+  )
   const setUser = useAuthStore((s) => s.auth.setUser)
 
   const sectionDefs: SectionDef[] = [
@@ -250,30 +259,39 @@ export function SidebarModulesCard() {
                 />
               </div>
               <div className='mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-1'>
-                {section.modules.map((mod) => (
-                  <div
-                    key={mod.key}
-                    className={`flex min-h-16 items-center justify-between rounded-lg border p-3 ${
-                      sectionEnabled ? '' : 'opacity-50'
-                    }`}
-                  >
-                    <div className='mr-2 min-w-0'>
-                      <p className='truncate text-sm font-medium'>
-                        {mod.title}
-                      </p>
-                      <p className='text-muted-foreground truncate text-xs'>
-                        {mod.description}
-                      </p>
+                {section.modules
+                  .filter((mod) =>
+                    sidebarModuleAllowed(
+                      adminConfig,
+                      currentUser?.role,
+                      section.key,
+                      mod.key
+                    )
+                  )
+                  .map((mod) => (
+                    <div
+                      key={mod.key}
+                      className={`flex min-h-16 items-center justify-between rounded-lg border p-3 ${
+                        sectionEnabled ? '' : 'opacity-50'
+                      }`}
+                    >
+                      <div className='mr-2 min-w-0'>
+                        <p className='truncate text-sm font-medium'>
+                          {mod.title}
+                        </p>
+                        <p className='text-muted-foreground truncate text-xs'>
+                          {mod.description}
+                        </p>
+                      </div>
+                      <Switch
+                        checked={config[section.key]?.[mod.key] !== false}
+                        onCheckedChange={(v) =>
+                          toggleModule(section.key, mod.key, v)
+                        }
+                        disabled={!sectionEnabled}
+                      />
                     </div>
-                    <Switch
-                      checked={config[section.key]?.[mod.key] !== false}
-                      onCheckedChange={(v) =>
-                        toggleModule(section.key, mod.key, v)
-                      }
-                      disabled={!sectionEnabled}
-                    />
-                  </div>
-                ))}
+                  ))}
               </div>
             </div>
           )
