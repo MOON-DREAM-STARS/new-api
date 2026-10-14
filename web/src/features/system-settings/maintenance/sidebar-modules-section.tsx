@@ -16,10 +16,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useEffect, useMemo } from 'react'
-import { useForm } from 'react-hook-form'
+import { useEffect, useMemo, useState } from 'react'
+import { useForm, type FieldPath } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 
+import { Button } from '@/components/ui/button'
 import {
   Form,
   FormControl,
@@ -28,6 +29,7 @@ import {
   FormLabel,
 } from '@/components/ui/form'
 import { Switch } from '@/components/ui/switch'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 import {
   SettingsControlChildren,
@@ -41,6 +43,7 @@ import { SettingsSection } from '../components/settings-section'
 import { useUpdateOption } from '../hooks/use-update-option'
 import {
   SIDEBAR_MODULES_DEFAULT,
+  recommendedSidebarRoles,
   type SidebarModulesAdminConfig,
   serializeSidebarModulesAdmin,
 } from './config'
@@ -63,6 +66,7 @@ export function SidebarModulesSection({
 }: SidebarModulesSectionProps) {
   const { t } = useTranslation()
   const updateOption = useUpdateOption()
+  const [selectedRole, setSelectedRole] = useState('global')
 
   const sectionMeta: Record<string, { title: string; description: string }> = {
     chat: {
@@ -172,6 +176,9 @@ export function SidebarModulesSection({
 
   useEffect(() => {
     form.reset(formDefaults)
+    setSelectedRole((current) =>
+      formDefaults.roles?.[current] ? current : 'global'
+    )
   }, [formDefaults, form])
 
   const onSubmit = async (values: SidebarFormValues) => {
@@ -188,9 +195,12 @@ export function SidebarModulesSection({
 
   const resetToDefault = () => {
     form.reset(SIDEBAR_MODULES_DEFAULT)
+    setSelectedRole('global')
   }
 
-  const sections = Object.entries(config)
+  const sections = Object.entries(config).filter(([key]) => key !== 'roles')
+  const rolePolicy = form.watch('roles')
+  const prefix = selectedRole === 'global' ? '' : `roles.${selectedRole}.`
 
   return (
     <SettingsSection title={t('Sidebar modules')}>
@@ -203,78 +213,125 @@ export function SidebarModulesSection({
             resetLabel='Reset to default'
             saveLabel='Save sidebar modules'
           />
-          {sections.map(([sectionKey, sectionConfig]) => {
-            const sectionInfo = sectionMeta[sectionKey] ?? {
-              title: toTitleCase(sectionKey),
-              description: t('Custom sidebar section'),
-            }
-            const modules = Object.entries(sectionConfig).filter(
-              ([moduleKey]) => moduleKey !== 'enabled'
-            )
+          <Tabs
+            value={selectedRole}
+            onValueChange={(value) => setSelectedRole(String(value))}
+          >
+            <div className='space-y-3'>
+              <p className='text-muted-foreground text-sm'>
+                {t(
+                  'Role visibility narrows global switches. Personal preferences can only hide more.'
+                )}
+              </p>
+              <Button
+                type='button'
+                variant='outline'
+                onClick={() => {
+                  form.setValue(
+                    'roles',
+                    recommendedSidebarRoles(form.getValues()),
+                    { shouldDirty: true }
+                  )
+                  setSelectedRole('1')
+                }}
+              >
+                {t('Apply recommended role defaults')}
+              </Button>
+              <TabsList aria-label={t('Sidebar modules')}>
+                {[
+                  ['global', t('Global switches')],
+                  ['1', t('Common')],
+                  ['10', t('Admin')],
+                  ['100', t('Root')],
+                ]
+                  .filter(([role]) => role === 'global' || rolePolicy?.[role])
+                  .map(([role, label]) => (
+                    <TabsTrigger key={role} value={role}>
+                      {label}
+                    </TabsTrigger>
+                  ))}
+              </TabsList>
+            </div>
+            <TabsContent value={selectedRole} className='space-y-4'>
+              {sections.map(([sectionKey, sectionConfig]) => {
+                const sectionInfo = sectionMeta[sectionKey] ?? {
+                  title: toTitleCase(sectionKey),
+                  description: t('Custom sidebar section'),
+                }
+                const modules = Object.entries(sectionConfig).filter(
+                  ([moduleKey]) => moduleKey !== 'enabled'
+                )
 
-            return (
-              <SettingsControlGroup key={sectionKey}>
-                <FormField
-                  control={form.control}
-                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                  name={`${sectionKey}.enabled` as any}
-                  render={({ field }) => (
-                    <SettingsSwitchItem>
-                      <SettingsSwitchContent>
-                        <FormLabel>{sectionInfo.title}</FormLabel>
-                        <FormDescription>
-                          {sectionInfo.description}
-                        </FormDescription>
-                      </SettingsSwitchContent>
-                      <FormControl>
-                        <Switch
-                          checked={Boolean(field.value)}
-                          onCheckedChange={field.onChange}
-                        />
-                      </FormControl>
-                    </SettingsSwitchItem>
-                  )}
-                />
+                return (
+                  <SettingsControlGroup key={sectionKey}>
+                    <FormField
+                      control={form.control}
+                      name={
+                        `${prefix}${sectionKey}.enabled` as FieldPath<SidebarFormValues>
+                      }
+                      render={({ field }) => (
+                        <SettingsSwitchItem>
+                          <SettingsSwitchContent>
+                            <FormLabel>{sectionInfo.title}</FormLabel>
+                            <FormDescription>
+                              {sectionInfo.description}
+                            </FormDescription>
+                          </SettingsSwitchContent>
+                          <FormControl>
+                            <Switch
+                              checked={Boolean(field.value)}
+                              onCheckedChange={field.onChange}
+                            />
+                          </FormControl>
+                        </SettingsSwitchItem>
+                      )}
+                    />
 
-                <SettingsControlChildren className='grid gap-3 md:grid-cols-2'>
-                  {modules.map(([moduleKey]) => {
-                    const moduleInfo = moduleMeta[sectionKey]?.[moduleKey] ?? {
-                      title: toTitleCase(moduleKey),
-                      description: t('Custom module'),
-                    }
-                    return (
-                      <FormField
-                        key={`${sectionKey}.${moduleKey}`}
-                        control={form.control}
-                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                        name={`${sectionKey}.${moduleKey}` as any}
-                        render={({ field }) => (
-                          <SettingsSwitchItem className='py-2'>
-                            <SettingsSwitchContent>
-                              <FormLabel>{moduleInfo.title}</FormLabel>
-                              <FormDescription>
-                                {moduleInfo.description}
-                              </FormDescription>
-                            </SettingsSwitchContent>
-                            <FormControl>
-                              <Switch
-                                checked={Boolean(field.value)}
-                                onCheckedChange={field.onChange}
-                                disabled={
-                                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                                  !form.watch(`${sectionKey}.enabled` as any)
-                                }
-                              />
-                            </FormControl>
-                          </SettingsSwitchItem>
-                        )}
-                      />
-                    )
-                  })}
-                </SettingsControlChildren>
-              </SettingsControlGroup>
-            )
-          })}
+                    <SettingsControlChildren className='grid gap-3 md:grid-cols-2'>
+                      {modules.map(([moduleKey]) => {
+                        const moduleInfo = moduleMeta[sectionKey]?.[
+                          moduleKey
+                        ] ?? {
+                          title: toTitleCase(moduleKey),
+                          description: t('Custom module'),
+                        }
+                        return (
+                          <FormField
+                            key={`${prefix}${sectionKey}.${moduleKey}`}
+                            control={form.control}
+                            name={
+                              `${prefix}${sectionKey}.${moduleKey}` as FieldPath<SidebarFormValues>
+                            }
+                            render={({ field }) => (
+                              <SettingsSwitchItem className='py-2'>
+                                <SettingsSwitchContent>
+                                  <FormLabel>{moduleInfo.title}</FormLabel>
+                                  <FormDescription>
+                                    {moduleInfo.description}
+                                  </FormDescription>
+                                </SettingsSwitchContent>
+                                <FormControl>
+                                  <Switch
+                                    checked={Boolean(field.value)}
+                                    onCheckedChange={field.onChange}
+                                    disabled={
+                                      !form.watch(
+                                        `${prefix}${sectionKey}.enabled` as FieldPath<SidebarFormValues>
+                                      )
+                                    }
+                                  />
+                                </FormControl>
+                              </SettingsSwitchItem>
+                            )}
+                          />
+                        )
+                      })}
+                    </SettingsControlChildren>
+                  </SettingsControlGroup>
+                )
+              })}
+            </TabsContent>
+          </Tabs>
         </SettingsForm>
       </Form>
     </SettingsSection>
