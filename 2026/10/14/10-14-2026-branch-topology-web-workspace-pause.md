@@ -38,7 +38,7 @@
 | Windows服务并发SQLite清理、Browser Agent Unix socket/权限测试 | FAILED 平台检查；保留失败记录，目标Linux验证另行通过 |
 | 真实SQLite/MySQL/PostgreSQL迁移与保留数据检查 | VERIFIED：SQLite、MySQL8.4.11、PostgreSQL15.19真实实例；main新库/二次迁移无工作区表、旧schema数据与索引经两次升级保留；冻结分支模型/ownership/sync三方言均通过。详见备份目录main-clean-migration.log与parked-*.log。 |
 | git diff --check、分支范围复核 | VERIFIED |
-| 三条origin分支推送、tracking、指定旧refs清理 | 操作后保存final-refs.txt；仅在本地检查通过且旧头重新核对后执行 |
+| 三条origin分支推送、tracking、指定旧refs清理 | VERIFIED：三条分支已原子推送并与本地SHA一致，tracking均指向origin；指定旧refs已在SHA租约保护下删除。最终文档提交后的回读写入final-refs.txt。 |
 
 数据库和Browser Agent目标平台为Linux。本次读取并沿用OWASP Authentication与Session Management Cheat Sheet关于服务端会话授权、拒绝不适当认证方式和不泄漏session/token的控制；不改变cookie登录或token生命周期，不宣称完整ASVS合规审计。
 
@@ -47,8 +47,15 @@
 
 ## 清理、恢复和剩余边界
 
-完成前重新确认 feature、master-main、upstream-sync 无未保留的独有提交，先推送并回读三条目标分支，再移除指定本地/ origin旧引用。当前工作目录切换到dev；旧upstream-sync worktree转detached，保留目录。不删除其它远端依赖分支、upstream引用、tags或用户产物。
+已重新确认 feature、master-main、upstream-sync 都是保留main历史的祖先；先原子推送和回读三条目标分支，再按精确SHA租约删除 origin/feature/dreamstars-homepage 与 origin/master-main，并删除本地三条旧分支。当前工作目录已切换到dev；旧upstream-sync worktree已转detached，保留目录。逐路径回读确认94个原有未跟踪文件全部保留、没有新增或缺失。其它远端依赖分支、upstream引用和历史tags保留。
 
 已有数据库的三张工作区表与数据不会通过此次代码剥离主动删除。恢复Git分支可从完整bundle fetch到新的recovery分支；恢复功能需要单独重新整合，不能把冻结分支自动合入活动线。
 
 VPS连接、发布workflow触发、镜像发布、部署、回滚、线上账号/Provider请求、真实远程浏览器验收：NOT RUN。线上事实没有重新探测，本任务不声称线上功能已停用。受控部署和新即时授权仍独立于Git分支重组。
+
+## 完成回读
+
+- 功能变更提交：main/dev `76fab7410e9c67062311ab53c451c4265faca4a3`；冻结功能与必要接入提交 `58b36e114aad5201d5eadba72c77e65b4d5c5542`。后续只有此同期记录的文档提交，最终分支SHA见备份目录final-refs.txt。
+- 三条分支：main、dev、web-workspace；均跟踪origin同名分支。当前日常worktree为dev，main工作树保留用于发布/sync，web-workspace有独立冻结worktree。
+- 临时数据库和Linux验证runner按任务标签审计后移除；保留既有Go缓存卷。没有留下本任务容器或新数据库卷。
+- 所有代码与数据库验证已完成；真实Provider/Web UI、GitHub Release、VPS部署与回滚仍为NOT RUN。
