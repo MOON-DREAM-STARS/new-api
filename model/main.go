@@ -380,6 +380,9 @@ func migrateDB() error {
 	if err != nil {
 		return err
 	}
+	if err := migrateServiceTierTables(DB); err != nil {
+		return err
+	}
 	if err := InitializeUserAuthVersions(); err != nil {
 		return err
 	}

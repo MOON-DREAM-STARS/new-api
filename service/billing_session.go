@@ -156,6 +156,18 @@ func (s *BillingSession) GetPreConsumedQuota() int {
 }
 
 func (s *BillingSession) Reserve(targetQuota int) error {
+	return s.reserve(targetQuota, false)
+}
+
+// ReserveStrict raises the reservation to targetQuota from funds that are
+// available now. Unlike Reserve it never admits wallet debt and does not skip
+// trusted users, so service tier escalation cannot send a request to a pricier
+// tier the wallet, subscription or token quota cannot cover.
+func (s *BillingSession) ReserveStrict(targetQuota int) error {
+	return s.reserve(targetQuota, true)
+}
+
+func (s *BillingSession) reserve(targetQuota int, strict bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -164,7 +176,8 @@ func (s *BillingSession) Reserve(targetQuota int) error {
 		_, imageRequest = s.relayInfo.Request.(*dto.ImageRequest)
 		imageRequest = imageRequest || s.relayInfo.ImageRequestCount > 0
 	}
-	if s.settled || s.refunded || s.trusted && !imageRequest || targetQuota <= s.preConsumedQuota {
+	requireAvailableQuota := imageRequest || strict
+	if s.settled || s.refunded || s.trusted && !requireAvailableQuota || targetQuota <= s.preConsumedQuota {
 		return nil
 	}
 
@@ -173,7 +186,7 @@ func (s *BillingSession) Reserve(targetQuota int) error {
 		return nil
 	}
 
-	if err := s.reserveFunding(delta, imageRequest); err != nil {
+	if err := s.reserveFunding(delta, requireAvailableQuota); err != nil {
 		return err
 	}
 	if err := s.reserveToken(delta); err != nil {
@@ -184,7 +197,7 @@ func (s *BillingSession) Reserve(targetQuota int) error {
 	s.preConsumedQuota += delta
 	s.tokenConsumed += delta
 	s.extraReserved += delta
-	if imageRequest {
+	if requireAvailableQuota {
 		s.trusted = false
 	}
 	s.syncRelayInfo()

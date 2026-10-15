@@ -99,6 +99,13 @@ export function SidebarModulesCard() {
           description: t('API token management'),
         },
         {
+          key: 'service_tier',
+          title: t('Service Tiers'),
+          description: t(
+            'Choose service tiers, the default preference and escalation.'
+          ),
+        },
+        {
           key: 'log',
           title: t('Usage Logs'),
           description: t('API usage records'),

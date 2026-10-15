@@ -62,3 +62,27 @@ func assertChannelRoutePermission(t *testing.T, method string, path string, perm
 	}
 	t.Fatalf("route %s %s not found", method, path)
 }
+
+// Channel aggregation is administrator-only routing configuration: reads
+// need channel read access, every write needs channel routing access, and
+// the routes reject requests without a dashboard login.
+func TestChannelAggregationRoutesRequireChannelPermissions(t *testing.T) {
+	for _, route := range channelAggregationPermissionRoutes {
+		want := authz.ChannelWrite
+		if route.method == http.MethodGet || route.path == "/simulate" {
+			want = authz.ChannelRead
+		}
+		assert.Equal(t, want, route.permission, "%s %s", route.method, route.path)
+	}
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	registerChannelAggregationRoutes(engine.Group("/api"))
+	for _, request := range []*http.Request{
+		httptest.NewRequest(http.MethodGet, "/api/channel_aggregation/overview", nil),
+		httptest.NewRequest(http.MethodPut, "/api/channel_aggregation/policy", nil),
+	} {
+		recorder := httptest.NewRecorder()
+		engine.ServeHTTP(recorder, request)
+		assert.Equal(t, http.StatusUnauthorized, recorder.Code, request.URL.Path)
+	}
+}

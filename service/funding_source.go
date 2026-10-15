@@ -50,7 +50,9 @@ func (w *WalletFunding) PreConsume(amount int) error {
 	if !reserved {
 		return ErrInsufficientWalletQuota
 	}
-	w.consumed = amount
+	// A session can reserve more than once (the initial pre-consume and
+	// strict reservations before a pricier attempt); Refund returns the sum.
+	w.consumed += amount
 	return nil
 }
 

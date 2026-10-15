@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -210,4 +211,60 @@ func TestRequestPolicyEventsReachLogAdminInfo(t *testing.T) {
 	other := model.NewLogOther()
 	AppendRelayLogAdminInfo(untouched, nil, other)
 	assert.NotContains(t, other.Snapshot()["admin_info"], "request_policy", "requests without decisions do not carry an empty record")
+}
+
+// Service tier failover moves a request to another channel only while that
+// is safe: never after output reached the client, never for errors the
+// administrator did not allow, and never past the attempt or time budget.
+func TestServiceTierRetryStopsWhereFailoverIsUnsafe(t *testing.T) {
+	strategy := model.AggregationStrategy{SameTierFailover: true, MaxAttempts: 3, MaxTotalSeconds: 60, RetryOn: []string{ServiceTierErrorServer, ServiceTierErrorRateLimited}}
+	upstream := func(status int) *types.NewAPIError {
+		return types.NewOpenAIError(errors.New("upstream"), types.ErrorCodeBadResponseStatusCode, status)
+	}
+	for _, tc := range []struct {
+		name    string
+		err     *types.NewAPIError
+		prepare func(*gin.Context, *ServiceTierRoute)
+		reason  string
+	}{
+		{"output already reached the client", upstream(http.StatusBadGateway), func(c *gin.Context, _ *ServiceTierRoute) {
+			c.Writer.WriteHeader(http.StatusOK)
+			_, _ = c.Writer.Write([]byte("data: partial\n\n"))
+		}, "response_started"},
+		{"the client went away", upstream(http.StatusBadGateway), func(c *gin.Context, _ *ServiceTierRoute) {
+			ctx, cancel := context.WithCancel(c.Request.Context())
+			cancel()
+			c.Request = c.Request.WithContext(ctx)
+		}, "client_cancelled"},
+		{"client errors never fail over", upstream(http.StatusBadRequest), nil, "non_retryable_error"},
+		{"local rejections never fail over", types.NewError(errors.New("quota"), types.ErrorCodeInsufficientUserQuota, types.ErrOptionWithSkipRetry()), nil, "non_retryable_error"},
+		{"a category the policy does not relay stops", upstream(http.StatusRequestTimeout), nil, "error_not_relayable"},
+		{"gateway timeouts keep the global no-retry rule", upstream(http.StatusGatewayTimeout), func(_ *gin.Context, route *ServiceTierRoute) {
+			route.strategy.RetryOn = append(route.strategy.RetryOn, ServiceTierErrorTimeout)
+		}, "system_retry_exclusion"},
+		{"the attempt budget is spent", upstream(http.StatusBadGateway), func(_ *gin.Context, route *ServiceTierRoute) { route.attempts = 3 }, "attempt_budget_exhausted"},
+		{"the time budget is spent", upstream(http.StatusTooManyRequests), func(_ *gin.Context, route *ServiceTierRoute) {
+			route.startedAt = time.Now().Add(-time.Minute)
+		}, "time_budget_exhausted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			route := &ServiceTierRoute{Steps: []ServiceTierStep{{Tier: model.ServiceTierEconomy, Ratio: 0.15}}, strategy: strategy, startedAt: time.Now(), stepAttempts: []int{1}, attempts: 1, failed: map[int]bool{}}
+			if tc.prepare != nil {
+				tc.prepare(c, route)
+			}
+			decision := route.DecideRetry(c, 7, tc.err)
+			assert.Equal(t, PolicyDecision{Action: "stop", Reason: tc.reason, Source: "service_tier"}, decision)
+			assert.True(t, route.failed[7], "a failed channel is excluded from later attempts")
+		})
+	}
+	for status, category := range map[int]string{
+		http.StatusTooManyRequests: ServiceTierErrorRateLimited, http.StatusGatewayTimeout: ServiceTierErrorTimeout,
+		http.StatusUnauthorized: ServiceTierErrorChannel, http.StatusBadGateway: ServiceTierErrorServer,
+		http.StatusNotFound: ServiceTierErrorClient, http.StatusOK: ServiceTierErrorInvalidResponse,
+	} {
+		assert.Equal(t, category, classifyServiceTierError(upstream(status)), status)
+	}
+	assert.Equal(t, ServiceTierErrorTimeout, classifyServiceTierError(types.NewError(errors.New("dial"), types.ErrorCodeDoRequestFailed)))
 }

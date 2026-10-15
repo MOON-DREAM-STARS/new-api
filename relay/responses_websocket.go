@@ -924,6 +924,11 @@ func checkResponsesWSModelAccess(c *gin.Context, modelName string) *types.NewAPI
 // speak the Responses WebSocket protocol and renders its outcome as a
 // non-retryable NewAPIError.
 func selectResponsesWSChannel(c *gin.Context, modelName string, retryParam *service.RetryParam) (*appmodel.Channel, *types.NewAPIError) {
+	// A model served by channel aggregation is rejected here: its tier
+	// failover and billing apply to the HTTP endpoints only.
+	if _, tierErr := service.ResolveServiceTierRoute(c, modelName); tierErr != nil {
+		return nil, tierErr.APIError(c)
+	}
 	constraints := service.GetChannelConstraints(c)
 	if !slices.ContainsFunc(constraints.Filters, func(filter appdto.ChannelFilter) bool {
 		return filter.Kind == appdto.FilterResponsesWebSocket

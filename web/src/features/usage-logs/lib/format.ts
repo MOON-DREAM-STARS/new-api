@@ -530,6 +530,18 @@ const AUDIT_TEMPLATES: Record<string, string> = {
     'Applied upstream model changes to channel (ID: {{id}})',
   'channel.upstream_apply_all':
     'Applied upstream model changes to {{count}} channels',
+  // Channel aggregation
+  'channel_aggregation.family_create':
+    'Created model family {{name}} ({{key}})',
+  'channel_aggregation.family_update':
+    'Updated model family {{name}} (ID: {{id}})',
+  'channel_aggregation.family_delete': 'Deleted model family (ID: {{id}})',
+  'channel_aggregation.members_update':
+    'Updated the models of model family (ID: {{id}}) to {{count}}',
+  'channel_aggregation.policy_save':
+    'Saved the channel aggregation rule of model family (ID: {{family_id}})',
+  'channel_aggregation.policy_delete':
+    'Deleted the channel aggregation override of model {{model}}',
   // Redemption codes
   'redemption.create':
     'Created {{count}} redemption codes named {{name}} ({{quota}} each)',

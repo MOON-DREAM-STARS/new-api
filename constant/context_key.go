@@ -44,6 +44,13 @@ const (
 	ContextKeyAutoGroupIndex      ContextKey = "auto_group_index"
 	ContextKeyAutoGroupRetryIndex ContextKey = "auto_group_retry_index"
 
+	// ContextKeyServiceTierRoute holds the request's *service.ServiceTierRoute
+	// when the model is served by channel aggregation (service tiers).
+	ContextKeyServiceTierRoute ContextKey = "service_tier_route"
+	// ContextKeyServiceTierRatio is the billing ratio of the service tier the
+	// current attempt uses. It replaces the group ratio for aggregated requests.
+	ContextKeyServiceTierRatio ContextKey = "service_tier_ratio"
+
 	/* user related keys */
 	ContextKeyUserId      ContextKey = "id"
 	ContextKeyUserSetting ContextKey = "user_setting"

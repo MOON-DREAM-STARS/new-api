@@ -98,3 +98,27 @@ var channelPermissionRoutes = []permissionRoute{
 	{method: http.MethodPost, path: "/upstream_updates/detect", permission: authz.ChannelOperate, handler: controller.DetectChannelUpstreamModelUpdates},
 	{method: http.MethodPost, path: "/upstream_updates/detect_all", permission: authz.ChannelOperate, handler: controller.DetectAllChannelUpstreamModelUpdates},
 }
+
+// registerChannelAggregationRoutes serves the administrator's channel
+// aggregation page. Aggregation rules are channel routing settings, so they
+// reuse the channel read and routing-edit permissions.
+func registerChannelAggregationRoutes(apiRouter *gin.RouterGroup) {
+	aggregationRoute := apiRouter.Group("/channel_aggregation")
+	aggregationRoute.Use(middleware.AdminAuth(), middleware.DisableCache())
+	for _, route := range channelAggregationPermissionRoutes {
+		handlePermissionRoute(aggregationRoute, route.method, route.path, route.permission, route.handler)
+	}
+}
+
+var channelAggregationPermissionRoutes = []permissionRoute{
+	{method: http.MethodGet, path: "/overview", permission: authz.ChannelRead, handler: controller.GetChannelAggregationOverview},
+	{method: http.MethodGet, path: "/families/:id", permission: authz.ChannelRead, handler: controller.GetChannelAggregationFamily},
+	{method: http.MethodPost, path: "/families", permission: authz.ChannelWrite, handler: controller.CreateChannelAggregationFamily},
+	{method: http.MethodPut, path: "/families/:id", permission: authz.ChannelWrite, handler: controller.UpdateChannelAggregationFamily},
+	{method: http.MethodDelete, path: "/families/:id", permission: authz.ChannelWrite, handler: controller.DeleteChannelAggregationFamily},
+	{method: http.MethodPut, path: "/families/:id/members", permission: authz.ChannelWrite, handler: controller.UpdateChannelAggregationMembers},
+	{method: http.MethodPut, path: "/policy", permission: authz.ChannelWrite, handler: controller.SaveChannelAggregationPolicy},
+	{method: http.MethodDelete, path: "/policy", permission: authz.ChannelWrite, handler: controller.DeleteChannelAggregationPolicy},
+	{method: http.MethodGet, path: "/channels", permission: authz.ChannelRead, handler: controller.ListChannelAggregationChannels},
+	{method: http.MethodPost, path: "/simulate", permission: authz.ChannelRead, handler: controller.SimulateChannelAggregation},
+}

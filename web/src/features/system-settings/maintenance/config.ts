@@ -67,6 +67,7 @@ export const SIDEBAR_MODULES_DEFAULT: SidebarModulesConfig = {
     enabled: true,
     detail: true,
     token: true,
+    service_tier: true,
     log: true,
     audit: true,
     midjourney: true,
@@ -81,6 +82,7 @@ export const SIDEBAR_MODULES_DEFAULT: SidebarModulesConfig = {
   admin: {
     enabled: true,
     channel: true,
+    channel_aggregation: true,
     models: true,
     redemption: true,
     user: true,
