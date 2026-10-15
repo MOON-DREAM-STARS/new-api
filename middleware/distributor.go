@@ -97,7 +97,19 @@ func Distribute() func(c *gin.Context) {
 				}
 			}
 		}
-		if pinned || shouldSelectChannel {
+		if !pinned && shouldSelectChannel {
+			// Models served by channel aggregation choose channels from the
+			// user's service tiers instead of the group's channels.
+			route, routeErr := service.ResolveServiceTierRoute(c, modelRequest.Model)
+			if routeErr == nil && route != nil {
+				channel, routeErr = route.SelectFirstChannel(c)
+			}
+			if routeErr != nil {
+				abortWithOpenAiMessage(c, routeErr.StatusCode, routeErr.Message(c), routeErr.Code)
+				return
+			}
+		}
+		if channel == nil && (pinned || shouldSelectChannel) {
 			usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
 			var selectErr *service.ChannelSelectError
 			channel, _, selectErr = service.SelectChannelForRequest(c, modelRequest.Model, &service.RetryParam{

@@ -114,8 +114,42 @@ export interface ToolSurchargeItem {
   price: number
 }
 
+export interface ServiceTierLogInfo {
+  family: string
+  preference: string
+  preferred_tier: string
+  final_tier: string
+  escalated: boolean
+  attempts: number
+  ratio: number
+}
+
+export interface ServiceTierRouteAttempt {
+  attempt: number
+  tier: string
+  ratio: number
+  escalation?: boolean
+  channel_id: number
+  channel_name?: string
+  outcome: string
+  status?: number
+  error_code?: string
+  category?: string
+  decision?: string
+}
+
+export interface ServiceTierRouteInfo {
+  policy_scope: string
+  policy_version: number
+  ceiling_ratio: number
+  chain: { tier: string; ratio: number; escalation: boolean }[]
+  attempts: ServiceTierRouteAttempt[]
+}
+
 export interface LogOtherData {
+  service_tier?: ServiceTierLogInfo
   admin_info?: {
+    service_tier_route?: ServiceTierRouteInfo
     request_policy?: PolicyEvent[]
     is_multi_key?: boolean
     multi_key_index?: number

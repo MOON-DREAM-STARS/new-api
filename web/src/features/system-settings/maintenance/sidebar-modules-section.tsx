@@ -110,6 +110,12 @@ export function SidebarModulesSection({
         title: t('Token management'),
         description: t('Create, revoke, and audit API tokens.'),
       },
+      service_tier: {
+        title: t('Service Tiers'),
+        description: t(
+          'Choose service tiers, the default preference and escalation.'
+        ),
+      },
       log: {
         title: t('Usage logs'),
         description: t('Detailed request logs for investigations.'),
@@ -145,6 +151,10 @@ export function SidebarModulesSection({
       channel: {
         title: t('Channels'),
         description: t('Configure upstream providers and routing.'),
+      },
+      channel_aggregation: {
+        title: t('Channel Aggregation'),
+        description: t('Group channels into service tiers for model families.'),
       },
       models: {
         title: t('Models'),

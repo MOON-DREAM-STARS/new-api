@@ -18,6 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import {
   Activity,
+  Combine,
+  Layers3,
   Box,
   ClipboardList,
   CreditCard,
@@ -89,6 +91,11 @@ export function useSidebarData(): SidebarData {
             icon: Key,
           },
           {
+            title: t('Service Tiers'),
+            url: '/service-tiers',
+            icon: Layers3,
+          },
+          {
             title: t('Usage Logs'),
             url: '/usage-logs/common',
             icon: FileText,
@@ -136,6 +143,11 @@ export function useSidebarData(): SidebarData {
             title: t('Channels'),
             url: '/channels',
             icon: Radio,
+          },
+          {
+            title: t('Channel Aggregation'),
+            url: '/channel-aggregation',
+            icon: Combine,
           },
           {
             title: t('Models'),

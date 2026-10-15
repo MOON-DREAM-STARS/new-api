@@ -47,6 +47,17 @@ const (
 	MsgRelayRetryGetChannelFailed        = "relay.retry_get_channel_failed"
 	MsgRelayRetryNoAvailableChannel      = "relay.retry_no_available_channel"
 	MsgRelayAccessTokenUnsupported       = "relay.access_token_unsupported"
+
+	MsgServiceTierEndpointUnsupported  = "service_tier.endpoint_unsupported"
+	MsgServiceTierWebSocketUnsupported = "service_tier.websocket_unsupported"
+	MsgServiceTierModelUnavailable     = "service_tier.model_unavailable"
+	MsgServiceTierNoTier               = "service_tier.no_tier"
+	MsgServiceTierNoChannel            = "service_tier.no_channel"
+	MsgServiceTierEscalationQuota      = "service_tier.escalation_quota"
+	MsgServiceTierConfigUnavailable    = "service_tier.config_unavailable"
+	MsgServiceTierNameEconomy          = "service_tier.tier.economy"
+	MsgServiceTierNameBalanced         = "service_tier.tier.balanced"
+	MsgServiceTierNamePerformance      = "service_tier.tier.performance"
 )
 
 // Emails and the name of the token created at registration, in the

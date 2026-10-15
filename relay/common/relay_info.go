@@ -165,6 +165,10 @@ type RelayInfo struct {
 	ParamOverrideAudit                    []string
 
 	PriceData hosttypes.PriceData
+	// ServiceTierPreConsumeQuotaBeforeGroup retains the unrounded estimate so
+	// escalation can reserve against the selected tier without reconstructing
+	// the base from a rounded lower-tier reservation.
+	ServiceTierPreConsumeQuotaBeforeGroup float64
 
 	// QuotaClamp is set (non-nil) when a quota conversion saturated at the
 	// supported single-request bound (or NaN fallback) while computing this request's charge.

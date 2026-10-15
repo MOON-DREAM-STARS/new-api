@@ -155,8 +155,13 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	}
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
+	retryTimes := common.RetryTimes
+	serviceTierRoute := service.ServiceTierRouteFrom(c)
+	if serviceTierRoute != nil {
+		retryTimes = serviceTierRoute.RetryBudget()
+	}
 
-	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
+	for ; retryParam.GetRetry() <= retryTimes; retryParam.IncreaseRetry() {
 		relayInfo.StreamStatus = nil
 		relayInfo.PerformanceBusinessRejection = false
 		relayInfo.PerformanceOutputTokens = 0
@@ -197,6 +202,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 
 		if newAPIError == nil {
+			if serviceTierRoute != nil {
+				serviceTierRoute.MarkSuccess(channel.Id)
+			}
 			service.MarkRequestPolicySuccess(c, relayInfo.StreamStatus)
 			relayInfo.LastError = nil
 			return
@@ -205,7 +213,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		newAPIError = service.NormalizeViolationFeeError(newAPIError)
 		relayInfo.LastError = newAPIError
 
-		decision := service.DecideRelayRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry())
+		var decision service.PolicyDecision
+		if serviceTierRoute != nil {
+			decision = serviceTierRoute.DecideRetry(c, channel.Id, newAPIError)
+		} else {
+			decision = service.DecideRelayRetry(c, newAPIError, retryTimes-retryParam.GetRetry())
+		}
 		service.RecordPolicyFailure(c, channel.Id, newAPIError, decision)
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError, relayInfo)
 
@@ -274,6 +287,21 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 			AutoBan: &autoBanInt,
 		}
 		service.RequestPolicy(c).BeginAttempt(channel, info.UsingGroup)
+		return channel, nil
+	}
+	if route := service.ServiceTierRouteFrom(c); route != nil {
+		channel, step, selectErr := route.NextChannel(c)
+		if selectErr != nil {
+			return nil, selectErr.APIError(c)
+		}
+		if apiErr := service.ReserveServiceTierRatio(c, info, route, step); apiErr != nil {
+			return nil, apiErr
+		}
+		info.PriceData.GroupRatioInfo = helper.HandleGroupRatio(c, info)
+		service.RequestPolicy(c).BeginAttempt(channel, info.UsingGroup)
+		if apiErr := middleware.SetupContextForSelectedChannel(c, channel, info.OriginModelName); apiErr != nil {
+			return nil, apiErr
+		}
 		return channel, nil
 	}
 	channel, selectGroup, err := service.CacheGetRandomSatisfiedChannel(retryParam)

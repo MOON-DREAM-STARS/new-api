@@ -66,3 +66,32 @@ func isChannelEnabledForGroupModelDB(group string, modelName string, channelID i
 func isChannelIDInList(list []int, channelID int) bool {
 	return slices.Contains(list, channelID)
 }
+
+// GroupHasEnabledModel reports whether group has at least one enabled channel
+// serving modelName under the ordinary group rules. Channel aggregation uses it
+// as the model permission check, so aggregation never grants a model the
+// user's groups do not already offer.
+func GroupHasEnabledModel(group string, modelName string) bool {
+	if group == "" || modelName == "" {
+		return false
+	}
+	names := []string{modelName}
+	if normalized := ratio_setting.RoutingMatchModelName(modelName); normalized != "" && normalized != modelName {
+		names = append(names, normalized)
+	}
+	if !common.MemoryCacheEnabled {
+		var count int64
+		err := DB.Model(&Ability{}).
+			Where(commonGroupCol+" = ? and model IN ? and enabled = ?", group, names, true).
+			Count(&count).Error
+		return err == nil && count > 0
+	}
+	channelSyncLock.RLock()
+	defer channelSyncLock.RUnlock()
+	for _, name := range names {
+		if len(group2model2channels[group][name]) > 0 {
+			return true
+		}
+	}
+	return false
+}
