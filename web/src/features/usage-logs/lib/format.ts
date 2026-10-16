@@ -542,6 +542,16 @@ const AUDIT_TEMPLATES: Record<string, string> = {
     'Saved the channel aggregation rule of model family (ID: {{family_id}})',
   'channel_aggregation.policy_delete':
     'Deleted the channel aggregation override of model {{model}}',
+  // Price comparison
+  'price_comparison.settings_update':
+    'Updated the price comparison page (baseline: {{baseline_model}}, {{count}} models)',
+  // models.dev price import
+  'models_dev.config_update':
+    'Updated the models.dev price import settings (auto sync: {{auto_sync}})',
+  'models_dev.sync':
+    'Imported models.dev prices ({{created}} new, {{updated}} updated)',
+  'models_dev.undo':
+    'Undid the last models.dev price import ({{restored}} models restored)',
   // Redemption codes
   'redemption.create':
     'Created {{count}} redemption codes named {{name}} ({{quota}} each)',

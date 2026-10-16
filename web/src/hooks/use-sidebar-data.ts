@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import {
   Activity,
+  BadgePercent,
   Combine,
   Layers3,
   Box,
@@ -94,6 +95,11 @@ export function useSidebarData(): SidebarData {
             title: t('Service Tiers'),
             url: '/service-tiers',
             icon: Layers3,
+          },
+          {
+            title: t('Price Comparison'),
+            url: '/price-comparison',
+            icon: BadgePercent,
           },
           {
             title: t('Usage Logs'),

@@ -44,6 +44,7 @@ import { Route as AuthenticatedKeysIndexRouteImport } from './routes/_authentica
 import { Route as AuthenticatedModelsIndexRouteImport } from './routes/_authenticated/models/index'
 import { Route as AuthenticatedModelsSectionRouteImport } from './routes/_authenticated/models/$section'
 import { Route as AuthenticatedPlaygroundIndexRouteImport } from './routes/_authenticated/playground/index'
+import { Route as AuthenticatedPriceComparisonIndexRouteImport } from './routes/_authenticated/price-comparison/index'
 import { Route as AuthenticatedProfileIndexRouteImport } from './routes/_authenticated/profile/index'
 import { Route as AuthenticatedRedemptionCodesIndexRouteImport } from './routes/_authenticated/redemption-codes/index'
 import { Route as AuthenticatedSecurityIndexRouteImport } from './routes/_authenticated/security/index'
@@ -255,6 +256,12 @@ const AuthenticatedPlaygroundIndexRoute =
   AuthenticatedPlaygroundIndexRouteImport.update({
     id: '/playground/',
     path: '/playground/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedPriceComparisonIndexRoute =
+  AuthenticatedPriceComparisonIndexRouteImport.update({
+    id: '/price-comparison/',
+    path: '/price-comparison/',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
 const AuthenticatedProfileIndexRoute =
@@ -472,6 +479,7 @@ export interface FileRoutesByFullPath {
   '/keys/': typeof AuthenticatedKeysIndexRoute
   '/models/': typeof AuthenticatedModelsIndexRoute
   '/playground/': typeof AuthenticatedPlaygroundIndexRoute
+  '/price-comparison/': typeof AuthenticatedPriceComparisonIndexRoute
   '/profile/': typeof AuthenticatedProfileIndexRoute
   '/redemption-codes/': typeof AuthenticatedRedemptionCodesIndexRoute
   '/security/': typeof AuthenticatedSecurityIndexRoute
@@ -536,6 +544,7 @@ export interface FileRoutesByTo {
   '/keys': typeof AuthenticatedKeysIndexRoute
   '/models': typeof AuthenticatedModelsIndexRoute
   '/playground': typeof AuthenticatedPlaygroundIndexRoute
+  '/price-comparison': typeof AuthenticatedPriceComparisonIndexRoute
   '/profile': typeof AuthenticatedProfileIndexRoute
   '/redemption-codes': typeof AuthenticatedRedemptionCodesIndexRoute
   '/security': typeof AuthenticatedSecurityIndexRoute
@@ -604,6 +613,7 @@ export interface FileRoutesById {
   '/_authenticated/keys/': typeof AuthenticatedKeysIndexRoute
   '/_authenticated/models/': typeof AuthenticatedModelsIndexRoute
   '/_authenticated/playground/': typeof AuthenticatedPlaygroundIndexRoute
+  '/_authenticated/price-comparison/': typeof AuthenticatedPriceComparisonIndexRoute
   '/_authenticated/profile/': typeof AuthenticatedProfileIndexRoute
   '/_authenticated/redemption-codes/': typeof AuthenticatedRedemptionCodesIndexRoute
   '/_authenticated/security/': typeof AuthenticatedSecurityIndexRoute
@@ -671,6 +681,7 @@ export interface FileRouteTypes {
     | '/keys/'
     | '/models/'
     | '/playground/'
+    | '/price-comparison/'
     | '/profile/'
     | '/redemption-codes/'
     | '/security/'
@@ -735,6 +746,7 @@ export interface FileRouteTypes {
     | '/keys'
     | '/models'
     | '/playground'
+    | '/price-comparison'
     | '/profile'
     | '/redemption-codes'
     | '/security'
@@ -802,6 +814,7 @@ export interface FileRouteTypes {
     | '/_authenticated/keys/'
     | '/_authenticated/models/'
     | '/_authenticated/playground/'
+    | '/_authenticated/price-comparison/'
     | '/_authenticated/profile/'
     | '/_authenticated/redemption-codes/'
     | '/_authenticated/security/'
@@ -1096,6 +1109,13 @@ declare module '@tanstack/react-router' {
       path: '/playground'
       fullPath: '/playground/'
       preLoaderRoute: typeof AuthenticatedPlaygroundIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/price-comparison/': {
+      id: '/_authenticated/price-comparison/'
+      path: '/price-comparison'
+      fullPath: '/price-comparison/'
+      preLoaderRoute: typeof AuthenticatedPriceComparisonIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/profile/': {
@@ -1415,6 +1435,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedKeysIndexRoute: typeof AuthenticatedKeysIndexRoute
   AuthenticatedModelsIndexRoute: typeof AuthenticatedModelsIndexRoute
   AuthenticatedPlaygroundIndexRoute: typeof AuthenticatedPlaygroundIndexRoute
+  AuthenticatedPriceComparisonIndexRoute: typeof AuthenticatedPriceComparisonIndexRoute
   AuthenticatedProfileIndexRoute: typeof AuthenticatedProfileIndexRoute
   AuthenticatedRedemptionCodesIndexRoute: typeof AuthenticatedRedemptionCodesIndexRoute
   AuthenticatedSecurityIndexRoute: typeof AuthenticatedSecurityIndexRoute
@@ -1444,6 +1465,8 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedKeysIndexRoute: AuthenticatedKeysIndexRoute,
   AuthenticatedModelsIndexRoute: AuthenticatedModelsIndexRoute,
   AuthenticatedPlaygroundIndexRoute: AuthenticatedPlaygroundIndexRoute,
+  AuthenticatedPriceComparisonIndexRoute:
+    AuthenticatedPriceComparisonIndexRoute,
   AuthenticatedProfileIndexRoute: AuthenticatedProfileIndexRoute,
   AuthenticatedRedemptionCodesIndexRoute:
     AuthenticatedRedemptionCodesIndexRoute,

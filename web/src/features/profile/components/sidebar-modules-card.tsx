@@ -106,6 +106,11 @@ export function SidebarModulesCard() {
           ),
         },
         {
+          key: 'price_comparison',
+          title: t('Price Comparison'),
+          description: t('Compare model prices against a baseline model.'),
+        },
+        {
           key: 'log',
           title: t('Usage Logs'),
           description: t('API usage records'),
