@@ -49,49 +49,23 @@ import {
   getServiceTierOverview,
   previewServiceTierSettings,
   saveServiceTierSettings,
+  serviceTierOverviewQueryKey,
 } from './api'
-import { EscalationSettings } from './components/escalation-settings'
-import { PreferenceOptions } from './components/preference-options'
+import { ServiceTierSettingsEditor } from './components/service-tier-settings-editor'
 import { StrategyPreview } from './components/strategy-preview'
 import {
-  TierSwitchCards,
-  type TierRatioRange,
-} from './components/tier-switch-cards'
-import {
   draftProblem,
-  normalizeCeiling,
   sameSettings,
   SERVICE_TIERS,
-  toggleTier,
+  tierRatioRanges,
 } from './lib/tiers'
-import type { ServiceTierSettings, ServiceTierUserOverview } from './types'
-
-const overviewQueryKey = ['service-tier', 'overview'] as const
-
-/** The lowest and highest ratio each tier has across the user's families. */
-function tierRatioRanges(overview?: ServiceTierUserOverview): TierRatioRange {
-  const ranges: TierRatioRange = {}
-  for (const family of overview?.preview.families ?? []) {
-    for (const tier of SERVICE_TIERS) {
-      const ratio = family.offered_tiers[tier]
-      if (ratio == null) continue
-      const current = ranges[tier]
-      ranges[tier] = current
-        ? {
-            min: Math.min(current.min, ratio),
-            max: Math.max(current.max, ratio),
-          }
-        : { min: ratio, max: ratio }
-    }
-  }
-  return ranges
-}
+import type { ServiceTierSettings } from './types'
 
 export function ServiceTiers() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const overview = useQuery({
-    queryKey: overviewQueryKey,
+    queryKey: serviceTierOverviewQueryKey,
     queryFn: getServiceTierOverview,
   })
   const [draft, setDraft] = useState<ServiceTierSettings | null>(null)
@@ -115,7 +89,7 @@ export function ServiceTiers() {
     mutationFn: (settings: ServiceTierSettings) =>
       saveServiceTierSettings(settings),
     onSuccess: (data) => {
-      queryClient.setQueryData(overviewQueryKey, data)
+      queryClient.setQueryData(serviceTierOverviewQueryKey, data)
       setDraft(null)
       toast.success(t('Service tier settings saved'))
     },
@@ -173,78 +147,13 @@ export function ServiceTiers() {
               </AlertDescription>
             </Alert>
           )}
-          <section aria-labelledby='service-tier-tiers' className='space-y-3'>
-            <div className='space-y-1'>
-              <h3 id='service-tier-tiers' className='text-sm font-semibold'>
-                {t('Service tiers')}
-              </h3>
-              <p className='text-muted-foreground text-xs'>
-                {t(
-                  'Your requests keep the same model name and API key; the tiers you turn on decide which service level may serve them and how they are billed.'
-                )}
-              </p>
-            </div>
-            <TierSwitchCards
-              enabledTiers={current.enabled_tiers}
-              ratios={ratios}
-              disabled={save.isPending}
-              onToggle={(tier, enabled) =>
-                update(toggleTier(current, tier, enabled))
-              }
-            />
-          </section>
-          <Card>
-            <CardHeader>
-              <CardTitle className='text-sm'>
-                {t('Default preference')}
-              </CardTitle>
-              <CardDescription>
-                {t(
-                  'Where each request starts. Every API key of your account follows this preference.'
-                )}
-              </CardDescription>
-            </CardHeader>
-            <CardContent className='space-y-2'>
-              <PreferenceOptions
-                settings={current}
-                disabled={save.isPending}
-                invalid={Boolean(problem)}
-                onChange={(preference) =>
-                  update(normalizeCeiling({ ...current, preference }))
-                }
-              />
-              {problem && (
-                <p role='alert' className='text-destructive text-xs'>
-                  {t(problem)}
-                </p>
-              )}
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle className='text-sm'>{t('Escalation')}</CardTitle>
-              <CardDescription>
-                {t(
-                  'Failover inside a tier is always on. Escalation to a pricier tier is optional and billed at the tier that serves the request.'
-                )}
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <EscalationSettings
-                settings={current}
-                ratios={ratios}
-                disabled={save.isPending}
-                onAllowChange={(allow) =>
-                  update(
-                    normalizeCeiling({ ...current, allow_escalation: allow })
-                  )
-                }
-                onCeilingChange={(tier) =>
-                  update({ ...current, max_escalation_tier: tier })
-                }
-              />
-            </CardContent>
-          </Card>
+          <ServiceTierSettingsEditor
+            settings={current}
+            ratios={ratios}
+            scope='account'
+            disabled={save.isPending}
+            onChange={update}
+          />
         </div>
         <aside className='min-w-0 space-y-4 xl:sticky xl:top-0'>
           <Card>

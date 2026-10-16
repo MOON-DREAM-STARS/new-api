@@ -21,48 +21,51 @@ func seedFlowLookupData(t *testing.T) {
 	require.NoError(t, DB.Delete(&Token{Id: 11}).Error)
 }
 
-func TestGetFlowQuotaDataUsesQuotaDataRoleSpecificDimensions(t *testing.T) {
+func TestGetFlowQuotaDataExposesDimensionsByRole(t *testing.T) {
 	truncateTables(t)
 	seedFlowLookupData(t)
 
 	seedFlowQuotaData(t, QuotaData{
-		UserID:    1,
-		Username:  "alice",
-		NodeName:  "node-a",
-		TokenID:   11,
-		UseGroup:  "vip",
-		ModelName: "gpt-a",
-		ChannelID: 1,
-		CreatedAt: 1000,
-		Count:     2,
-		Quota:     100,
-		TokenUsed: 40,
+		UserID:      1,
+		Username:    "alice",
+		NodeName:    "node-a",
+		TokenID:     11,
+		UseGroup:    "vip",
+		ModelName:   "gpt-a",
+		ChannelID:   1,
+		ServiceTier: ServiceTierEconomy,
+		CreatedAt:   1000,
+		Count:       2,
+		Quota:       100,
+		TokenUsed:   40,
 	})
 	seedFlowQuotaData(t, QuotaData{
-		UserID:    1,
-		Username:  "alice",
-		NodeName:  "node-a",
-		TokenID:   11,
-		UseGroup:  "vip",
-		ModelName: "gpt-a",
-		ChannelID: 1,
-		CreatedAt: 1100,
-		Count:     1,
-		Quota:     50,
-		TokenUsed: 20,
+		UserID:      1,
+		Username:    "alice",
+		NodeName:    "node-a",
+		TokenID:     11,
+		UseGroup:    "vip",
+		ModelName:   "gpt-a",
+		ChannelID:   1,
+		ServiceTier: ServiceTierEconomy,
+		CreatedAt:   1100,
+		Count:       1,
+		Quota:       50,
+		TokenUsed:   20,
 	})
 	seedFlowQuotaData(t, QuotaData{
-		UserID:    1,
-		Username:  "alice",
-		NodeName:  "node-a",
-		TokenID:   11,
-		UseGroup:  "vip",
-		ModelName: "gpt-a",
-		ChannelID: 2,
-		CreatedAt: 1200,
-		Count:     1,
-		Quota:     25,
-		TokenUsed: 10,
+		UserID:      1,
+		Username:    "alice",
+		NodeName:    "node-a",
+		TokenID:     11,
+		UseGroup:    "vip",
+		ModelName:   "gpt-a",
+		ChannelID:   2,
+		ServiceTier: ServiceTierBalanced,
+		CreatedAt:   1200,
+		Count:       1,
+		Quota:       25,
+		TokenUsed:   10,
 	})
 	seedFlowQuotaData(t, QuotaData{
 		UserID:    2,
@@ -102,37 +105,44 @@ func TestGetFlowQuotaDataUsesQuotaDataRoleSpecificDimensions(t *testing.T) {
 		ChannelID:   1,
 		ChannelName: "east",
 		ModelName:   "gpt-a",
+		ServiceTier: ServiceTierEconomy,
 		TokenUsed:   60,
 		Count:       3,
 		Quota:       150,
 	}, *rootRows[0])
-	// A token that still exists resolves to its current name.
+	// A token that still exists resolves to its current name; requests that did
+	// not use service tiers carry no tier.
 	require.Equal(t, 22, rootRows[1].TokenID)
 	require.Equal(t, "backup", rootRows[1].TokenName)
+	require.Empty(t, rootRows[1].ServiceTier)
 
+	// Administrators and the super administrator see the same dimensions.
 	adminRows, err := GetFlowQuotaData(900, 2000, "alice", 0, common.RoleAdminUser)
 	require.NoError(t, err)
 	require.Len(t, adminRows, 2)
-	require.Equal(t, 0, adminRows[0].TokenID)
-	require.Empty(t, adminRows[0].TokenName)
-	require.Empty(t, adminRows[0].NodeName)
-	require.Equal(t, "alice", adminRows[0].Username)
-	require.Equal(t, "vip", adminRows[0].UseGroup)
-	require.Equal(t, "east", adminRows[0].ChannelName)
-	require.Equal(t, 150, adminRows[0].Quota)
+	require.Equal(t, *rootRows[0], *adminRows[0])
+	require.Equal(t, ServiceTierBalanced, adminRows[1].ServiceTier)
+	require.Equal(t, "west", adminRows[1].ChannelName)
 
+	// A user never receives the nodes, groups or channels behind the traffic.
 	selfRows, err := GetFlowQuotaData(900, 2000, "", 1, common.RoleCommonUser)
 	require.NoError(t, err)
-	require.Len(t, selfRows, 1)
-	require.Empty(t, selfRows[0].Username)
-	require.Equal(t, 0, selfRows[0].ChannelID)
-	require.Empty(t, selfRows[0].ChannelName)
-	require.Empty(t, selfRows[0].TokenName)
-	require.Equal(t, "vip", selfRows[0].UseGroup)
-	require.Equal(t, 175, selfRows[0].Quota)
+	require.Len(t, selfRows, 2)
+	require.Equal(t, FlowQuotaData{
+		UserID:      1,
+		Username:    "alice",
+		TokenID:     11,
+		ModelName:   "gpt-a",
+		ServiceTier: ServiceTierEconomy,
+		TokenUsed:   60,
+		Count:       3,
+		Quota:       150,
+	}, *selfRows[0])
+	require.Equal(t, ServiceTierBalanced, selfRows[1].ServiceTier)
+	require.Equal(t, 25, selfRows[1].Quota)
 }
 
-func TestLogQuotaDataSplitsRowsByUseGroupTokenChannelAndNode(t *testing.T) {
+func TestLogQuotaDataSplitsRowsByUseGroupTokenChannelNodeAndServiceTier(t *testing.T) {
 	truncateTables(t)
 	CacheQuotaDataLock.Lock()
 	CacheQuotaData = make(map[string]*QuotaData)
@@ -175,11 +185,25 @@ func TestLogQuotaDataSplitsRowsByUseGroupTokenChannelAndNode(t *testing.T) {
 		TokenUsed: 10,
 	})
 
+	LogQuotaData(QuotaDataLogParams{
+		UserID:      1,
+		Username:    "alice",
+		ModelName:   "gpt-a",
+		CreatedAt:   3700,
+		UseGroup:    "vip",
+		TokenID:     11,
+		ChannelID:   1,
+		NodeName:    "node-a",
+		ServiceTier: ServiceTierEconomy,
+		Quota:       10,
+		TokenUsed:   5,
+	})
+
 	SaveQuotaDataCache()
 
 	var rows []QuotaData
 	require.NoError(t, DB.Order("quota DESC").Find(&rows).Error)
-	require.Len(t, rows, 2)
+	require.Len(t, rows, 3)
 	require.Equal(t, int64(3600), rows[0].CreatedAt)
 	require.Equal(t, "vip", rows[0].UseGroup)
 	require.Equal(t, 11, rows[0].TokenID)
@@ -188,6 +212,10 @@ func TestLogQuotaDataSplitsRowsByUseGroupTokenChannelAndNode(t *testing.T) {
 	require.Equal(t, 2, rows[0].Count)
 	require.Equal(t, 150, rows[0].Quota)
 	require.Equal(t, 60, rows[0].TokenUsed)
+	require.Empty(t, rows[0].ServiceTier)
 	require.Equal(t, "default", rows[1].UseGroup)
 	require.Equal(t, 25, rows[1].Quota)
+	// Requests served by a service tier are counted apart from the others.
+	require.Equal(t, ServiceTierEconomy, rows[2].ServiceTier)
+	require.Equal(t, 10, rows[2].Quota)
 }

@@ -686,6 +686,17 @@ func SetupContextForToken(c *gin.Context, token *model.Token, parts ...string) e
 			common.SetContextKey(c, constant.ContextKeyTokenAutoGroups, autoGroups)
 		}
 	}
+	if token.ModelFamilies != "" {
+		families, err := token.GetModelFamilies()
+		if err != nil {
+			// A limit that cannot be read denies every model instead of lifting the limit.
+			common.SysError(common.LogText("failed to parse model families for token %d: %v", token.Id, err))
+			families = []int{-1}
+		}
+		if len(families) > 0 {
+			common.SetContextKey(c, constant.ContextKeyTokenModelFamilies, families)
+		}
+	}
 	if len(parts) > 1 {
 		if model.IsAdmin(token.UserId) {
 			id, err := strconv.Atoi(parts[1])

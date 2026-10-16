@@ -20,12 +20,13 @@ import { api } from '@/lib/api'
 
 import type {
   ApiKey,
+  ApiKeyDetail,
   ApiResponse,
   GetApiKeysParams,
   GetApiKeysResponse,
   SearchApiKeysParams,
   ApiKeyFormData,
-  TokenAutoGroupsConfig,
+  UserModelFamilies,
 } from './types'
 
 // ============================================================================
@@ -55,17 +56,19 @@ export async function searchApiKeys(
   return res.data
 }
 
-// Get single API key by ID
-export async function getApiKey(id: number): Promise<ApiResponse<ApiKey>> {
+// Get single API key by ID, with the service tier settings of the key itself
+export async function getApiKey(
+  id: number
+): Promise<ApiResponse<ApiKeyDetail>> {
   const res = await api.get(`/api/token/${id}`)
   return res.data
 }
 
-// Get the current user's global Auto order and the per-token selection limit.
-export async function getTokenAutoGroups(): Promise<
-  ApiResponse<TokenAutoGroupsConfig>
+// Get the model families with the models the current user can use in each
+export async function getUserModelFamilies(): Promise<
+  ApiResponse<UserModelFamilies>
 > {
-  const res = await api.get('/api/token/auto-groups')
+  const res = await api.get('/api/user/model_families')
   return res.data
 }
 

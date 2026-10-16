@@ -13,24 +13,30 @@ type FlowQuotaData struct {
 	NodeName    string `json:"node_name,omitempty" gorm:"column:node_name"`
 	TokenID     int    `json:"token_id,omitempty" gorm:"column:token_id"`
 	TokenName   string `json:"token_name,omitempty" gorm:"-"`
-	UseGroup    string `json:"use_group" gorm:"column:use_group"`
+	UseGroup    string `json:"use_group,omitempty" gorm:"column:use_group"`
 	ChannelID   int    `json:"channel_id,omitempty" gorm:"column:channel_id"`
 	ChannelName string `json:"channel_name,omitempty" gorm:"-"`
 	ModelName   string `json:"model_name" gorm:"column:model_name"`
-	TokenUsed   int    `json:"token_used" gorm:"column:token_used"`
-	Count       int    `json:"count" gorm:"column:count"`
-	Quota       int    `json:"quota" gorm:"column:quota"`
+	// ServiceTier is the tier that served the requests; empty for requests
+	// that did not use service tiers.
+	ServiceTier string `json:"service_tier,omitempty" gorm:"column:service_tier"`
+	// ModelFamilyID and ModelFamily are filled from the current model
+	// families after the query; 0 and empty mean the model has no family.
+	ModelFamilyID int    `json:"model_family_id,omitempty" gorm:"-"`
+	ModelFamily   string `json:"model_family,omitempty" gorm:"-"`
+	TokenUsed     int    `json:"token_used" gorm:"column:token_used"`
+	Count         int    `json:"count" gorm:"column:count"`
+	Quota         int    `json:"quota" gorm:"column:quota"`
 }
 
+// GetFlowQuotaData returns the dashboard traffic flow. Administrators see every
+// dimension; a user sees only the own keys, models and service tiers, never
+// the nodes, groups or channels behind them.
 func GetFlowQuotaData(startTime int64, endTime int64, username string, userID int, role int) ([]*FlowQuotaData, error) {
-	switch {
-	case role >= common.RoleRootUser:
-		return getRootFlowQuotaData(startTime, endTime, username)
-	case role >= common.RoleAdminUser:
-		return getAdminFlowQuotaData(startTime, endTime, username)
-	default:
-		return getSelfFlowQuotaData(startTime, endTime, userID)
+	if role >= common.RoleAdminUser {
+		return getPrivilegedFlowQuotaData(startTime, endTime, username)
 	}
+	return getSelfFlowQuotaData(startTime, endTime, userID)
 }
 
 func flowQuotaBaseQuery(startTime int64, endTime int64) *gorm.DB {
@@ -43,9 +49,9 @@ func flowQuotaBaseQuery(startTime int64, endTime int64) *gorm.DB {
 func getSelfFlowQuotaData(startTime int64, endTime int64, userID int) ([]*FlowQuotaData, error) {
 	rows := make([]*FlowQuotaData, 0)
 	err := flowQuotaBaseQuery(startTime, endTime).
-		Select("token_id, use_group, model_name, sum(count) as count, sum(quota) as quota, sum(token_used) as token_used").
+		Select("user_id, username, token_id, model_name, service_tier, sum(count) as count, sum(quota) as quota, sum(token_used) as token_used").
 		Where("user_id = ?", userID).
-		Group("token_id, use_group, model_name").
+		Group("user_id, username, token_id, model_name, service_tier").
 		Order("quota DESC").
 		Find(&rows).Error
 	if err != nil {
@@ -54,32 +60,15 @@ func getSelfFlowQuotaData(startTime int64, endTime int64, userID int) ([]*FlowQu
 	return rows, fillFlowTokenNames(rows)
 }
 
-func getAdminFlowQuotaData(startTime int64, endTime int64, username string) ([]*FlowQuotaData, error) {
+func getPrivilegedFlowQuotaData(startTime int64, endTime int64, username string) ([]*FlowQuotaData, error) {
 	rows := make([]*FlowQuotaData, 0)
 	query := flowQuotaBaseQuery(startTime, endTime).
-		Select("user_id, username, use_group, model_name, channel_id, sum(count) as count, sum(quota) as quota, sum(token_used) as token_used")
+		Select("user_id, username, node_name, token_id, use_group, model_name, service_tier, channel_id, sum(count) as count, sum(quota) as quota, sum(token_used) as token_used")
 	if username != "" {
 		query = query.Where("username = ?", username)
 	}
 	err := query.
-		Group("user_id, username, use_group, model_name, channel_id").
-		Order("quota DESC").
-		Find(&rows).Error
-	if err != nil {
-		return nil, err
-	}
-	return rows, fillFlowChannelNames(rows)
-}
-
-func getRootFlowQuotaData(startTime int64, endTime int64, username string) ([]*FlowQuotaData, error) {
-	rows := make([]*FlowQuotaData, 0)
-	query := flowQuotaBaseQuery(startTime, endTime).
-		Select("user_id, username, node_name, token_id, use_group, model_name, channel_id, sum(count) as count, sum(quota) as quota, sum(token_used) as token_used")
-	if username != "" {
-		query = query.Where("username = ?", username)
-	}
-	err := query.
-		Group("user_id, username, node_name, token_id, use_group, model_name, channel_id").
+		Group("user_id, username, node_name, token_id, use_group, model_name, service_tier, channel_id").
 		Order("quota DESC").
 		Find(&rows).Error
 	if err != nil {

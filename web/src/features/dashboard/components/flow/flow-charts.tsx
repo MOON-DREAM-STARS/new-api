@@ -84,6 +84,7 @@ import type {
   FlowOverflowMode,
   FlowRole,
 } from '@/features/dashboard/types'
+import { tierLabel } from '@/features/service-tiers/lib/tiers'
 import { formatQuota } from '@/lib/format'
 import { ROLE } from '@/lib/roles'
 import { requireServerSuccess } from '@/lib/server-error-message'
@@ -145,9 +146,17 @@ const FLOW_STAGE_META: Record<
     labelKey: 'Group',
     descKey: 'The user group applied to the requests',
   },
+  family: {
+    labelKey: 'Model family',
+    descKey: 'The model family the requested model belongs to',
+  },
   model: {
     labelKey: 'Model',
     descKey: 'The model that was requested',
+  },
+  tier: {
+    labelKey: 'Model tier',
+    descKey: 'The service tier that served the requests of each model',
   },
   channel: {
     labelKey: 'Channel',
@@ -160,7 +169,9 @@ const FLOW_STAGE_LABEL_KEYS: Record<FlowNodeKind, string> = {
   node: FLOW_STAGE_META.node.labelKey,
   token: FLOW_STAGE_META.token.labelKey,
   group: FLOW_STAGE_META.group.labelKey,
+  family: FLOW_STAGE_META.family.labelKey,
   model: FLOW_STAGE_META.model.labelKey,
+  tier: FLOW_STAGE_META.tier.labelKey,
   channel: FLOW_STAGE_META.channel.labelKey,
 }
 
@@ -169,7 +180,9 @@ const FLOW_OTHER_NODE_LABEL_KEYS: Record<FlowNodeKind, string> = {
   node: 'Other nodes',
   token: 'Other tokens',
   group: 'Other groups',
+  family: 'Other families',
   model: 'Other models',
+  tier: 'Other tiers',
   channel: 'Other channels',
 }
 
@@ -359,6 +372,9 @@ export function FlowCharts(props: FlowChartsProps) {
         maskSensitive,
         deletedTokenLabel: (tokenId) => t('Deleted ({{id}})', { id: tokenId }),
         otherNodeLabel: (kind) => t(FLOW_OTHER_NODE_LABEL_KEYS[kind]),
+        tierLabel: (tier) => tierLabel(t, tier),
+        untieredLabel: t('Untiered'),
+        unclassifiedFamilyLabel: t('Other models'),
       }),
     [
       flowRole,

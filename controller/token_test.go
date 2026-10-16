@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -105,7 +106,9 @@ func openTokenControllerTestDB(t *testing.T) *gorm.DB {
 func migrateTokenControllerTestDB(t *testing.T, db *gorm.DB) {
 	t.Helper()
 
-	if err := db.AutoMigrate(&model.Token{}); err != nil {
+	// Keys read their own service tier rows and the model families they are
+	// limited to.
+	if err := db.AutoMigrate(&model.Token{}, &model.UserServiceTierSetting{}, &model.ModelFamily{}); err != nil {
 		t.Fatalf("failed to migrate token table: %v", err)
 	}
 }
@@ -279,6 +282,50 @@ func getTokenKeyColumnType(t *testing.T, db *gorm.DB, dialect string) string {
 	}
 }
 
+// getColumnDataType returns the lower-cased data type of a column on every
+// supported database.
+func getColumnDataType(t *testing.T, db *gorm.DB, dialect, table, column string) string {
+	t.Helper()
+
+	switch dialect {
+	case "sqlite":
+		return getSQLiteColumnType(t, db, table, column)
+	case "mysql":
+		var dataType string
+		require.NoError(t, db.Raw(`SELECT DATA_TYPE FROM information_schema.columns
+			WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?`,
+			table, column).Scan(&dataType).Error)
+		return strings.ToLower(dataType)
+	case "postgres":
+		var dataType string
+		require.NoError(t, db.Raw(`SELECT data_type FROM information_schema.columns
+			WHERE table_schema = current_schema() AND table_name = ? AND column_name = ?`,
+			table, column).Scan(&dataType).Error)
+		return strings.ToLower(dataType)
+	default:
+		t.Fatalf("unsupported dialect %q", dialect)
+		return ""
+	}
+}
+
+// captureSchemaChanges records the DDL statements db runs until the returned
+// function is called, which stops recording and returns them.
+func captureSchemaChanges(t *testing.T, db *gorm.DB) func() []string {
+	t.Helper()
+
+	var statements []string
+	name := "schema_change_capture_" + strings.ReplaceAll(t.Name(), "/", "_")
+	require.NoError(t, db.Callback().Raw().After("gorm:raw").Register(name, func(tx *gorm.DB) {
+		if sql := strings.ToUpper(tx.Statement.SQL.String()); strings.Contains(sql, "ALTER ") || strings.Contains(sql, "CREATE ") {
+			statements = append(statements, sql)
+		}
+	}))
+	return func() []string {
+		require.NoError(t, db.Callback().Raw().Remove(name))
+		return statements
+	}
+}
+
 func getTokenAutoGroupsColumnType(t *testing.T, db *gorm.DB, dialect string) string {
 	t.Helper()
 
@@ -354,6 +401,12 @@ func runTokenMigrationCompatibilityTest(t *testing.T, db *gorm.DB, dialect strin
 	if got := getTokenAutoGroupsColumnType(t, db, dialect); got != "text" {
 		t.Fatalf("expected migrated auto_groups column type text, got %q", got)
 	}
+	if !db.Migrator().HasColumn(&model.Token{}, "model_families") {
+		t.Fatal("expected migration to add model_families column")
+	}
+	if got := getColumnDataType(t, db, dialect, "tokens", "model_families"); got != "text" {
+		t.Fatalf("expected migrated model_families column type text, got %q", got)
+	}
 
 	var migratedToken model.Token
 	if err := db.First(&migratedToken, "name = ?", "legacy-token").Error; err != nil {
@@ -367,6 +420,16 @@ func runTokenMigrationCompatibilityTest(t *testing.T, db *gorm.DB, dialect strin
 	}
 	if migratedToken.AutoGroups != "" {
 		t.Fatalf("expected legacy token to inherit global Auto groups, got %q", migratedToken.AutoGroups)
+	}
+	if migratedToken.ModelFamilies != "" {
+		t.Fatalf("expected legacy token to stay unrestricted by model families, got %q", migratedToken.ModelFamilies)
+	}
+
+	// A second startup finds nothing left to change.
+	finishCapture := captureSchemaChanges(t, db)
+	migrateTokenControllerTestDB(t, db)
+	if statements := finishCapture(); len(statements) > 0 {
+		t.Fatalf("expected a second migration to change no schema, ran %v", statements)
 	}
 
 	inserted := model.Token{
@@ -614,7 +677,7 @@ func TestAPITokenAuditDatabaseMatrix(t *testing.T) {
 				db, _ := newAuditTestDatabase(t, database.name, dsn)
 				model.DB = db
 				common.SetDatabaseTypes(database.typ, database.typ)
-				require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.Token{}))
+				require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.Token{}, &model.UserServiceTierSetting{}, &model.ModelFamily{}))
 				// Initialize production column quoting as well as the existing audit table.
 				require.NoError(t, model.InitLogDB())
 				if separateLog {
@@ -891,4 +954,230 @@ func verifyAPITokenAudit(t *testing.T) {
 		require.NoError(t, model.DB.Model(&model.Token{}).Where("name = ?", "audit-down").Count(&count).Error)
 		assert.EqualValues(t, 1, count)
 	})
+}
+
+func createTestModelFamily(t *testing.T, db *gorm.DB, key string) model.ModelFamily {
+	t.Helper()
+	family := model.ModelFamily{Key: key, Name: strings.ToUpper(key), Version: 1}
+	require.NoError(t, db.Create(&family).Error)
+	return family
+}
+
+// A new key comes back masked and with its id, so the key wizard can reveal it
+// afterwards; the family limit and the tier settings it was created with are
+// stored together with it.
+func TestAddTokenStoresModelFamiliesAndOwnServiceTier(t *testing.T) {
+	verifyAddTokenStoresModelFamiliesAndOwnServiceTier(t, setupTokenAutoGroupsControllerTest(t))
+}
+
+func verifyAddTokenStoresModelFamiliesAndOwnServiceTier(t *testing.T, user *model.User) {
+	t.Helper()
+	family := createTestModelFamily(t, model.DB, "gpt-add")
+	request := map[string]any{
+		"name":            "wizard-key",
+		"expired_time":    -1,
+		"unlimited_quota": true,
+		"model_families":  []int{family.Id, 0, family.Id},
+		"service_tier":    map[string]any{"enabled_tiers": []string{"economy", "balanced"}, "preference": "balanced"},
+	}
+	ctx, recorder := newTokenAutoGroupsAuthenticatedContext(t, http.MethodPost, "/api/token/", request, user.Id)
+	AddToken(ctx)
+	response := decodeAPIResponse(t, recorder)
+	require.True(t, response.Success, response.Message)
+
+	var created struct {
+		Id            int    `json:"id"`
+		Key           string `json:"key"`
+		ModelFamilies []int  `json:"model_families"`
+	}
+	require.NoError(t, common.Unmarshal(response.Data, &created))
+	var stored model.Token
+	require.NoError(t, model.DB.First(&stored, created.Id).Error)
+	assert.Equal(t, stored.GetMaskedKey(), created.Key)
+	assert.NotContains(t, recorder.Body.String(), stored.Key)
+	assert.Equal(t, []int{0, family.Id}, created.ModelFamilies, "duplicates are dropped and the ids are sorted")
+
+	getCtx, getRecorder := newTokenAutoGroupsAuthenticatedContext(t, http.MethodGet, "/api/token/"+stringInt(created.Id), nil, user.Id)
+	getCtx.Params = append(getCtx.Params, gin.Param{Key: "id", Value: stringInt(created.Id)})
+	GetToken(getCtx)
+	getResponse := decodeAPIResponse(t, getRecorder)
+	require.True(t, getResponse.Success, getResponse.Message)
+	var detail struct {
+		ModelFamilies []int `json:"model_families"`
+		ServiceTier   *struct {
+			EnabledTiers []string `json:"enabled_tiers"`
+			Preference   string   `json:"preference"`
+		} `json:"service_tier"`
+	}
+	require.NoError(t, common.Unmarshal(getResponse.Data, &detail))
+	assert.Equal(t, []int{0, family.Id}, detail.ModelFamilies)
+	require.NotNil(t, detail.ServiceTier)
+	assert.Equal(t, "balanced", detail.ServiceTier.Preference)
+	assert.Equal(t, []string{"economy", "balanced"}, detail.ServiceTier.EnabledTiers)
+
+	// A key created without settings follows the account default and carries none.
+	plain := map[string]any{"name": "plain-key", "expired_time": -1, "unlimited_quota": true}
+	plainCtx, plainRecorder := newTokenAutoGroupsAuthenticatedContext(t, http.MethodPost, "/api/token/", plain, user.Id)
+	AddToken(plainCtx)
+	plainResponse := decodeAPIResponse(t, plainRecorder)
+	require.True(t, plainResponse.Success, plainResponse.Message)
+	require.NoError(t, common.Unmarshal(plainResponse.Data, &created))
+	assert.Equal(t, []int{}, created.ModelFamilies, "no limit is an empty list")
+	override, err := service.GetTokenServiceTierOverride(user.Id, created.Id)
+	require.NoError(t, err)
+	assert.Nil(t, override)
+}
+
+func TestAddTokenRejectsInvalidModelFamiliesAndServiceTier(t *testing.T) {
+	for name, extra := range map[string]map[string]any{
+		"unknown family":        {"model_families": []int{9999}},
+		"negative family":       {"model_families": []int{-1}},
+		"no enabled tier":       {"service_tier": map[string]any{"enabled_tiers": []string{}, "preference": "lowest"}},
+		"preference turned off": {"service_tier": map[string]any{"enabled_tiers": []string{"economy"}, "preference": "performance"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			user := setupTokenAutoGroupsControllerTest(t)
+			request := map[string]any{"name": "invalid", "expired_time": -1, "unlimited_quota": true}
+			maps.Copy(request, extra)
+			ctx, recorder := newTokenAutoGroupsAuthenticatedContext(t, http.MethodPost, "/api/token/", request, user.Id)
+			AddToken(ctx)
+			assert.False(t, decodeAPIResponse(t, recorder).Success)
+			var tokens, rows int64
+			require.NoError(t, model.DB.Model(&model.Token{}).Count(&tokens).Error)
+			require.NoError(t, model.DB.Model(&model.UserServiceTierSetting{}).Count(&rows).Error)
+			assert.Zero(t, tokens, "a rejected request creates no key")
+			assert.Zero(t, rows)
+		})
+	}
+}
+
+func TestUpdateTokenModelFamiliesAndServiceTierTriState(t *testing.T) {
+	verifyUpdateTokenModelFamiliesAndServiceTierTriState(t, setupTokenControllerTestDB(t))
+}
+
+func verifyUpdateTokenModelFamiliesAndServiceTierTriState(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	family := createTestModelFamily(t, db, "gpt-update")
+	token := seedToken(t, db, 1, "tri-state", "tristate1234key5678")
+	update := func(extra map[string]any) tokenAPIResponse {
+		t.Helper()
+		request := map[string]any{"id": token.Id, "name": "tri-state", "status": common.TokenStatusEnabled, "expired_time": -1, "unlimited_quota": true, "group": "default"}
+		maps.Copy(request, extra)
+		ctx, recorder := newAuthenticatedContext(t, http.MethodPut, "/api/token/", request, 1)
+		UpdateToken(ctx)
+		return decodeAPIResponse(t, recorder)
+	}
+	families := func() []int {
+		t.Helper()
+		var stored model.Token
+		require.NoError(t, db.First(&stored, token.Id).Error)
+		ids, err := stored.GetModelFamilies()
+		require.NoError(t, err)
+		return ids
+	}
+	override := func() *service.ServiceTierSettings {
+		t.Helper()
+		settings, err := service.GetTokenServiceTierOverride(1, token.Id)
+		require.NoError(t, err)
+		return settings
+	}
+	tier := map[string]any{"enabled_tiers": []string{"economy", "performance"}, "preference": "performance"}
+
+	require.True(t, update(map[string]any{"model_families": []int{family.Id}, "service_tier": tier}).Success)
+	assert.Equal(t, []int{family.Id}, families())
+	require.NotNil(t, override())
+	assert.Equal(t, "performance", override().Preference)
+
+	require.True(t, update(nil).Success, "omitted fields keep the stored values")
+	assert.Equal(t, []int{family.Id}, families())
+	require.NotNil(t, override())
+
+	require.True(t, update(map[string]any{"model_families": nil, "service_tier": nil}).Success)
+	assert.Empty(t, families(), "null removes the family limit")
+	assert.Nil(t, override(), "null makes the key follow the account default")
+
+	require.True(t, update(map[string]any{"service_tier": tier}).Success)
+	require.NotNil(t, override(), "a key can set its own tiers again after following the account")
+
+	require.True(t, update(map[string]any{"model_families": []int{family.Id}}).Success)
+	assert.False(t, update(map[string]any{"model_families": []int{9999}}).Success)
+	assert.Equal(t, []int{family.Id}, families(), "a rejected family leaves the limit unchanged")
+	assert.False(t, update(map[string]any{"service_tier": map[string]any{"enabled_tiers": []string{}, "preference": "lowest"}}).Success)
+	require.NotNil(t, override())
+	assert.Equal(t, "performance", override().Preference, "a rejected tier leaves the settings unchanged")
+}
+
+func TestDeleteTokenRemovesOwnServiceTierSettingsOnly(t *testing.T) {
+	verifyDeleteTokenRemovesOwnServiceTierSettingsOnly(t, setupTokenControllerTestDB(t))
+}
+
+func verifyDeleteTokenRemovesOwnServiceTierSettingsOnly(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	first := seedToken(t, db, 1, "first", "first1234key5678abcd")
+	second := seedToken(t, db, 1, "second", "second1234key5678abc")
+	own := &service.ServiceTierSettings{EnabledTiers: []string{"economy"}, Preference: "lowest"}
+	require.NoError(t, service.SaveTokenServiceTierSettings(1, first.Id, own))
+	require.NoError(t, service.SaveTokenServiceTierSettings(1, second.Id, own))
+	_, err := service.SaveUserServiceTierSettings(1, *own, 0)
+	require.NoError(t, err)
+	rowsOf := func(tokenID int) int64 {
+		t.Helper()
+		var count int64
+		require.NoError(t, db.Model(&model.UserServiceTierSetting{}).Where("user_id = ? AND token_id = ?", 1, tokenID).Count(&count).Error)
+		return count
+	}
+
+	ctx, recorder := newAuthenticatedContext(t, http.MethodDelete, "/api/token/"+strconv.Itoa(first.Id), nil, 1)
+	ctx.Params = gin.Params{{Key: "id", Value: strconv.Itoa(first.Id)}}
+	DeleteToken(ctx)
+	require.True(t, decodeAPIResponse(t, recorder).Success)
+	assert.Zero(t, rowsOf(first.Id))
+	assert.EqualValues(t, 1, rowsOf(second.Id))
+	assert.EqualValues(t, 1, rowsOf(0), "the account default stays")
+
+	batchCtx, batchRecorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/batch/delete", map[string]any{"ids": []int{second.Id}}, 1)
+	DeleteTokenBatch(batchCtx)
+	require.True(t, decodeAPIResponse(t, batchRecorder).Success)
+	assert.Zero(t, rowsOf(second.Id))
+	assert.EqualValues(t, 1, rowsOf(0))
+}
+
+// The family limit and the tier settings of a key are stored, updated and
+// removed the same way on every supported database.
+func TestTokenModelFamilyAndServiceTierDatabaseMatrix(t *testing.T) {
+	for _, database := range []struct {
+		name, env string
+		typ       common.DatabaseType
+	}{
+		{"sqlite", "", common.DatabaseTypeSQLite},
+		{"mysql", "TEST_MYSQL_DSN", common.DatabaseTypeMySQL},
+		{"postgres", "TEST_POSTGRES_DSN", common.DatabaseTypePostgreSQL},
+	} {
+		t.Run(database.name, func(t *testing.T) {
+			dsn := os.Getenv(database.env)
+			if database.env != "" && dsn == "" {
+				t.Skip(database.env + " is not configured")
+			}
+			previousDB, previousLogDB := model.DB, model.LOG_DB
+			previousMain, previousLog := common.MainDatabaseType(), common.LogDatabaseType()
+			previousRedis := common.RedisEnabled
+			t.Cleanup(func() {
+				model.DB, model.LOG_DB = previousDB, previousLogDB
+				common.SetDatabaseTypes(previousMain, previousLog)
+				common.RedisEnabled = previousRedis
+			})
+			gin.SetMode(gin.TestMode)
+			common.RedisEnabled = false
+			db, _ := newAuditTestDatabase(t, database.name, dsn)
+			model.DB, model.LOG_DB = db, db
+			common.SetDatabaseTypes(database.typ, database.typ)
+			require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.UserServiceTierSetting{}, &model.ModelFamily{}))
+			owner := &model.User{Id: 101, Username: "matrix-owner", Password: "password", Group: "default", Status: common.UserStatusEnabled}
+			require.NoError(t, db.Create(owner).Error)
+
+			t.Run("create", func(t *testing.T) { verifyAddTokenStoresModelFamiliesAndOwnServiceTier(t, owner) })
+			t.Run("update", func(t *testing.T) { verifyUpdateTokenModelFamiliesAndServiceTierTriState(t, db) })
+			t.Run("delete", func(t *testing.T) { verifyDeleteTokenRemovesOwnServiceTierSettingsOnly(t, db) })
+		})
+	}
 }

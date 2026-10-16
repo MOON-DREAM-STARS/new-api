@@ -35,8 +35,11 @@ import {
   formatTierRatio,
   tierLabel,
 } from '../lib/tiers'
-import type { ServiceTierKey, ServiceTierSettings } from '../types'
-import type { TierRatioRange } from './tier-switch-cards'
+import type {
+  ServiceTierKey,
+  ServiceTierSettings,
+  TierRatioRange,
+} from '../types'
 
 type EscalationSettingsProps = {
   settings: ServiceTierSettings

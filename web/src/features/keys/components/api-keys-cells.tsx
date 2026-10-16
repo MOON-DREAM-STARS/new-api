@@ -37,6 +37,8 @@ import {
 } from '@/components/ui/tooltip'
 import { copyToClipboard } from '@/lib/copy-to-clipboard'
 
+import { useUserModelFamilies } from '../hooks/use-user-model-families'
+import { familyLimitNames } from '../lib/model-families'
 import type { ApiKey } from '../types'
 import { useApiKeys } from './api-keys-provider'
 
@@ -145,11 +147,28 @@ export function ModelLimitsCell(props: ApiKeyRestrictionProps) {
   const models = props.apiKey.model_limits_enabled
     ? (props.apiKey.model_limits || '').split(',').filter(Boolean)
     : []
+  const familyIds = props.apiKey.model_families ?? []
+  const families = useUserModelFamilies(familyIds.length > 0)
+  const familyNames = familyLimitNames(
+    familyIds,
+    families.data,
+    t('Other models')
+  )
+  // Until the family names are known, the details show the ids.
+  const familyItems =
+    familyNames.length > 0 ? familyNames : familyIds.map((id) => `#${id}`)
+  const labels: string[] = []
+  if (familyIds.length > 0) {
+    labels.push(t('{{count}} model families', { count: familyIds.length }))
+  }
+  if (models.length > 0) {
+    labels.push(t('{{count}} models', { count: models.length }))
+  }
 
   return (
     <ApiKeyRestrictionCell
-      items={models}
-      label={t('{{count}} models', { count: models.length })}
+      items={[...familyItems, ...models]}
+      label={labels.join(' · ')}
       title={t('Models')}
       emptyLabel={t('Unlimited')}
       detailsTrigger={props.detailsTrigger}

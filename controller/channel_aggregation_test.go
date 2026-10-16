@@ -631,6 +631,40 @@ func TestServiceTierAPIs(t *testing.T) {
 		assert.Equal(t, []string{eco, perf}, settings.EnabledTiers, "an invalid save leaves the stored settings")
 	})
 
+	t.Run("the user's family list groups the models the user can use and shows no channel", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodGet, "/api/user/model_families", nil)
+		c.Set("id", f.user.Id)
+		GetSelfModelFamilies(c)
+		var response struct {
+			Success bool `json:"success"`
+			Data    struct {
+				Families []struct {
+					Key    string   `json:"key"`
+					Models []string `json:"models"`
+				} `json:"families"`
+				UnclassifiedModels []string `json:"unclassified_models"`
+			} `json:"data"`
+		}
+		require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response), recorder.Body.String())
+		require.True(t, response.Success, recorder.Body.String())
+		keys := make([]string, 0, len(response.Data.Families))
+		models := map[string][]string{}
+		for _, family := range response.Data.Families {
+			keys = append(keys, family.Key)
+			models[family.Key] = family.Models
+		}
+		assert.Equal(t, []string{"claude", "gpt", "gemini", "deepseek", "qwen", "glm", "kimi", "grok"}, keys, "the eight default families in the administrator's order")
+		assert.Equal(t, []string{"deepseek-ratio", "deepseek-tiered", "deepseek-v4-pro"}, models["deepseek"])
+		assert.Equal(t, []string{"qwen-plus"}, models["qwen"])
+		assert.Empty(t, models["claude"], "a family without available models stays listed")
+		assert.Equal(t, []string{"gpt-plain"}, response.Data.UnclassifiedModels)
+		for _, private := range []string{"eco-a", "perf-a", "channel"} {
+			assert.NotContains(t, recorder.Body.String(), private)
+		}
+	})
+
 	t.Run("policy validation rejects unsafe rules", func(t *testing.T) {
 		family := f.families["deepseek"]
 		var stored model.AggregationPolicy
@@ -687,5 +721,138 @@ func TestServiceTierAPIs(t *testing.T) {
 		assert.Equal(t, "eco-a", first["name"])
 		assert.Equal(t, true, first["eligible"])
 		assert.Empty(t, f.upstream.callCounts())
+	})
+}
+
+// limitKey stores the model families the fixture key is limited to; no
+// families remove the limit.
+func (f *serviceTierFixture) limitKey(t *testing.T, families ...int) {
+	t.Helper()
+	token := model.Token{}
+	require.NoError(t, token.SetModelFamilies(families))
+	require.NoError(t, model.DB.Model(&model.Token{}).Where("id = ?", f.token.Id).Update("model_families", token.ModelFamilies).Error)
+}
+
+// A key may carry its own service tier settings and a model family limit. The
+// request path applies both on every request.
+func TestServiceTierKeyOverrideAndFamilyLimit(t *testing.T) {
+	f := newServiceTierFixture(t)
+	eco, perf := model.ServiceTierEconomy, model.ServiceTierPerformance
+	f.savePolicy(t, "deepseek", tierPool{eco: {"eco-a"}, perf: {"perf-a"}}, nil)
+	f.savePolicy(t, "qwen", tierPool{eco: {"eco-c"}}, nil)
+	own := service.ServiceTierSettings{EnabledTiers: []string{perf}, Preference: "performance"}
+
+	t.Run("a key's own tiers replace the account default and bill the tier that served", func(t *testing.T) {
+		f.reset(t, 10000, nil)
+		require.NoError(t, service.SaveTokenServiceTierSettings(f.user.Id, f.token.Id, &own))
+		response := f.chat(t, "deepseek-v4-pro")
+		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+		_, logs := f.settled(t, 10000-400)
+		assert.Equal(t, map[string]int{"perf-a": 1}, f.upstream.callCounts())
+		require.Len(t, logs, 1)
+		assert.Equal(t, 400, logs[0].Quota)
+		assert.Equal(t, perf, serviceTierLogInfo(t, logs[0])["final_tier"])
+	})
+
+	t.Run("a key that follows the account uses the account settings again", func(t *testing.T) {
+		f.reset(t, 10000, nil)
+		require.NoError(t, service.SaveTokenServiceTierSettings(f.user.Id, f.token.Id, nil))
+		response := f.chat(t, "deepseek-v4-pro")
+		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+		f.settled(t, 10000-150)
+		assert.Equal(t, map[string]int{"eco-a": 1}, f.upstream.callCounts())
+	})
+
+	t.Run("the dashboard counts the tier that served and shows users no channel", func(t *testing.T) {
+		model.CacheQuotaDataLock.Lock()
+		model.CacheQuotaData = make(map[string]*model.QuotaData)
+		model.CacheQuotaDataLock.Unlock()
+		f.reset(t, 10000, nil)
+		for _, name := range []string{"deepseek-v4-pro", "gpt-plain"} {
+			response := f.chat(t, name)
+			require.Equal(t, http.StatusOK, response.Code, name+": "+response.Body.String())
+		}
+		model.SaveQuotaDataCache()
+		rows, err := model.GetFlowQuotaData(0, time.Now().Unix()+7200, "", f.user.Id, common.RoleCommonUser)
+		require.NoError(t, err)
+		tiers := map[string]string{}
+		for _, row := range rows {
+			tiers[row.ModelName] = row.ServiceTier
+			assert.Equal(t, f.token.Id, row.TokenID)
+			assert.Empty(t, row.NodeName)
+			assert.Empty(t, row.UseGroup)
+			assert.Zero(t, row.ChannelID)
+		}
+		assert.Equal(t, map[string]string{"deepseek-v4-pro": eco, "gpt-plain": ""}, tiers, "requests that did not use tiers carry none")
+	})
+}
+
+func TestServiceTierKeyFamilyLimit(t *testing.T) {
+	f := newServiceTierFixture(t)
+	eco := model.ServiceTierEconomy
+	f.savePolicy(t, "deepseek", tierPool{eco: {"eco-a"}}, nil)
+	f.savePolicy(t, "qwen", tierPool{eco: {"eco-c"}}, nil)
+	qwen := f.families["qwen"]
+	allowed := func(modelName string) bool {
+		t.Helper()
+		response := f.chat(t, modelName)
+		if response.Code != http.StatusOK {
+			assert.Equal(t, http.StatusForbidden, response.Code, modelName+": "+response.Body.String())
+		}
+		return response.Code == http.StatusOK
+	}
+
+	t.Run("a key limited to one family refuses the other families and unclassified models", func(t *testing.T) {
+		f.reset(t, 10000, nil)
+		f.limitKey(t, qwen.Id)
+		assert.False(t, allowed("deepseek-v4-pro"))
+		assert.False(t, allowed("gpt-plain"), "models without a family need id 0")
+		assert.True(t, allowed("qwen-plus"))
+		assert.Equal(t, map[string]int{"eco-c": 1}, f.upstream.callCounts(), "refused requests never reach an upstream")
+		models := f.request(t, http.MethodGet, "/v1/models", "").Body.String()
+		assert.Contains(t, models, `"id":"qwen-plus"`)
+		assert.NotContains(t, models, "deepseek-v4-pro")
+		assert.NotContains(t, models, "gpt-plain")
+	})
+
+	t.Run("id 0 allows the models that belong to no family", func(t *testing.T) {
+		f.reset(t, 10000, nil)
+		f.limitKey(t, qwen.Id, 0)
+		assert.True(t, allowed("gpt-plain"))
+		assert.False(t, allowed("deepseek-v4-pro"))
+	})
+
+	t.Run("membership is read when the request arrives", func(t *testing.T) {
+		// The gemini family has no aggregation policy, so the model keeps its
+		// ordinary group routing after it joins.
+		gemini := f.families["gemini"]
+		f.reset(t, 10000, nil)
+		f.limitKey(t, gemini.Id)
+		assert.False(t, allowed("gpt-plain"))
+		var current model.ModelFamily
+		require.NoError(t, model.DB.First(&current, gemini.Id).Error)
+		_, err := model.ReplaceModelFamilyMembers(gemini.Id, current.Version, []string{"gpt-plain"})
+		require.NoError(t, err)
+		require.NoError(t, service.RefreshServiceTierCache())
+		assert.True(t, allowed("gpt-plain"), "a model added to the family is allowed without editing the key")
+	})
+
+	t.Run("an unreadable family limit refuses everything", func(t *testing.T) {
+		f.reset(t, 10000, nil)
+		require.NoError(t, model.DB.Model(&model.Token{}).Where("id = ?", f.token.Id).Update("model_families", "not json").Error)
+		for _, name := range []string{"deepseek-v4-pro", "qwen-plus", "gpt-plain"} {
+			assert.False(t, allowed(name), name)
+		}
+		models := f.request(t, http.MethodGet, "/v1/models", "")
+		assert.Equal(t, http.StatusOK, models.Code)
+		assert.NotContains(t, models.Body.String(), "qwen-plus")
+	})
+
+	t.Run("a key without a limit keeps every model", func(t *testing.T) {
+		f.reset(t, 10000, nil)
+		f.limitKey(t)
+		for _, name := range []string{"deepseek-v4-pro", "qwen-plus", "gpt-plain"} {
+			assert.True(t, allowed(name), name)
+		}
 	})
 }

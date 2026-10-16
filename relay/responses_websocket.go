@@ -903,6 +903,9 @@ func buildResponsesWSErrorPayload(eventID, streamID string, apiErr *types.NewAPI
 // pinned to a channel: the check is stricter there on purpose, because a
 // persistent connection keeps serving the model after the pin was resolved.
 func checkResponsesWSModelAccess(c *gin.Context, modelName string) *types.NewAPIError {
+	if familyErr := service.CheckTokenModelFamily(c, modelName); familyErr != nil {
+		return familyErr.APIError(c)
+	}
 	if !common.GetContextKeyBool(c, appconstant.ContextKeyTokenModelLimitEnabled) {
 		return nil
 	}

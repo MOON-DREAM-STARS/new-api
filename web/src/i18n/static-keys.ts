@@ -703,13 +703,18 @@ export const STATIC_I18N_KEYS = [
   'Token',
   'Group',
   'Model',
+  'Model tier',
   'Channel',
   'The user who made the requests',
   'The deployment node that handled the requests',
   'The API key used for the requests',
   'The user group applied to the requests',
+  'The model family the requested model belongs to',
   'The model that was requested',
+  'The service tier that served the requests of each model',
   'The upstream channel that served the requests',
+  'Other families',
+  'Other tiers',
 
   // API token audit events
   'Create API token',

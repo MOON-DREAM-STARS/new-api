@@ -43,6 +43,11 @@ export interface FlowQuotaDataItem {
   channel_id?: number
   channel_name?: string
   model_name?: string
+  // The tier that served the requests; empty for requests without tiers.
+  service_tier?: string
+  // The family the model belongs to now; 0 and empty for no family.
+  model_family_id?: number
+  model_family?: string
   token_used?: number
   count?: number
   quota?: number
@@ -59,7 +64,9 @@ export type FlowNodeKind =
   | 'node'
   | 'token'
   | 'group'
+  | 'family'
   | 'model'
+  | 'tier'
   | 'channel'
 
 export interface FlowNodeFilter {
@@ -90,6 +97,12 @@ export interface FlowBuildOptions {
   // Lets the caller inject a localized string such as "Deleted (123)".
   deletedTokenLabel?: (tokenId: number) => string
   otherNodeLabel?: (kind: FlowNodeKind) => string
+  // Display name of a service tier; tier nodes read "<model>-<tier name>".
+  tierLabel?: (tier: string) => string
+  // Name for requests that did not use service tiers.
+  untieredLabel?: string
+  // Name for models that belong to no family.
+  unclassifiedFamilyLabel?: string
 }
 
 export interface DashboardFlowNode {

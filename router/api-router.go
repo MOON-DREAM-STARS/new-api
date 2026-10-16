@@ -134,6 +134,7 @@ func SetApiRouter(router *gin.Engine) {
 				selfRoute.POST("/waffo-pancake/pay", middleware.CriticalRateLimit(), controller.RequestWaffoPancakePay)
 				selfRoute.POST("/aff_transfer", middleware.UserCriticalRateLimit("aff-transfer"), controller.TransferAffQuota)
 				selfRoute.PUT("/setting", controller.UpdateUserSetting)
+				selfRoute.GET("/model_families", controller.GetSelfModelFamilies)
 				selfRoute.GET("/service_tier", controller.GetSelfServiceTier)
 				selfRoute.PUT("/service_tier", controller.UpdateSelfServiceTier)
 				selfRoute.POST("/service_tier/preview", controller.PreviewSelfServiceTier)

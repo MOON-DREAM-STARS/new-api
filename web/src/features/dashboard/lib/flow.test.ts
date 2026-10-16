@@ -18,11 +18,18 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { describe, expect, test } from 'vitest'
 
-import type { FlowQuotaDataItem } from '../types'
+import type {
+  FlowBuildOptions,
+  FlowMetric,
+  FlowNodeKind,
+  FlowQuotaDataItem,
+  ProcessedFlowData,
+} from '../types'
 import {
   buildDashboardFlowData,
   buildFlowFilterOptions,
   buildFlowSankeySpec,
+  getFlowStages,
 } from './flow'
 
 const rows: FlowQuotaDataItem[] = [
@@ -106,68 +113,233 @@ const topLimitRows: FlowQuotaDataItem[] = [
   },
 ]
 
-describe('dashboard flow data', () => {
-  test('builds normal user token-group-model flow', () => {
-    const result = buildDashboardFlowData(rows.slice(0, 2), 'quota', {
-      role: 'user',
-    })
+// What the API returns for a normal user: no node, group or channel, but the
+// service tier and the family each model belongs to.
+const selfRows: FlowQuotaDataItem[] = [
+  {
+    user_id: 1,
+    username: 'alice',
+    token_id: 11,
+    token_name: 'primary',
+    model_name: 'deepseek-v4-pro',
+    model_family_id: 4,
+    model_family: 'DeepSeek',
+    service_tier: 'economy',
+    quota: 100,
+    token_used: 40,
+    count: 2,
+  },
+  {
+    user_id: 1,
+    username: 'alice',
+    token_id: 11,
+    token_name: 'primary',
+    model_name: 'deepseek-v4-pro',
+    model_family_id: 4,
+    model_family: 'DeepSeek',
+    service_tier: 'performance',
+    quota: 50,
+    token_used: 20,
+    count: 1,
+  },
+  {
+    user_id: 1,
+    username: 'alice',
+    token_id: 11,
+    token_name: 'primary',
+    model_name: 'gpt-plain',
+    service_tier: '',
+    quota: 30,
+    token_used: 10,
+    count: 1,
+  },
+]
 
-    expect(result.summary.quota).toBe(150)
-    expect(result.summary.tokens).toBe(60)
-    expect(result.summary.requests).toBe(3)
-    expect(
-      result.flow.links.map((link) => [link.source, link.target, link.value])
-    ).toEqual([
-      ['group:vip', 'model:gpt-4.1', 150],
-      ['token:11', 'group:vip', 150],
-    ])
-    expect(result.flow.nodes.some((node) => node.kind === 'channel')).toBe(
-      false
-    )
+// The same request an administrator sees: every column is known.
+const taggedRows: FlowQuotaDataItem[] = [
+  {
+    ...rows[0],
+    model_family_id: 2,
+    model_family: 'GPT',
+    service_tier: 'economy',
+  },
+]
+
+// The columns the filtering, highlighting and overflow cases below were
+// written against. Family and tier columns are left out so those cases keep
+// exercising the rules on the original columns.
+const ORIGINAL_COLUMNS: Record<'admin' | 'root', FlowNodeKind[]> = {
+  admin: ['user', 'group', 'model', 'channel'],
+  root: ['user', 'node', 'token', 'group', 'model', 'channel'],
+}
+
+function buildOriginalColumns(
+  data: FlowQuotaDataItem[],
+  metric: FlowMetric,
+  options: FlowBuildOptions & { role: 'admin' | 'root' }
+): ProcessedFlowData {
+  return buildDashboardFlowData(data, metric, {
+    ...options,
+    visibleStages: options.visibleStages ?? ORIGINAL_COLUMNS[options.role],
+  })
+}
+
+describe('dashboard flow data', () => {
+  test('lets administrators and the super administrator see the same eight columns', () => {
+    const everything: FlowNodeKind[] = [
+      'user',
+      'node',
+      'token',
+      'group',
+      'family',
+      'model',
+      'tier',
+      'channel',
+    ]
+
+    expect(getFlowStages('admin')).toEqual(everything)
+    expect(getFlowStages('root')).toEqual(everything)
   })
 
-  test('builds admin user-group-model-channel flow', () => {
-    const result = buildDashboardFlowData(rows, 'quota', {
+  test('never gives a normal user the node, group or channel columns', () => {
+    expect(getFlowStages('user')).toEqual([
+      'user',
+      'token',
+      'family',
+      'model',
+      'tier',
+    ])
+  })
+
+  test('builds the normal user flow from user to token, family, model and tier', () => {
+    const result = buildDashboardFlowData(selfRows, 'quota', { role: 'user' })
+
+    expect(result.summary.quota).toBe(180)
+    expect(
+      result.flow.links
+        .map((link) => [link.source, link.target, link.value])
+        .sort((a, b) => `${a[0]}>${a[1]}`.localeCompare(`${b[0]}>${b[1]}`))
+    ).toEqual([
+      ['family:4', 'model:deepseek-v4-pro', 150],
+      ['family:unclassified', 'model:gpt-plain', 30],
+      ['model:deepseek-v4-pro', 'tier:deepseek-v4-pro|economy', 100],
+      ['model:deepseek-v4-pro', 'tier:deepseek-v4-pro|performance', 50],
+      ['model:gpt-plain', 'tier:gpt-plain|none', 30],
+      ['token:11', 'family:4', 150],
+      ['token:11', 'family:unclassified', 30],
+      ['user:1', 'token:11', 180],
+    ])
+    for (const hidden of ['node', 'group', 'channel']) {
+      expect(result.flow.nodes.some((node) => node.kind === hidden)).toBe(false)
+    }
+  })
+
+  test('builds the administrator flow through every column', () => {
+    const result = buildDashboardFlowData(rows.slice(0, 1), 'quota', {
       role: 'admin',
     })
 
-    expect(
-      result.flow.links.map((link) => [link.source, link.target, link.value])
-    ).toEqual([
-      ['group:default', 'model:claude-4-sonnet', 70],
-      ['group:vip', 'model:gpt-4.1', 150],
-      ['model:claude-4-sonnet', 'channel:101', 70],
-      ['model:gpt-4.1', 'channel:101', 100],
-      ['model:gpt-4.1', 'channel:102', 50],
-      ['user:1', 'group:vip', 150],
-      ['user:2', 'group:default', 70],
+    expect(result.flow.nodes.map((node) => node.kind).sort()).toEqual([
+      'channel',
+      'family',
+      'group',
+      'model',
+      'node',
+      'tier',
+      'token',
+      'user',
     ])
   })
 
-  test('builds root user-node-token-group-model-channel flow', () => {
-    const result = buildDashboardFlowData(rows, 'requests', {
-      role: 'root',
+  test('ignores stage filters that would leave fewer than two columns', () => {
+    const result = buildDashboardFlowData(selfRows, 'quota', {
+      role: 'user',
+      visibleStages: ['model'],
+    })
+
+    expect(new Set(result.flow.nodes.map((node) => node.kind))).toEqual(
+      new Set(['user', 'token', 'family', 'model', 'tier'])
+    )
+  })
+
+  test('names a tier node after its model and the tier', () => {
+    const tierNames: Record<string, string> = {
+      economy: 'Economy tier',
+      performance: 'Performance tier',
+    }
+    const result = buildDashboardFlowData(selfRows, 'quota', {
+      role: 'user',
+      tierLabel: (tier) => tierNames[tier] ?? tier,
+      untieredLabel: 'Untiered',
     })
 
     expect(
-      result.flow.links.map((link) => [link.source, link.target, link.value])
+      result.flow.nodes
+        .filter((node) => node.kind === 'tier')
+        .map((node) => node.label)
+        .sort()
     ).toEqual([
-      ['group:default', 'model:claude-4-sonnet', 3],
-      ['group:vip', 'model:gpt-4.1', 3],
-      ['model:claude-4-sonnet', 'channel:101', 3],
-      ['model:gpt-4.1', 'channel:101', 2],
-      ['model:gpt-4.1', 'channel:102', 1],
-      ['node:node-a', 'token:11', 3],
-      ['node:node-b', 'token:22', 3],
-      ['token:11', 'group:vip', 3],
-      ['token:22', 'group:default', 3],
-      ['user:1', 'node:node-a', 3],
-      ['user:2', 'node:node-b', 3],
+      'deepseek-v4-pro-Economy tier',
+      'deepseek-v4-pro-Performance tier',
+      'gpt-plain-Untiered',
     ])
   })
 
+  test('puts models that belong to no family in the unclassified family', () => {
+    const result = buildDashboardFlowData(selfRows, 'quota', {
+      role: 'user',
+      unclassifiedFamilyLabel: 'Other models',
+    })
+
+    const families = result.flow.nodes.filter((node) => node.kind === 'family')
+    expect(families.map((node) => [node.id, node.label]).sort()).toEqual([
+      ['family:4', 'DeepSeek'],
+      ['family:unclassified', 'Other models'],
+    ])
+  })
+
+  test('keeps model family and tier labels readable when sensitive values are masked', () => {
+    const result = buildDashboardFlowData(taggedRows, 'quota', {
+      role: 'admin',
+      maskSensitive: true,
+      tierLabel: () => 'Economy tier',
+    })
+
+    const labels = (kind: FlowNodeKind) =>
+      result.flow.nodes
+        .filter((node) => node.kind === kind)
+        .map((node) => node.label)
+    expect(labels('user')).not.toContain('alice')
+    expect(labels('family')).toEqual(['GPT'])
+    expect(labels('model')).toEqual(['gpt-4.1'])
+    expect(labels('tier')).toEqual(['gpt-4.1-Economy tier'])
+  })
+
+  test('folds overflowing tier nodes into the Other tiers bucket', () => {
+    const result = buildDashboardFlowData(selfRows, 'quota', {
+      role: 'user',
+      visibleStages: ['model', 'tier'],
+      topNodeLimit: 1,
+      overflowMode: 'aggregate',
+    })
+
+    const tiers = result.flow.nodes.filter((node) => node.kind === 'tier')
+    expect(tiers.map((node) => node.id)).toContain('tier:__other__')
+    expect(tiers).toHaveLength(2)
+  })
+
+  test('filters by the tier a model was served from', () => {
+    const result = buildDashboardFlowData(selfRows, 'quota', {
+      role: 'user',
+      selectedNodes: [{ kind: 'tier', id: 'tier:deepseek-v4-pro|performance' }],
+    })
+
+    expect(result.summary.quota).toBe(50)
+    expect(result.summary.requests).toBe(1)
+  })
+
   test('filters by selected users', () => {
-    const result = buildDashboardFlowData(rows, 'quota', {
+    const result = buildOriginalColumns(rows, 'quota', {
       role: 'admin',
       selectedUsers: ['user:2'],
     })
@@ -183,7 +355,7 @@ describe('dashboard flow data', () => {
   })
 
   test('filters rows by selected flow nodes', () => {
-    const result = buildDashboardFlowData(rows, 'quota', {
+    const result = buildOriginalColumns(rows, 'quota', {
       role: 'admin',
       selectedNodes: [{ kind: 'model', id: 'model:gpt-4.1' }],
     })
@@ -200,14 +372,14 @@ describe('dashboard flow data', () => {
   })
 
   test('combines node filters with OR inside a column and AND across columns', () => {
-    const sameColumn = buildDashboardFlowData(rows, 'quota', {
+    const sameColumn = buildOriginalColumns(rows, 'quota', {
       role: 'admin',
       selectedNodes: [
         { kind: 'model', id: 'model:gpt-4.1' },
         { kind: 'model', id: 'model:claude-4-sonnet' },
       ],
     })
-    const crossColumn = buildDashboardFlowData(rows, 'quota', {
+    const crossColumn = buildOriginalColumns(rows, 'quota', {
       role: 'admin',
       selectedNodes: [
         { kind: 'model', id: 'model:gpt-4.1' },
@@ -231,7 +403,7 @@ describe('dashboard flow data', () => {
   })
 
   test('combines user and node filters', () => {
-    const result = buildDashboardFlowData(rows, 'quota', {
+    const result = buildOriginalColumns(rows, 'quota', {
       role: 'admin',
       selectedUsers: ['user:1'],
       selectedNodes: [{ kind: 'channel', id: 'channel:101' }],
@@ -248,7 +420,7 @@ describe('dashboard flow data', () => {
   })
 
   test('reconnects links when a middle stage is hidden', () => {
-    const result = buildDashboardFlowData(rows, 'quota', {
+    const result = buildOriginalColumns(rows, 'quota', {
       role: 'admin',
       visibleStages: ['user', 'model', 'channel'],
     })
@@ -265,20 +437,6 @@ describe('dashboard flow data', () => {
     expect(result.flow.nodes.some((node) => node.kind === 'group')).toBe(false)
   })
 
-  test('ignores stage filters that would leave fewer than two columns', () => {
-    const result = buildDashboardFlowData(rows.slice(0, 2), 'quota', {
-      role: 'user',
-      visibleStages: ['model'],
-    })
-
-    expect(
-      result.flow.links.map((link) => [link.source, link.target, link.value])
-    ).toEqual([
-      ['group:vip', 'model:gpt-4.1', 150],
-      ['token:11', 'group:vip', 150],
-    ])
-  })
-
   test('builds user filter options with stable values', () => {
     const options = buildFlowFilterOptions(rows, 'quota')
 
@@ -292,7 +450,7 @@ describe('dashboard flow data', () => {
   })
 
   test('builds node filter options without applying top limits', () => {
-    const result = buildDashboardFlowData(topLimitRows, 'quota', {
+    const result = buildOriginalColumns(topLimitRows, 'quota', {
       role: 'admin',
       topNodeLimit: 1,
       overflowMode: 'aggregate',
@@ -315,7 +473,7 @@ describe('dashboard flow data', () => {
   })
 
   test('facets node filter options by selected nodes from other columns', () => {
-    const result = buildDashboardFlowData(rows, 'quota', {
+    const result = buildOriginalColumns(rows, 'quota', {
       role: 'root',
       selectedNodes: [{ kind: 'node', id: 'node:node-a' }],
     })
@@ -345,7 +503,7 @@ describe('dashboard flow data', () => {
   })
 
   test('keeps same-column node options available for OR filtering', () => {
-    const result = buildDashboardFlowData(rows, 'quota', {
+    const result = buildOriginalColumns(rows, 'quota', {
       role: 'admin',
       selectedNodes: [{ kind: 'model', id: 'model:gpt-4.1' }],
     })
@@ -369,7 +527,7 @@ describe('dashboard flow data', () => {
   })
 
   test('combines user filters with faceted node filter options', () => {
-    const result = buildDashboardFlowData(rows, 'quota', {
+    const result = buildOriginalColumns(rows, 'quota', {
       role: 'root',
       selectedUsers: ['user:1'],
       selectedNodes: [{ kind: 'channel', id: 'channel:101' }],
@@ -392,7 +550,7 @@ describe('dashboard flow data', () => {
   })
 
   test('aggregates overflow nodes into per-column Other buckets', () => {
-    const result = buildDashboardFlowData(topLimitRows, 'quota', {
+    const result = buildOriginalColumns(topLimitRows, 'quota', {
       role: 'admin',
       topNodeLimit: 2,
       overflowMode: 'aggregate',
@@ -425,7 +583,7 @@ describe('dashboard flow data', () => {
   })
 
   test('hides overflow paths when overflow mode is hide', () => {
-    const result = buildDashboardFlowData(topLimitRows, 'quota', {
+    const result = buildOriginalColumns(topLimitRows, 'quota', {
       role: 'admin',
       topNodeLimit: 2,
       overflowMode: 'hide',
@@ -444,17 +602,17 @@ describe('dashboard flow data', () => {
   })
 
   test('ranks top nodes using the selected flow metric', () => {
-    const byQuota = buildDashboardFlowData(topLimitRows, 'quota', {
+    const byQuota = buildOriginalColumns(topLimitRows, 'quota', {
       role: 'admin',
       topNodeLimit: 1,
       overflowMode: 'aggregate',
     })
-    const byRequests = buildDashboardFlowData(topLimitRows, 'requests', {
+    const byRequests = buildOriginalColumns(topLimitRows, 'requests', {
       role: 'admin',
       topNodeLimit: 1,
       overflowMode: 'aggregate',
     })
-    const byTokens = buildDashboardFlowData(topLimitRows, 'tokens', {
+    const byTokens = buildOriginalColumns(topLimitRows, 'tokens', {
       role: 'admin',
       topNodeLimit: 1,
       overflowMode: 'aggregate',
@@ -468,7 +626,7 @@ describe('dashboard flow data', () => {
   })
 
   test('applies top limits only to visible stages', () => {
-    const result = buildDashboardFlowData(topLimitRows, 'quota', {
+    const result = buildOriginalColumns(topLimitRows, 'quota', {
       role: 'admin',
       visibleStages: ['user', 'model'],
       topNodeLimit: 1,
@@ -491,7 +649,7 @@ describe('dashboard flow data', () => {
   })
 
   test('applies top limits after node filters', () => {
-    const result = buildDashboardFlowData(topLimitRows, 'quota', {
+    const result = buildOriginalColumns(topLimitRows, 'quota', {
       role: 'admin',
       selectedNodes: [{ kind: 'model', id: 'model:model-c' }],
       topNodeLimit: 1,
@@ -512,7 +670,7 @@ describe('dashboard flow data', () => {
   })
 
   test('ignores selected node filters for hidden stages', () => {
-    const result = buildDashboardFlowData(rows, 'quota', {
+    const result = buildOriginalColumns(rows, 'quota', {
       role: 'admin',
       visibleStages: ['user', 'model', 'channel'],
       selectedNodes: [{ kind: 'group', id: 'group:vip' }],
@@ -525,7 +683,7 @@ describe('dashboard flow data', () => {
   })
 
   test('highlights full paths that contain the active user node', () => {
-    const result = buildDashboardFlowData(rows, 'quota', {
+    const result = buildOriginalColumns(rows, 'quota', {
       role: 'root',
       activeNode: { kind: 'user', id: 'user:1' },
     })
@@ -577,7 +735,7 @@ describe('dashboard flow data', () => {
   })
 
   test('highlights full paths that traverse the active link', () => {
-    const result = buildDashboardFlowData(rows, 'quota', {
+    const result = buildOriginalColumns(rows, 'quota', {
       role: 'root',
       activeLink: { source: 'model:gpt-4.1', target: 'channel:101' },
     })
@@ -641,7 +799,7 @@ describe('dashboard flow data', () => {
         count: 1,
       },
     ]
-    const result = buildDashboardFlowData(sharedRows, 'quota', {
+    const result = buildOriginalColumns(sharedRows, 'quota', {
       role: 'admin',
       activeNode: { kind: 'user', id: 'user:1' },
     })
@@ -660,10 +818,10 @@ describe('dashboard flow data', () => {
   })
 
   test('does not emit highlight states without a visible active node', () => {
-    const withoutActive = buildDashboardFlowData(rows, 'quota', {
+    const withoutActive = buildOriginalColumns(rows, 'quota', {
       role: 'root',
     })
-    const hiddenActive = buildDashboardFlowData(rows, 'quota', {
+    const hiddenActive = buildOriginalColumns(rows, 'quota', {
       role: 'root',
       visibleStages: ['node', 'token'],
       activeNode: { kind: 'user', id: 'user:1' },
@@ -692,7 +850,7 @@ describe('dashboard flow data', () => {
   })
 
   test('builds Sankey spec with quota token request tooltips', () => {
-    const result = buildDashboardFlowData(rows.slice(0, 1), 'quota', {
+    const result = buildOriginalColumns(rows.slice(0, 1), 'quota', {
       role: 'root',
     })
     const flowSpec = buildFlowSankeySpec(result.flow, 'Flow')
@@ -739,7 +897,7 @@ describe('dashboard flow data', () => {
   })
 
   test('maps active flow highlight states into the Sankey spec', () => {
-    const result = buildDashboardFlowData(rows, 'quota', {
+    const result = buildOriginalColumns(rows, 'quota', {
       role: 'root',
       activeNode: { kind: 'user', id: 'user:1' },
     })
