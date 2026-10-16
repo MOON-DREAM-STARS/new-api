@@ -29,12 +29,8 @@ import {
   tierDescription,
   tierLabel,
 } from '../lib/tiers'
-import type { ServiceTierKey } from '../types'
+import type { ServiceTierKey, TierRatioRange } from '../types'
 import { TierIcon } from './tier-icon'
-
-export type TierRatioRange = Partial<
-  Record<ServiceTierKey, { min: number; max: number }>
->
 
 type TierSwitchCardsProps = {
   enabledTiers: ServiceTierKey[]

@@ -691,3 +691,30 @@ func TestResponsesWSErrorAttribution(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckResponsesWSModelAccessAppliesTheKeyFamilyLimit(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	database := setupRelayChannelDB(t)
+	family := model.ModelFamily{Key: "qwen", Name: "Qwen", Version: 1}
+	require.NoError(t, database.Create(&family).Error)
+	require.NoError(t, database.Create(&model.ModelFamilyMember{FamilyId: family.Id, ModelName: "qwen-plus"}).Error)
+	require.NoError(t, service.RefreshServiceTierCache())
+	t.Cleanup(func() {
+		require.NoError(t, database.Where("1 = 1").Delete(&model.ModelFamilyMember{}).Error)
+		require.NoError(t, database.Where("1 = 1").Delete(&model.ModelFamily{}).Error)
+		require.NoError(t, service.RefreshServiceTierCache())
+	})
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	assert.Nil(t, checkResponsesWSModelAccess(c, "gpt-plain"), "a key without a family limit may use every model")
+
+	common.SetContextKey(c, constant.ContextKeyTokenModelFamilies, []int{family.Id})
+	assert.Nil(t, checkResponsesWSModelAccess(c, "qwen-plus"))
+	denied := checkResponsesWSModelAccess(c, "gpt-plain")
+	require.NotNil(t, denied, "a model outside the key's families is refused on the persistent connection too")
+	assert.Equal(t, http.StatusForbidden, denied.StatusCode)
+
+	common.SetContextKey(c, constant.ContextKeyTokenModelFamilies, []int{family.Id, 0})
+	assert.Nil(t, checkResponsesWSModelAccess(c, "gpt-plain"), "id 0 allows the models that belong to no family")
+}

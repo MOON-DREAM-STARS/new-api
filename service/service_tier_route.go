@@ -160,7 +160,7 @@ func ResolveServiceTierRoute(c *gin.Context, modelName string) (*ServiceTierRout
 		return nil, &ServiceTierError{StatusCode: http.StatusServiceUnavailable, Code: types.ErrorCodeModelNotFound, MessageID: i18n.MsgServiceTierModelUnavailable, Params: map[string]any{"Model": modelName, "Group": usingGroup}}
 	}
 
-	settings, err := GetUserServiceTierSettings(userID)
+	settings, err := GetTokenServiceTierSettings(userID, c.GetInt("token_id"))
 	if err != nil {
 		common.SysError(common.LogText("failed to load service tier settings (user_id=%d): %s", userID, err.Error()))
 		return nil, &ServiceTierError{StatusCode: http.StatusServiceUnavailable, Code: types.ErrorCodeQueryDataError, MessageID: i18n.MsgServiceTierConfigUnavailable}
@@ -334,6 +334,7 @@ func (r *ServiceTierRoute) SelectFirstChannel(c *gin.Context) (*model.Channel, *
 		return nil, err
 	}
 	common.SetContextKey(c, constant.ContextKeyServiceTierRatio, step.Ratio)
+	common.SetContextKey(c, constant.ContextKeyServiceTier, step.Tier)
 	return channel, nil
 }
 
@@ -486,6 +487,7 @@ func ReserveServiceTierRatio(c *gin.Context, info *relaycommon.RelayInfo, route 
 		info.PriceData.QuotaToPreConsume = target
 	}
 	common.SetContextKey(c, constant.ContextKeyServiceTierRatio, step.Ratio)
+	common.SetContextKey(c, constant.ContextKeyServiceTier, step.Tier)
 	return nil
 }
 

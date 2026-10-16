@@ -35,6 +35,7 @@ const (
 	serviceTierMaxWeight        = 10000
 	serviceTierMaxPriority      = 1_000_000
 	serviceTierMaxCooldownCount = 20
+	serviceTierMaxKeyFamilies   = 64
 )
 
 // ServiceTierRelayableErrors are the error categories an administrator may
@@ -377,18 +378,46 @@ end
 return 1
 `
 
-func cacheServiceTierSettingsIfNewer(userID int, settings ServiceTierSettings) error {
+// cacheServiceTierValueIfNewer stores value under key unless the cached value
+// has a version that is not older. The script reads the top-level version
+// of the cached JSON.
+func cacheServiceTierValueIfNewer(key string, version int64, value any) error {
 	if common.RDB == nil {
 		return fmt.Errorf("redis client is unavailable")
 	}
-	data, err := common.Marshal(settings)
+	data, err := common.Marshal(value)
 	if err != nil {
 		return err
 	}
 	_, err = common.RDB.Eval(context.Background(), serviceTierSettingsCacheSetScript,
-		[]string{serviceTierSettingsCacheKey(userID)}, settings.Version,
-		string(data), common.RedisKeyCacheSeconds()).Result()
+		[]string{key}, version, string(data), common.RedisKeyCacheSeconds()).Result()
 	return err
+}
+
+func cacheServiceTierSettingsIfNewer(userID int, settings ServiceTierSettings) error {
+	return cacheServiceTierValueIfNewer(serviceTierSettingsCacheKey(userID), settings.Version, settings)
+}
+
+func serviceTierSettingsFromRow(row *model.UserServiceTierSetting) ServiceTierSettings {
+	return ServiceTierSettings{
+		EnabledTiers:      row.GetEnabledTiers(),
+		Preference:        row.Preference,
+		AllowEscalation:   row.AllowEscalation,
+		MaxEscalationTier: row.MaxEscalationTier,
+		Version:           row.Version,
+	}
+}
+
+func serviceTierRowFromSettings(userID int, tokenID int, settings ServiceTierSettings) *model.UserServiceTierSetting {
+	row := &model.UserServiceTierSetting{
+		UserId:            userID,
+		TokenId:           tokenID,
+		Preference:        settings.Preference,
+		AllowEscalation:   settings.AllowEscalation,
+		MaxEscalationTier: settings.MaxEscalationTier,
+	}
+	row.SetEnabledTiers(settings.EnabledTiers)
+	return row
 }
 
 // GetUserServiceTierSettings returns the user's saved settings or the
@@ -408,13 +437,7 @@ func GetUserServiceTierSettings(userID int) (ServiceTierSettings, error) {
 	}
 	settings := DefaultServiceTierSettings()
 	if found {
-		settings = ServiceTierSettings{
-			EnabledTiers:      row.GetEnabledTiers(),
-			Preference:        row.Preference,
-			AllowEscalation:   row.AllowEscalation,
-			MaxEscalationTier: row.MaxEscalationTier,
-			Version:           row.Version,
-		}
+		settings = serviceTierSettingsFromRow(row)
 	}
 	if common.RedisEnabled {
 		if err := cacheServiceTierSettingsIfNewer(userID, settings); err != nil {
@@ -431,13 +454,7 @@ func SaveUserServiceTierSettings(userID int, input ServiceTierSettings, expected
 	if err != nil {
 		return settings, err
 	}
-	row := &model.UserServiceTierSetting{
-		UserId:            userID,
-		Preference:        settings.Preference,
-		AllowEscalation:   settings.AllowEscalation,
-		MaxEscalationTier: settings.MaxEscalationTier,
-	}
-	row.SetEnabledTiers(settings.EnabledTiers)
+	row := serviceTierRowFromSettings(userID, 0, settings)
 	if err := model.SaveUserServiceTierSetting(row, expectedVersion); err != nil {
 		return settings, err
 	}
@@ -448,6 +465,128 @@ func SaveUserServiceTierSettings(userID int, input ServiceTierSettings, expected
 		}
 	}
 	return settings, nil
+}
+
+// ---------------------------------------------------------------------------
+// Settings of one API key
+// ---------------------------------------------------------------------------
+
+// A key follows the account settings unless it has its own. Its own settings
+// are the key row in user_service_tier_settings. A key that was reset to the
+// account default keeps the row with an empty preference, so the row version
+// only grows and the version ordered cache never brings back an older choice.
+
+type serviceTierTokenCacheEntry struct {
+	Version  int64               `json:"version"`
+	Inherit  bool                `json:"inherit"`
+	Settings ServiceTierSettings `json:"settings"`
+}
+
+func serviceTierTokenCacheKey(tokenID int) string {
+	return fmt.Sprintf("service_tier:token:%d", tokenID)
+}
+
+func serviceTierTokenEntryFromRow(row *model.UserServiceTierSetting) serviceTierTokenCacheEntry {
+	if row == nil {
+		return serviceTierTokenCacheEntry{Inherit: true}
+	}
+	entry := serviceTierTokenCacheEntry{Version: row.Version, Inherit: row.Preference == ""}
+	if !entry.Inherit {
+		entry.Settings = serviceTierSettingsFromRow(row)
+	}
+	return entry
+}
+
+// override is the own settings of the key, or nil when the key follows the account.
+func (e serviceTierTokenCacheEntry) override() *ServiceTierSettings {
+	if e.Inherit {
+		return nil
+	}
+	settings := e.Settings
+	return &settings
+}
+
+// GetTokenServiceTierOverride returns the own settings of the key, or nil when
+// the key follows the account default.
+func GetTokenServiceTierOverride(userID int, tokenID int) (*ServiceTierSettings, error) {
+	key := serviceTierTokenCacheKey(tokenID)
+	if common.RedisEnabled {
+		if cached, err := common.RedisGet(key); err == nil && cached != "" {
+			var entry serviceTierTokenCacheEntry
+			if common.UnmarshalJsonStr(cached, &entry) == nil {
+				return entry.override(), nil
+			}
+		}
+	}
+	row, found, err := model.GetUserServiceTierSetting(userID, tokenID)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		row = nil
+	}
+	entry := serviceTierTokenEntryFromRow(row)
+	if common.RedisEnabled {
+		if err := cacheServiceTierValueIfNewer(key, entry.Version, entry); err != nil {
+			common.SysError(common.LogText("failed to cache service tier settings (token_id=%d): %s", tokenID, err.Error()))
+		}
+	}
+	return entry.override(), nil
+}
+
+// GetTokenServiceTierSettings returns the settings that route the requests of
+// the key: its own settings, or the account settings when it has none.
+func GetTokenServiceTierSettings(userID int, tokenID int) (ServiceTierSettings, error) {
+	if tokenID > 0 {
+		override, err := GetTokenServiceTierOverride(userID, tokenID)
+		if err != nil {
+			return ServiceTierSettings{}, err
+		}
+		if override != nil {
+			return *override, nil
+		}
+	}
+	return GetUserServiceTierSettings(userID)
+}
+
+// NewTokenServiceTierRow validates the own settings of a key and returns the
+// row that is stored together with a new key.
+func NewTokenServiceTierRow(input ServiceTierSettings) (*model.UserServiceTierSetting, error) {
+	settings, err := NormalizeServiceTierSettings(input)
+	if err != nil {
+		return nil, err
+	}
+	return serviceTierRowFromSettings(0, 0, settings), nil
+}
+
+// SaveTokenServiceTierSettings stores the own settings of a key. With a nil
+// input the key follows the account default again.
+func SaveTokenServiceTierSettings(userID int, tokenID int, input *ServiceTierSettings) error {
+	var row *model.UserServiceTierSetting
+	if input != nil {
+		settings, err := NormalizeServiceTierSettings(*input)
+		if err != nil {
+			return err
+		}
+		row = serviceTierRowFromSettings(userID, tokenID, settings)
+	} else {
+		// A key without its own row already follows the account default.
+		_, found, err := model.GetUserServiceTierSetting(userID, tokenID)
+		if err != nil || !found {
+			return err
+		}
+		row = &model.UserServiceTierSetting{UserId: userID, TokenId: tokenID}
+	}
+	if err := model.SaveTokenServiceTierSetting(row); err != nil {
+		return err
+	}
+	if common.RedisEnabled {
+		entry := serviceTierTokenEntryFromRow(row)
+		if err := cacheServiceTierValueIfNewer(serviceTierTokenCacheKey(tokenID), entry.Version, entry); err != nil {
+			common.SysError(common.LogText("failed to cache service tier settings (token_id=%d): %s", tokenID, err.Error()))
+		}
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------

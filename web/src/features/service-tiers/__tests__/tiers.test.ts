@@ -25,9 +25,10 @@ import {
   normalizeCeiling,
   preferenceStartTier,
   sameSettings,
+  tierRatioRanges,
   toggleTier,
 } from '../lib/tiers'
-import type { ServiceTierSettings } from '../types'
+import type { ServiceTierSettings, ServiceTierUserOverview } from '../types'
 
 function settings(
   patch: Partial<ServiceTierSettings> = {}
@@ -148,5 +149,47 @@ describe('service tier draft rules', () => {
     expect(formatTierRatio(0.125, 'en-US')).toBe('×0.125')
     expect(formatTierRatio(0.15, 'en-US')).toBe('×0.15')
     expect(formatTierRatio(undefined, 'en-US')).toBe('-')
+  })
+})
+
+describe('tier ratio ranges', () => {
+  const overview = (
+    offered: Array<
+      Partial<Record<'economy' | 'balanced' | 'performance', number>>
+    >
+  ): ServiceTierUserOverview => ({
+    available: true,
+    settings: settings(),
+    preview: {
+      chain: [],
+      families: offered.map((offered_tiers, index) => ({
+        family: `family-${index}`,
+        offered_tiers,
+        model_overrides: 0,
+        preferred_tier: 'economy',
+        preferred_offered: true,
+        steps: [],
+        ceiling_ratio: 0,
+      })),
+    },
+  })
+
+  it('has no range before the overview is loaded', () => {
+    expect(tierRatioRanges(undefined)).toEqual({})
+  })
+
+  it('spans the lowest and highest ratio of each tier across families', () => {
+    expect(
+      tierRatioRanges(
+        overview([
+          { economy: 0.15, performance: 0.4 },
+          { economy: 0.1, balanced: 0.2, performance: 0.5 },
+        ])
+      )
+    ).toEqual({
+      economy: { min: 0.1, max: 0.15 },
+      balanced: { min: 0.2, max: 0.2 },
+      performance: { min: 0.4, max: 0.5 },
+    })
   })
 })

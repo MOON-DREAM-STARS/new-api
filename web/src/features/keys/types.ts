@@ -18,6 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { z } from 'zod'
 
+import type { ServiceTierSettings } from '@/features/service-tiers/types'
+
 // ============================================================================
 // API Key Schema & Types
 // ============================================================================
@@ -45,10 +47,40 @@ export const apiKeySchema = z.object({
     .default(false),
   model_limits_enabled: z.boolean(),
   model_limits: z.string().nullish().default(''),
+  // Ids of the model families the key is limited to; 0 stands for models that
+  // belong to no family. Empty means the key can use every model.
+  model_families: z.array(z.number()).nullish().default([]),
   allow_ips: z.string().nullish().default(''),
 })
 
 export type ApiKey = z.infer<typeof apiKeySchema>
+
+/** A single key as returned for editing, with its own service tier settings. */
+export type ApiKeyDetail = ApiKey & {
+  /** Null while the key follows the account default. */
+  service_tier: ServiceTierSettings | null
+}
+
+/** The tier settings a key stores of its own. */
+export type ApiKeyServiceTierInput = Pick<
+  ServiceTierSettings,
+  'enabled_tiers' | 'preference' | 'allow_escalation' | 'max_escalation_tier'
+>
+
+/** A model family with the models the user can use in it. */
+export interface UserModelFamily {
+  id: number
+  key: string
+  name: string
+  description: string
+  models: string[]
+}
+
+export interface UserModelFamilies {
+  families: UserModelFamily[]
+  /** Models the user can use that belong to no family. */
+  unclassified_models: string[]
+}
 
 // ============================================================================
 // API Request/Response Types
@@ -92,13 +124,11 @@ export interface ApiKeyFormData {
   model_limits: string
   allow_ips: string
   group: string
-  auto_groups: string[]
   cross_group_retry: boolean
-}
-
-export interface TokenAutoGroupsConfig {
-  groups: string[]
-  max_count: number
+  /** Omitted keeps the stored limit on update; an empty list removes it. */
+  model_families?: number[]
+  /** Omitted keeps the stored settings; null follows the account default. */
+  service_tier?: ApiKeyServiceTierInput | null
 }
 
 // ============================================================================

@@ -22,6 +22,8 @@ import type {
   ServiceTierKey,
   ServiceTierPreference,
   ServiceTierSettings,
+  ServiceTierUserOverview,
+  TierRatioRange,
 } from '../types'
 
 /** Tiers from the cheapest level to the most expensive one. */
@@ -187,4 +189,25 @@ export function formatTierRatio(
 ): string {
   if (ratio == null || Number.isNaN(ratio)) return '-'
   return `×${new Intl.NumberFormat(locale, { maximumFractionDigits: 4 }).format(ratio)}`
+}
+
+/** The lowest and highest ratio each tier has across the user's families. */
+export function tierRatioRanges(
+  overview?: ServiceTierUserOverview
+): TierRatioRange {
+  const ranges: TierRatioRange = {}
+  for (const family of overview?.preview.families ?? []) {
+    for (const tier of SERVICE_TIERS) {
+      const ratio = family.offered_tiers[tier]
+      if (ratio == null) continue
+      const current = ranges[tier]
+      ranges[tier] = current
+        ? {
+            min: Math.min(current.min, ratio),
+            max: Math.max(current.max, ratio),
+          }
+        : { min: ratio, max: ratio }
+    }
+  }
+  return ranges
 }

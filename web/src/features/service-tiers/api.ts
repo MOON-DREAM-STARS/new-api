@@ -27,6 +27,9 @@ import type {
 
 type ApiResult<T> = { success: boolean; message?: string; data: T }
 
+/** Shared by the service tiers page and the API key wizard. */
+export const serviceTierOverviewQueryKey = ['service-tier', 'overview'] as const
+
 export async function getServiceTierOverview(): Promise<ServiceTierUserOverview> {
   const response = await api.get<ApiResult<ServiceTierUserOverview>>(
     '/api/user/service_tier'

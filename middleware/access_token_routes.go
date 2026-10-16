@@ -96,6 +96,7 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"POST /api/user/waffo-pancake/pay":             accessTokenScopeRule("wallet:write"),
 	"POST /api/user/aff_transfer":                  accessTokenScopeRule("wallet:write"),
 	"PUT /api/user/setting":                        accessTokenScopeRule("profile:write"),
+	"GET /api/user/model_families":                 accessTokenScopeRule("profile:read"),
 	"GET /api/user/service_tier":                   accessTokenScopeRule("profile:read"),
 	"PUT /api/user/service_tier":                   accessTokenScopeRule("profile:write"),
 	"POST /api/user/service_tier/preview":          accessTokenScopeRule("profile:read"),

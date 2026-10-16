@@ -69,6 +69,9 @@ type FlowNodeRank = {
 
 type FlowPathContext = {
   deletedTokenLabel?: (tokenId: number) => string
+  tierLabel?: (tier: string) => string
+  untieredLabel?: string
+  unclassifiedFamilyLabel?: string
 }
 
 type FlowGraphOptions = {
@@ -105,7 +108,9 @@ const FLOW_NODE_KINDS: readonly FlowNodeKind[] = [
   'node',
   'token',
   'group',
+  'family',
   'model',
+  'tier',
   'channel',
 ]
 const FLOW_NODE_KIND_SET = new Set<FlowNodeKind>(FLOW_NODE_KINDS)
@@ -115,7 +120,9 @@ const OTHER_FLOW_NODE_IDS: Record<FlowNodeKind, string> = {
   node: 'node:__other__',
   token: 'token:__other__',
   group: 'group:__other__',
+  family: 'family:__other__',
   model: 'model:__other__',
+  tier: 'tier:__other__',
   channel: 'channel:__other__',
 }
 
@@ -124,12 +131,15 @@ const DEFAULT_OTHER_FLOW_NODE_LABELS: Record<FlowNodeKind, string> = {
   node: 'Other nodes',
   token: 'Other tokens',
   group: 'Other groups',
+  family: 'Other families',
   model: 'Other models',
+  tier: 'Other tiers',
   channel: 'Other channels',
 }
 
 // Kinds whose labels can leak identity (people, keys, infra, business setup).
-// Model names are public, so they stay visible even when masking is on.
+// Model names are public, so they stay visible even when masking is on; model
+// families and tiers only name models and service levels.
 const SENSITIVE_FLOW_KINDS = new Set<FlowNodeKind>([
   'user',
   'node',
@@ -209,12 +219,42 @@ function groupNode(row: FlowQuotaDataItem): FlowPathNode {
   }
 }
 
+function familyNode(
+  row: FlowQuotaDataItem,
+  ctx: FlowPathContext
+): FlowPathNode {
+  const familyID = numberValue(row.model_family_id)
+  if (familyID > 0 && row.model_family) {
+    return { id: `family:${familyID}`, label: row.model_family, kind: 'family' }
+  }
+  return {
+    id: 'family:unclassified',
+    label: ctx.unclassifiedFamilyLabel ?? 'Other models',
+    kind: 'family',
+  }
+}
+
 function modelNode(row: FlowQuotaDataItem): FlowPathNode {
   const model = row.model_name || 'unknown'
   return {
     id: `model:${model}`,
     label: row.model_name || 'Unknown Model',
     kind: 'model',
+  }
+}
+
+// A tier node belongs to one model, so every model fans out into the tiers
+// that served it and reads "<model>-<tier name>".
+function tierNode(row: FlowQuotaDataItem, ctx: FlowPathContext): FlowPathNode {
+  const model = row.model_name || 'unknown'
+  const tier = row.service_tier || ''
+  const tierName = tier
+    ? (ctx.tierLabel?.(tier) ?? tier)
+    : (ctx.untieredLabel ?? 'Untiered')
+  return {
+    id: `tier:${model}|${tier || 'none'}`,
+    label: `${row.model_name || 'Unknown Model'}-${tierName}`,
+    kind: 'tier',
   }
 }
 
@@ -239,14 +279,29 @@ const NODE_BUILDERS: Record<
   node: nodeNameNode,
   token: tokenNode,
   group: groupNode,
+  family: familyNode,
   model: modelNode,
+  tier: tierNode,
   channel: channelNode,
 }
 
+// Users never see the nodes, groups or channels behind their traffic;
+// administrators and the super administrator see the whole path.
+const ADMIN_FLOW_STAGES: FlowNodeKind[] = [
+  'user',
+  'node',
+  'token',
+  'group',
+  'family',
+  'model',
+  'tier',
+  'channel',
+]
+
 const ROLE_FLOW_STAGES: Record<FlowRole, FlowNodeKind[]> = {
-  root: ['user', 'node', 'token', 'group', 'model', 'channel'],
-  admin: ['user', 'group', 'model', 'channel'],
-  user: ['token', 'group', 'model'],
+  root: ADMIN_FLOW_STAGES,
+  admin: ADMIN_FLOW_STAGES,
+  user: ['user', 'token', 'family', 'model', 'tier'],
 }
 
 // A Sankey needs at least two columns to draw any link, so hiding stages can
@@ -978,6 +1033,9 @@ export function buildDashboardFlowData(
   const palette = options.colorPalette
   const ctx = {
     deletedTokenLabel: options.deletedTokenLabel,
+    tierLabel: options.tierLabel,
+    untieredLabel: options.untieredLabel,
+    unclassifiedFamilyLabel: options.unclassifiedFamilyLabel,
   }
   const stages = resolveVisibleStages(role, options.visibleStages)
   const userFilteredRows = filterRows(rows, options)

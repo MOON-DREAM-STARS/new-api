@@ -47,8 +47,11 @@ func TestServiceTierStorageDatabaseMatrix(t *testing.T) {
 			DB = db
 			common.SetMainDatabaseType(common.DatabaseType(dialect))
 			initCol()
-			tables := []any{&ModelFamily{}, &ModelFamilyMember{}, &AggregationPolicy{}, &UserServiceTierSetting{}}
+			tables := []any{&ModelFamily{}, &ModelFamilyMember{}, &AggregationPolicy{}, &UserServiceTierSetting{}, &Option{}}
 			require.NoError(t, db.Migrator().DropTable(tables...))
+			// The options table already exists when the service starts; it holds the
+			// seed version.
+			require.NoError(t, db.AutoMigrate(&Option{}))
 			t.Cleanup(func() {
 				require.NoError(t, db.Migrator().DropTable(tables...))
 				DB = previousDB
@@ -80,8 +83,17 @@ func TestServiceTierStorageDatabaseMatrix(t *testing.T) {
 			assert.Empty(t, ddl, "a second startup changes no schema")
 			store, err := LoadServiceTierStore()
 			require.NoError(t, err)
-			require.Len(t, store.Families, 4)
-			assert.Equal(t, []string{"deepseek", "qwen", "glm", "kimi"}, []string{store.Families[0].Key, store.Families[1].Key, store.Families[2].Key, store.Families[3].Key})
+			require.Len(t, store.Families, 8)
+			assert.Equal(t, []string{"claude", "gpt", "gemini", "deepseek", "qwen", "glm", "kimi", "grok"}, familyKeys(store))
+			familyByKey := func(key string) ModelFamily {
+				for _, family := range store.Families {
+					if family.Key == key {
+						return family
+					}
+				}
+				t.Fatalf("family %s is missing", key)
+				return ModelFamily{}
+			}
 			require.Len(t, store.Policies, 1, "only the DeepSeek example policy is seeded")
 			assert.False(t, store.Policies[0].Enabled, "the seeded example never routes until enabled")
 			seeded, err := store.Policies[0].GetConfig()
@@ -100,7 +112,7 @@ func TestServiceTierStorageDatabaseMatrix(t *testing.T) {
 				assert.True(t, db.Migrator().HasIndex(index.table, index.name), index.name)
 			}
 
-			deepseek, qwen := store.Families[0], store.Families[1]
+			deepseek, qwen := familyByKey("deepseek"), familyByKey("qwen")
 			require.ErrorIs(t, CreateModelFamily(&ModelFamily{Key: "qwen", Name: "Duplicate"}), ErrModelFamilyKeyExists)
 
 			_, err = ReplaceModelFamilyMembers(deepseek.Id, deepseek.Version, []string{"deepseek-v4-pro", "deepseek-v3"})
@@ -151,7 +163,7 @@ func TestServiceTierStorageDatabaseMatrix(t *testing.T) {
 			require.NoError(t, DeleteModelFamily(deepseek.Id, deepseek.Version))
 			store, err = LoadServiceTierStore()
 			require.NoError(t, err)
-			assert.Len(t, store.Families, 3)
+			assert.Len(t, store.Families, 7)
 			for _, member := range store.Members {
 				assert.NotEqual(t, deepseek.Id, member.FamilyId)
 			}
@@ -159,7 +171,38 @@ func TestServiceTierStorageDatabaseMatrix(t *testing.T) {
 			require.NoError(t, migrateServiceTierTables(db))
 			store, err = LoadServiceTierStore()
 			require.NoError(t, err)
-			assert.Len(t, store.Families, 3, "a restart does not recreate deleted families")
+			assert.Len(t, store.Families, 7, "a restart does not recreate deleted families")
+
+			// An installation seeded by the first version receives the families
+			// added later once, after the families it already has.
+			require.NoError(t, db.Where("1 = 1").Delete(&ModelFamily{}).Error)
+			require.NoError(t, db.Where("1 = 1").Delete(&Option{}).Error)
+			for index, key := range []string{"deepseek", "qwen", "glm", "kimi"} {
+				require.NoError(t, db.Create(&ModelFamily{Key: key, Name: key, SortOrder: index + 1, Version: 1}).Error)
+			}
+			require.NoError(t, migrateServiceTierTables(db))
+			store, err = LoadServiceTierStore()
+			require.NoError(t, err)
+			assert.Equal(t, []string{"deepseek", "qwen", "glm", "kimi", "claude", "gpt", "gemini", "grok"}, familyKeys(store))
+			assert.Equal(t, 8, store.Families[7].SortOrder)
+			var marker Option
+			require.NoError(t, db.Where(&Option{Key: serviceTierDefaultFamiliesOptionKey}).First(&marker).Error)
+			assert.Equal(t, "2", marker.Value)
+			grok := store.Families[7]
+			require.NoError(t, DeleteModelFamily(grok.Id, grok.Version))
+			require.NoError(t, migrateServiceTierTables(db))
+			store, err = LoadServiceTierStore()
+			require.NoError(t, err)
+			assert.Equal(t, []string{"deepseek", "qwen", "glm", "kimi", "claude", "gpt", "gemini"}, familyKeys(store), "a family the administrator deleted stays deleted")
+			assert.ErrorIs(t, validateOptionValue(serviceTierDefaultFamiliesOptionKey, "1"), errServiceTierSeedMarkerReadOnly)
 		})
 	}
+}
+
+func familyKeys(store *ServiceTierStore) []string {
+	keys := make([]string, 0, len(store.Families))
+	for _, family := range store.Families {
+		keys = append(keys, family.Key)
+	}
+	return keys
 }

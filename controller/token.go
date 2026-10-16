@@ -32,14 +32,59 @@ func (input *tokenAutoGroupsInput) UnmarshalJSON(data []byte) error {
 	return common.Unmarshal(data, &input.Groups)
 }
 
+// tokenModelFamiliesInput is the model family limit of a key as submitted.
+// Set tells whether the field was present, so an update without it keeps the
+// stored limit; null or an empty list removes the limit.
+type tokenModelFamiliesInput struct {
+	Set      bool
+	Families []int
+}
+
+func (input *tokenModelFamiliesInput) UnmarshalJSON(data []byte) error {
+	input.Set = true
+	if strings.TrimSpace(string(data)) == "null" {
+		input.Families = nil
+		return nil
+	}
+	return common.Unmarshal(data, &input.Families)
+}
+
+// tokenServiceTierInput is the own service tier settings of a key as
+// submitted: absent keeps the stored settings, null makes the key follow the
+// account default and an object stores the settings of the key.
+type tokenServiceTierInput struct {
+	Set      bool
+	Settings *service.ServiceTierSettings
+}
+
+func (input *tokenServiceTierInput) UnmarshalJSON(data []byte) error {
+	input.Set = true
+	if strings.TrimSpace(string(data)) == "null" {
+		input.Settings = nil
+		return nil
+	}
+	input.Settings = &service.ServiceTierSettings{}
+	return common.Unmarshal(data, input.Settings)
+}
+
 type tokenRequest struct {
 	model.Token
-	AutoGroups tokenAutoGroupsInput `json:"auto_groups"`
+	AutoGroups    tokenAutoGroupsInput    `json:"auto_groups"`
+	ModelFamilies tokenModelFamiliesInput `json:"model_families"`
+	ServiceTier   tokenServiceTierInput   `json:"service_tier"`
 }
 
 type tokenResponse struct {
 	*model.Token
-	AutoGroups []string `json:"auto_groups"`
+	AutoGroups    []string `json:"auto_groups"`
+	ModelFamilies []int    `json:"model_families"`
+}
+
+// tokenDetailResponse adds the own service tier settings of the key, which
+// are null while the key follows the account default.
+type tokenDetailResponse struct {
+	*tokenResponse
+	ServiceTier *service.ServiceTierSettings `json:"service_tier"`
 }
 
 func maxTokenQuota() int {
@@ -66,7 +111,14 @@ func buildMaskedTokenResponse(token *model.Token) *tokenResponse {
 	if len(autoGroups) == 0 {
 		autoGroups = nil
 	}
-	return &tokenResponse{Token: &maskedToken, AutoGroups: autoGroups}
+	modelFamilies, err := token.GetModelFamilies()
+	if err != nil {
+		common.SysError(common.LogText("failed to parse model families for token %d: %v", token.Id, err))
+	}
+	if modelFamilies == nil {
+		modelFamilies = []int{}
+	}
+	return &tokenResponse{Token: &maskedToken, AutoGroups: autoGroups, ModelFamilies: modelFamilies}
 }
 
 func buildMaskedTokenResponses(tokens []*model.Token) []*tokenResponse {
@@ -170,7 +222,12 @@ func GetToken(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, buildMaskedTokenResponse(token))
+	tier, err := service.GetTokenServiceTierOverride(userId, token.Id)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, &tokenDetailResponse{tokenResponse: buildMaskedTokenResponse(token), ServiceTier: tier})
 }
 
 func GetTokenAutoGroups(c *gin.Context) {
@@ -320,6 +377,22 @@ func AddToken(c *gin.Context) {
 		token.CrossGroupRetry = false
 		_ = token.SetAutoGroups(nil)
 	}
+	modelFamilies, err := service.NormalizeTokenModelFamilies(request.ModelFamilies.Families)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if err := token.SetModelFamilies(modelFamilies); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	var tierRow *model.UserServiceTierSetting
+	if request.ServiceTier.Settings != nil {
+		if tierRow, err = service.NewTokenServiceTierRow(*request.ServiceTier.Settings); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+	}
 	key, err := common.GenerateKey()
 	if err != nil {
 		common.ApiErrorT(c, "Failed to generate token")
@@ -341,8 +414,13 @@ func AddToken(c *gin.Context) {
 		Group:              token.Group,
 		CrossGroupRetry:    token.CrossGroupRetry,
 		AutoGroups:         token.AutoGroups,
+		ModelFamilies:      token.ModelFamilies,
 	}
-	err = cleanToken.Insert()
+	if tierRow != nil {
+		err = cleanToken.InsertWithServiceTier(tierRow)
+	} else {
+		err = cleanToken.Insert()
+	}
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -352,6 +430,7 @@ func AddToken(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
+		"data":    buildMaskedTokenResponse(&cleanToken),
 	})
 }
 
@@ -444,6 +523,23 @@ func UpdateToken(c *gin.Context) {
 				return
 			}
 		}
+		if request.ModelFamilies.Set {
+			families, err := service.NormalizeTokenModelFamilies(request.ModelFamilies.Families)
+			if err != nil {
+				common.ApiError(c, err)
+				return
+			}
+			if err := cleanToken.SetModelFamilies(families); err != nil {
+				common.ApiError(c, err)
+				return
+			}
+		}
+		if request.ServiceTier.Set {
+			if err := service.SaveTokenServiceTierSettings(userId, cleanToken.Id, request.ServiceTier.Settings); err != nil {
+				common.ApiError(c, err)
+				return
+			}
+		}
 	}
 	err = cleanToken.Update()
 	if err != nil {
@@ -470,6 +566,8 @@ func UpdateToken(c *gin.Context) {
 			{"group", previous.Group != cleanToken.Group},
 			{"cross_group_retry", previous.CrossGroupRetry != cleanToken.CrossGroupRetry},
 			{"auto_groups", previous.AutoGroups != cleanToken.AutoGroups},
+			{"model_families", previous.ModelFamilies != cleanToken.ModelFamilies},
+			{"service_tier", request.ServiceTier.Set},
 		} {
 			if field.changed {
 				changedFields = append(changedFields, field.name)

@@ -35,7 +35,9 @@ func setupRelayChannelDB(t *testing.T) *gorm.DB {
 	sqlDB, err := database.DB()
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(1)
-	require.NoError(t, database.AutoMigrate(&model.Channel{}))
+	// Routing reads the channel aggregation configuration before every
+	// selection; an empty configuration leaves ordinary routing unchanged.
+	require.NoError(t, database.AutoMigrate(&model.Channel{}, &model.ModelFamily{}, &model.ModelFamilyMember{}, &model.AggregationPolicy{}, &model.UserServiceTierSetting{}))
 	model.DB = database
 	common.SetMainDatabaseType(common.DatabaseTypeSQLite)
 	common.MemoryCacheEnabled = false

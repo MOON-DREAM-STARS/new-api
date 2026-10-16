@@ -8,6 +8,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/relay"
@@ -248,8 +249,20 @@ func ListModels(c *gin.Context, modelType int) {
 			tokenModelLimit = map[string]bool{}
 		}
 	}
+	familyAllows, familyErr := service.TokenModelFamilyFilter(c)
+	if familyErr != nil {
+		common.SysError(common.LogText("failed to load model families: %s", familyErr.Error()))
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"success": false,
+			"message": i18n.T(c, i18n.MsgServiceTierConfigUnavailable),
+		})
+		return
+	}
 	models := service.GetGroupsEnabledModels(ownerGroups)
 	for _, modelName := range models {
+		if familyAllows != nil && !familyAllows(modelName) {
+			continue
+		}
 		if modelLimitEnable {
 			matchingName := ratio_setting.RoutingMatchModelName(modelName)
 			if !tokenModelLimit[modelName] && !tokenModelLimit[matchingName] {

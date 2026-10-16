@@ -55,3 +55,8 @@ export type ServiceTierUserOverview = {
   settings: ServiceTierSettings
   preview: ServiceTierPreview
 }
+
+/** The lowest and highest billing ratio each tier has across model families. */
+export type TierRatioRange = Partial<
+  Record<ServiceTierKey, { min: number; max: number }>
+>

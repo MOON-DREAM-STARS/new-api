@@ -72,6 +72,10 @@ func Distribute() func(c *gin.Context) {
 					return
 				}
 			}
+			if familyErr := service.CheckTokenModelFamily(c, modelRequest.Model); familyErr != nil {
+				abortWithOpenAiMessage(c, familyErr.StatusCode, familyErr.Message(c), familyErr.Code)
+				return
+			}
 
 			if shouldSelectChannel {
 				if modelRequest.Model == "" {
@@ -541,7 +545,9 @@ func TokenModelLimitAllows(limit map[string]bool, model string) bool {
 // modelRequest.Model 为空而误报 "This token has no access to model"。
 // 从已存储的任务记录中回填 OriginModelName 即可让校验走在正确的模型上。
 func getTaskOriginModelName(c *gin.Context) string {
-	if !common.GetContextKeyBool(c, constant.ContextKeyTokenModelLimitEnabled) {
+	// A model family limit needs the model name for the same reason.
+	families, _ := common.GetContextKeyType[[]int](c, constant.ContextKeyTokenModelFamilies)
+	if !common.GetContextKeyBool(c, constant.ContextKeyTokenModelLimitEnabled) && len(families) == 0 {
 		return ""
 	}
 

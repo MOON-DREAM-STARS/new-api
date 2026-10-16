@@ -214,6 +214,17 @@ func serviceTierUserGroup(c *gin.Context) string {
 	return user.Group
 }
 
+// GetSelfModelFamilies lists the model families with the models the
+// requesting user can use, for the key creation wizard.
+func GetSelfModelFamilies(c *gin.Context) {
+	families, err := service.GetServiceTierUserFamilies(serviceTierUserGroup(c))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, families)
+}
+
 func GetSelfServiceTier(c *gin.Context) {
 	overview, err := service.GetServiceTierUserOverview(c.GetInt("id"), serviceTierUserGroup(c))
 	if err != nil {

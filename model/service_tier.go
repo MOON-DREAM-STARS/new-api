@@ -3,11 +3,13 @@ package model
 import (
 	"errors"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // Channel aggregation (service tiers) storage.
@@ -197,38 +199,93 @@ func (s *UserServiceTierSetting) SetEnabledTiers(tiers []string) {
 	s.EnabledTiers = strings.Join(ordered, ",")
 }
 
-// migrateServiceTierTables creates the aggregation tables. The default
-// families are seeded only when the family table is created, so families an
-// administrator deleted are never recreated by a restart.
+const (
+	// serviceTierDefaultFamiliesOptionKey stores the version of the default
+	// model families that were already seeded. It lets an upgrade introduce
+	// families added later without recreating one an administrator deleted.
+	serviceTierDefaultFamiliesOptionKey = "ServiceTierDefaultFamiliesVersion"
+	// Version 1 seeded DeepSeek, Qwen, GLM and Kimi; version 2 adds Claude,
+	// GPT, Gemini and Grok.
+	serviceTierDefaultFamiliesVersion = 2
+)
+
+var errServiceTierSeedMarkerReadOnly = errors.New("ServiceTierDefaultFamiliesVersion is managed by the server")
+
+type defaultModelFamily struct {
+	key, name, description string
+	patterns               []string
+	// since is the default families version that introduced the family.
+	since int
+}
+
+// defaultModelFamilies lists the default families in display order.
+var defaultModelFamilies = []defaultModelFamily{
+	{"claude", "Claude", "Anthropic Claude models", []string{"claude"}, 2},
+	{"gpt", "GPT", "OpenAI GPT models", []string{"gpt", "chatgpt"}, 2},
+	{"gemini", "Gemini", "Google Gemini models", []string{"gemini"}, 2},
+	{"deepseek", "DeepSeek", "DeepSeek models", []string{"deepseek"}, 1},
+	{"qwen", "Qwen", "Qwen (Tongyi Qianwen) models", []string{"qwen", "qwq", "qvq"}, 1},
+	{"glm", "GLM", "Zhipu GLM models", []string{"glm"}, 1},
+	{"kimi", "Kimi", "Moonshot Kimi models", []string{"kimi", "moonshot"}, 1},
+	{"grok", "Grok", "xAI Grok models", []string{"grok"}, 2},
+}
+
+// migrateServiceTierTables creates the aggregation tables and seeds the
+// default families. The seeded version is kept in the options table, so a
+// family an administrator deleted is never recreated by a restart, while a
+// family introduced by a later version is added once.
 func migrateServiceTierTables(db *gorm.DB) error {
 	fresh := !db.Migrator().HasTable(&ModelFamily{})
 	if err := db.AutoMigrate(&ModelFamily{}, &ModelFamilyMember{}, &AggregationPolicy{}, &UserServiceTierSetting{}); err != nil {
 		return err
 	}
-	if !fresh {
-		return nil
-	}
-	return seedDefaultModelFamilies(db)
+	return seedDefaultModelFamilies(db, fresh)
 }
 
-func seedDefaultModelFamilies(db *gorm.DB) error {
-	now := common.GetTimestamp()
-	defaults := []struct {
-		key, name, description string
-		patterns               []string
-	}{
-		{"deepseek", "DeepSeek", "DeepSeek models", []string{"deepseek"}},
-		{"qwen", "Qwen", "Qwen (Tongyi Qianwen) models", []string{"qwen", "qwq", "qvq"}},
-		{"glm", "GLM", "Zhipu GLM models", []string{"glm"}},
-		{"kimi", "Kimi", "Moonshot Kimi models", []string{"kimi", "moonshot"}},
+func seedDefaultModelFamilies(db *gorm.DB, fresh bool) error {
+	seeded := 0
+	if !fresh {
+		// A family table without the marker was created by version 1.
+		seeded = 1
+		var markers []Option
+		if err := db.Where(&Option{Key: serviceTierDefaultFamiliesOptionKey}).Find(&markers).Error; err != nil {
+			return err
+		}
+		if len(markers) > 0 {
+			version, err := strconv.Atoi(strings.TrimSpace(markers[0].Value))
+			if err != nil {
+				common.SysError(common.LogText("invalid default model family version %q, the default families are not seeded", markers[0].Value))
+				return nil
+			}
+			seeded = version
+		}
 	}
+	if seeded >= serviceTierDefaultFamiliesVersion {
+		return nil
+	}
+	now := common.GetTimestamp()
 	return db.Transaction(func(tx *gorm.DB) error {
-		for index, item := range defaults {
-			family := ModelFamily{Key: item.key, Name: item.name, Description: item.description, SortOrder: index + 1, Version: 1, CreatedAt: now, UpdatedAt: now}
+		var existing []ModelFamily
+		if err := tx.Find(&existing).Error; err != nil {
+			return err
+		}
+		keys := make(map[string]bool, len(existing))
+		sortOrder := 0
+		for _, family := range existing {
+			keys[family.Key] = true
+			sortOrder = max(sortOrder, family.SortOrder)
+		}
+		for _, item := range defaultModelFamilies {
+			if item.since <= seeded || keys[item.key] {
+				continue
+			}
+			sortOrder++
+			family := ModelFamily{Key: item.key, Name: item.name, Description: item.description, SortOrder: sortOrder, Version: 1, CreatedAt: now, UpdatedAt: now}
 			if err := family.SetMatchPatterns(item.patterns); err != nil {
 				return err
 			}
-			if err := tx.Create(&family).Error; err != nil {
+			// A node that starts at the same moment may have seeded the family.
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&family).Error; err != nil {
 				return err
 			}
 			if item.key != "deepseek" {
@@ -236,17 +293,29 @@ func seedDefaultModelFamilies(db *gorm.DB) error {
 			}
 			// An editable, disabled example: it routes nothing until an
 			// administrator adds channels and enables it.
-			policy := AggregationPolicy{FamilyId: family.Id, Enabled: false, Version: 1, CreatedAt: now, UpdatedAt: now}
+			var stored ModelFamily
+			if err := tx.Where(&ModelFamily{Key: item.key}).Take(&stored).Error; err != nil {
+				return err
+			}
+			policy := AggregationPolicy{FamilyId: stored.Id, Enabled: false, Version: 1, CreatedAt: now, UpdatedAt: now}
 			if err := policy.SetConfig(DefaultAggregationPolicyConfig(map[string]float64{
 				ServiceTierEconomy: 0.15, ServiceTierBalanced: 0.20, ServiceTierPerformance: 0.40,
 			})); err != nil {
 				return err
 			}
-			if err := tx.Create(&policy).Error; err != nil {
+			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&policy).Error; err != nil {
 				return err
 			}
 		}
-		return nil
+		version := strconv.Itoa(serviceTierDefaultFamiliesVersion)
+		updated := tx.Model(&Option{}).Where(&Option{Key: serviceTierDefaultFamiliesOptionKey}).Update("value", version)
+		if updated.Error != nil {
+			return updated.Error
+		}
+		if updated.RowsAffected > 0 {
+			return nil
+		}
+		return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&Option{Key: serviceTierDefaultFamiliesOptionKey, Value: version}).Error
 	})
 }
 
@@ -455,6 +524,73 @@ func DeleteAggregationPolicy(familyId int, modelName string, expectedVersion int
 		return missingOrConflict(&AggregationPolicy{}, scope)
 	}
 	return nil
+}
+
+// SaveTokenServiceTierSetting creates or replaces the settings row of one key.
+// A key that follows the account default keeps its row with an empty
+// preference instead of losing it, so the row version only ever grows and the
+// version ordered cache can never bring back an older choice.
+func SaveTokenServiceTierSetting(setting *UserServiceTierSetting) error {
+	return DB.Transaction(func(tx *gorm.DB) error {
+		return saveTokenServiceTierSettingTx(tx, setting)
+	})
+}
+
+func saveTokenServiceTierSettingTx(tx *gorm.DB, setting *UserServiceTierSetting) error {
+	now := common.GetTimestamp()
+	scope := map[string]any{"user_id": setting.UserId, "token_id": setting.TokenId}
+	var current []UserServiceTierSetting
+	if err := tx.Where(scope).Limit(1).Find(&current).Error; err != nil {
+		return err
+	}
+	if len(current) == 0 {
+		setting.Id, setting.Version = 0, 1
+		setting.CreatedAt, setting.UpdatedAt = now, now
+		return tx.Create(setting).Error
+	}
+	version := current[0].Version + 1
+	result := tx.Model(&UserServiceTierSetting{}).
+		Where(scope).Where("version = ?", current[0].Version).
+		Updates(map[string]any{
+			"enabled_tiers":       setting.EnabledTiers,
+			"preference":          setting.Preference,
+			"allow_escalation":    setting.AllowEscalation,
+			"max_escalation_tier": setting.MaxEscalationTier,
+			"version":             version,
+			"updated_at":          now,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrServiceTierVersionConflict
+	}
+	setting.Id, setting.Version = current[0].Id, version
+	setting.CreatedAt, setting.UpdatedAt = current[0].CreatedAt, now
+	return nil
+}
+
+func deleteTokenServiceTierSettings(tx *gorm.DB, userId int, tokenIds []int) error {
+	if len(tokenIds) == 0 {
+		return nil
+	}
+	return tx.Where("user_id = ? AND token_id IN ?", userId, tokenIds).Delete(&UserServiceTierSetting{}).Error
+}
+
+// ExistingModelFamilyIDs returns which of the ids are existing model families.
+func ExistingModelFamilyIDs(ids []int) (map[int]bool, error) {
+	existing := make(map[int]bool, len(ids))
+	if len(ids) == 0 {
+		return existing, nil
+	}
+	var found []int
+	if err := DB.Model(&ModelFamily{}).Where("id IN ?", ids).Pluck("id", &found).Error; err != nil {
+		return nil, err
+	}
+	for _, id := range found {
+		existing[id] = true
+	}
+	return existing, nil
 }
 
 func GetUserServiceTierSetting(userId int, tokenId int) (*UserServiceTierSetting, bool, error) {

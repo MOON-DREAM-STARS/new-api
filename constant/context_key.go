@@ -21,6 +21,9 @@ const (
 	ContextKeyTokenModelLimit        ContextKey = "token_model_limit"
 	ContextKeyTokenCrossGroupRetry   ContextKey = "token_cross_group_retry"
 	ContextKeyTokenAutoGroups        ContextKey = "token_auto_groups"
+	// ContextKeyTokenModelFamilies holds the []int of model family ids the
+	// key is limited to; it is absent when the key is not limited.
+	ContextKeyTokenModelFamilies ContextKey = "token_model_families"
 
 	/* channel related keys */
 	ContextKeyChannelId                ContextKey = "channel_id"
@@ -50,6 +53,9 @@ const (
 	// ContextKeyServiceTierRatio is the billing ratio of the service tier the
 	// current attempt uses. It replaces the group ratio for aggregated requests.
 	ContextKeyServiceTierRatio ContextKey = "service_tier_ratio"
+	// ContextKeyServiceTier is the name of the service tier the current attempt
+	// uses; the usage statistics record it for the request.
+	ContextKeyServiceTier ContextKey = "service_tier"
 
 	/* user related keys */
 	ContextKeyUserId      ContextKey = "id"
