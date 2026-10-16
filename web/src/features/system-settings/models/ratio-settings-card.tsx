@@ -36,6 +36,7 @@ import {
   type ModelPricingConfig,
 } from '@/features/model-pricing/api'
 import { pricingOptions } from '@/features/model-pricing/pricing'
+import { useMediaQuery } from '@/hooks/use-media-query'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import { SettingsPageTitleStatusPortal } from '../components/settings-page-context'
@@ -44,6 +45,7 @@ import { useUpdateOption } from '../hooks/use-update-option'
 import { positiveIntegerSchema } from '../utils/numeric-field'
 import { GroupRatioForm } from './group-ratio-form'
 import { ModelRatioForm } from './model-ratio-form'
+import { ModelsDevSync } from './models-dev-sync/models-dev-sync'
 import { ToolPriceSettings } from './tool-price-settings'
 import { UpstreamRatioSync } from './upstream-ratio-sync'
 import {
@@ -155,6 +157,7 @@ type RatioTabId =
   | 'groups'
   | 'tool-prices'
   | 'upstream-sync'
+  | 'models-dev'
 
 type RatioSettingsCardProps = {
   modelDefaults: ModelFormValues
@@ -172,6 +175,9 @@ export function RatioSettingsCard({
   visibleTabs = ['models', 'groups', 'tool-prices', 'upstream-sync'],
 }: RatioSettingsCardProps) {
   const { t } = useTranslation()
+  // The title bar clips what does not fit, so on a phone the tabs sit above the
+  // content and scroll sideways.
+  const compact = useMediaQuery('(max-width: 639px)')
   const updateOption = useUpdateOption()
   const [confirmOpen, setConfirmOpen] = useState(false)
 
@@ -444,6 +450,29 @@ export function RatioSettingsCard({
     [updateOption]
   )
 
+  // A models.dev import changes prices behind the editor's back: load them
+  // again unless the editor holds edits that are not saved yet.
+  const handlePricesImported = useCallback(async () => {
+    const values = modelForm.getValues()
+    const saved = modelNormalizedDefaults.current
+    const unsaved = (Object.keys(saved) as Array<keyof typeof saved>).some(
+      (key) => {
+        const value = values[key]
+        return typeof value === 'string'
+          ? normalizeJsonString(value) !== saved[key]
+          : value !== saved[key]
+      }
+    )
+    if (unsaved) {
+      toast.info(
+        t('Prices changed. Reload the model prices before you save your edits.')
+      )
+      return
+    }
+    const refreshed = await pricingQuery.refetch()
+    if (refreshed.data) setPricingBaseline(refreshed.data)
+  }, [modelForm, pricingQuery, t])
+
   const handleResetRatios = useCallback(() => {
     setConfirmOpen(true)
   }, [])
@@ -459,6 +488,7 @@ export function RatioSettingsCard({
     groups: 'Group ratios',
     'tool-prices': 'Tool prices',
     'upstream-sync': 'Upstream price sync',
+    'models-dev': 'models.dev sync',
   }
   const tabsGridClass =
     {
@@ -520,11 +550,16 @@ export function RatioSettingsCard({
     if (tab === 'tool-prices') {
       return <ToolPriceSettings defaultValue={toolPricesDefault} />
     }
+    if (tab === 'models-dev') {
+      return <ModelsDevSync onPricesChanged={handlePricesImported} />
+    }
     return <UpstreamRatioSync />
   }
 
   const renderTabSwitcher = () => (
-    <TabsList className={`grid w-fit max-w-full ${tabsGridClass}`}>
+    <TabsList
+      className={compact ? 'w-max' : `grid w-fit max-w-full ${tabsGridClass}`}
+    >
       {visibleTabs.map((tab) => (
         <TabsTrigger key={tab} value={tab}>
           {t(tabLabels[tab])}
@@ -548,9 +583,15 @@ export function RatioSettingsCard({
         </SettingsSection>
       ) : (
         <Tabs defaultValue={defaultTab} className='h-full min-h-0 gap-6'>
-          <SettingsPageTitleStatusPortal>
-            {renderTabSwitcher()}
-          </SettingsPageTitleStatusPortal>
+          {compact ? (
+            <div className='max-w-full overflow-x-auto py-1'>
+              {renderTabSwitcher()}
+            </div>
+          ) : (
+            <SettingsPageTitleStatusPortal>
+              {renderTabSwitcher()}
+            </SettingsPageTitleStatusPortal>
+          )}
 
           <SettingsSection title={t(titleKey)} className='min-h-0 flex-1'>
             {visibleTabs.map((tab) => (

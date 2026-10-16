@@ -68,6 +68,7 @@ export const SIDEBAR_MODULES_DEFAULT: SidebarModulesConfig = {
     detail: true,
     token: true,
     service_tier: true,
+    price_comparison: true,
     log: true,
     audit: true,
     midjourney: true,

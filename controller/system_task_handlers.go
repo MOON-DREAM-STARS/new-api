@@ -21,6 +21,7 @@ func RegisterScheduledSystemTasks() {
 	service.RegisterSystemTaskHandler(modelUpdateHandler{})
 	service.RegisterSystemTaskHandler(midjourneyPollHandler{})
 	service.RegisterSystemTaskHandler(asyncTaskPollHandler{})
+	service.RegisterSystemTaskHandler(modelsDevPricingHandler{})
 }
 
 // channelTestHandler runs the scheduled "test all channels" job. Enablement and
@@ -149,6 +150,36 @@ func (asyncTaskPollHandler) NewPayload() any { return nil }
 func (asyncTaskPollHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
 	summary := service.RunTaskPollingOnce(ctx, service.NewSystemTaskProgressReporter(task, runnerID))
 	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
+}
+
+// modelsDevPricingHandler imports the prices of models.dev once for every new
+// release of the software. Enabled() holds the switch of the administrator and
+// "this version has not imported yet"; a failed import is tried again after
+// the interval, a few times.
+type modelsDevPricingHandler struct{}
+
+func (modelsDevPricingHandler) Type() string { return model.SystemTaskTypeModelsDevPricing }
+
+func (modelsDevPricingHandler) Enabled() bool { return service.ModelsDevAutoSyncDue() }
+
+// Interval spaces the retries of a failing import. The first try of a release
+// is not held back by the last import of an earlier one.
+func (modelsDevPricingHandler) Interval() time.Duration {
+	if service.ModelsDevAutoSyncFirstTry() {
+		return 0
+	}
+	return time.Hour
+}
+
+func (modelsDevPricingHandler) NewPayload() any { return nil }
+
+func (modelsDevPricingHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	result, err := service.RunModelsDevAutoSync(ctx)
+	if err != nil {
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
+		return
+	}
+	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, result, nil)
 }
 
 func finishSystemTaskHandler(task *model.SystemTask, runnerID string, status model.SystemTaskStatus, result any, runErr error) {

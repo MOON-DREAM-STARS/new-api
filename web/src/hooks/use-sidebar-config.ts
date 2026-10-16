@@ -41,6 +41,7 @@ const URL_TO_CONFIG_MAP: Record<string, { section: string; module: string }> = {
   '/dashboard/users': { section: 'console', module: 'detail' },
   '/keys': { section: 'console', module: 'token' },
   '/service-tiers': { section: 'console', module: 'service_tier' },
+  '/price-comparison': { section: 'console', module: 'price_comparison' },
   '/usage-logs': { section: 'console', module: 'log' },
   '/usage-logs/common': { section: 'console', module: 'log' },
   '/usage-logs/audit': { section: 'console', module: 'audit' },

@@ -73,6 +73,10 @@ var auditContentTemplates = map[string]string{
 	"channel_aggregation.members_update": "Updated the models of model family (ID: ${id}) to ${count}",
 	"channel_aggregation.policy_save":    "Saved the channel aggregation rule of model family (ID: ${family_id})",
 	"channel_aggregation.policy_delete":  "Deleted the channel aggregation override of model ${model}",
+	"price_comparison.settings_update":   "Updated the price comparison page (baseline: ${baseline_model}, ${count} models)",
+	"models_dev.config_update":           "Updated the models.dev price import settings (auto sync: ${auto_sync})",
+	"models_dev.sync":                    "Imported models.dev prices (${created} new, ${updated} updated)",
+	"models_dev.undo":                    "Undid the last models.dev price import (${restored} models restored)",
 
 	"redemption.create":       "Created ${count} redemption codes named ${name} (${quota} each)",
 	"redemption.delete_batch": "Batch deleted ${count} redemption codes",

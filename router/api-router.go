@@ -226,6 +226,13 @@ func SetApiRouter(router *gin.Engine) {
 			optionRoute.PATCH("/model_pricing", controller.UpdateModelPricingConfig)
 			optionRoute.POST("/model_pricing/convert", controller.PreviewModelPricingConversion)
 			optionRoute.POST("/model_pricing/preview", controller.PreviewModelPricing)
+			optionRoute.GET("/models_dev/state", controller.GetModelsDevOverview)
+			optionRoute.PUT("/models_dev/config", controller.UpdateModelsDevConfig)
+			optionRoute.GET("/models_dev/catalog", controller.GetModelsDevCatalog)
+			optionRoute.GET("/models_dev/expression", controller.GetModelsDevExpression)
+			optionRoute.POST("/models_dev/preview", controller.PreviewModelsDev)
+			optionRoute.POST("/models_dev/sync", controller.SyncModelsDev)
+			optionRoute.POST("/models_dev/undo", controller.UndoModelsDevSync)
 			optionRoute.POST("/payment_compliance", controller.ConfirmPaymentCompliance)
 			optionRoute.GET("/channel_affinity_cache", controller.GetChannelAffinityCacheStats)
 			optionRoute.DELETE("/channel_affinity_cache", controller.ClearChannelAffinityCache)
@@ -351,6 +358,15 @@ func SetApiRouter(router *gin.Engine) {
 			systemInfoRoute.GET("/instances", controller.ListSystemInstances)
 			systemInfoRoute.DELETE("/stale-instances", controller.DeleteStaleSystemInstances)
 			systemInfoRoute.DELETE("/instances/:node_name", controller.DeleteStaleSystemInstance)
+		}
+
+		// Price comparison page: everyone logged in reads it, administrators
+		// choose what it shows.
+		priceComparisonRoute := apiRouter.Group("/price_comparison", middleware.DisableCache())
+		{
+			priceComparisonRoute.GET("", middleware.UserAuth(), controller.GetPriceComparison)
+			priceComparisonRoute.GET("/settings", middleware.AdminAuth(), controller.GetPriceComparisonAdmin)
+			priceComparisonRoute.PUT("/settings", middleware.AdminAuth(), controller.UpdatePriceComparisonSettings)
 		}
 
 		dataRoute := apiRouter.Group("/data")

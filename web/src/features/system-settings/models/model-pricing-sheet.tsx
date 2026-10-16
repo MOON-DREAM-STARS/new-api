@@ -108,6 +108,7 @@ import {
   type PricingMode,
 } from './model-pricing-core'
 import { PriceInput, PriceLane } from './model-pricing-inputs'
+import { ImportFromModelsDev } from './models-dev-sync/import-from-models-dev'
 import { formatPricingNumber } from './pricing-format'
 import { TaskPluginPricingEditor } from './task-plugin-pricing-editor'
 import { TaskUsagePricingEditor } from './task-usage-pricing-editor'
@@ -1137,6 +1138,15 @@ export const ModelPricingEditorPanel = forwardRef<
 
                     <TabsContent value='tiered_expr' className='pt-0'>
                       <FieldGroup className='gap-5'>
+                        {taskUsageSchema ? null : (
+                          <ImportFromModelsDev
+                            modelName={watchedValues.name}
+                            onExpression={(expression) => {
+                              setBillingExpr(expression)
+                              setEditorReloadToken((token) => token + 1)
+                            }}
+                          />
+                        )}
                         {expressionEditor}
                       </FieldGroup>
                     </TabsContent>

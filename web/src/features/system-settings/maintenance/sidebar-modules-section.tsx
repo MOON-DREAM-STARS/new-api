@@ -116,6 +116,10 @@ export function SidebarModulesSection({
           'Choose service tiers, the default preference and escalation.'
         ),
       },
+      price_comparison: {
+        title: t('Price Comparison'),
+        description: t('Compare model prices against a baseline model.'),
+      },
       log: {
         title: t('Usage logs'),
         description: t('Detailed request logs for investigations.'),
