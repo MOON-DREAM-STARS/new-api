@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
@@ -100,10 +101,17 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
 			return false
 		}
+		switch event.Type {
+		case "response.completed", "response.incomplete", "response.failed":
+			c.Set(relaycommon.ContextKeyResponsesTerminalEventSent, true)
+		}
 		return true
 	}
-	failResponsesStream := func(err error) bool {
-		failureResults, handled := state.FailResponsesStream("server_error", err.Error(), "")
+	failResponsesStream := func(code, message string) bool {
+		if strings.TrimSpace(code) == "" {
+			code = "server_error"
+		}
+		failureResults, handled := state.FailResponsesStream(code, message, "")
 		if !handled {
 			return false
 		}
@@ -129,7 +137,11 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		var errorResp dto.OpenAITextResponse
 		if err := common.UnmarshalJsonStr(data, &errorResp); err == nil {
 			if oaiError := errorResp.GetOpenAIError(); oaiError != nil && oaiError.Type != "" {
-				if failResponsesStream(fmt.Errorf("%s", oaiError.Message)) {
+				code := "server_error"
+				if value, ok := oaiError.Code.(string); ok && strings.TrimSpace(value) != "" {
+					code = value
+				}
+				if failResponsesStream(code, oaiError.Message) {
 					// The client got response.failed, so the request is never
 					// retried; the recorded error keeps the stream failed.
 					upstreamFailure = types.WithOpenAIError(*oaiError, http.StatusInternalServerError, types.ErrOptionWithSkipRetry())
@@ -145,7 +157,7 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		var chunk dto.ChatCompletionsStreamResponse
 		if err := common.UnmarshalJsonStr(data, &chunk); err != nil {
 			logger.LogError(c, common.LogText("failed to unmarshal chat stream response: %s", err.Error()))
-			if failResponsesStream(err) {
+			if failResponsesStream("bad_response_body", err.Error()) {
 				upstreamFailure = types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError, types.ErrOptionWithSkipRetry())
 				sr.Stop(upstreamFailure)
 				return
@@ -158,7 +170,7 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		info.ObserveResponseModel(chunk.Model)
 		results, err := service.ConvertStreamResponseChunk(c, info, state, &chunk)
 		if err != nil {
-			if failResponsesStream(err) {
+			if failResponsesStream("conversion_error", err.Error()) {
 				upstreamFailure = types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError, types.ErrOptionWithSkipRetry())
 				sr.Stop(upstreamFailure)
 				return
@@ -202,7 +214,7 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 
 	finalResults, err := service.FinalizeStreamResponse(c, info, state)
 	if err != nil {
-		if failResponsesStream(err) {
+		if failResponsesStream("stream_finalize_error", err.Error()) {
 			return usage, streamErr
 		}
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
