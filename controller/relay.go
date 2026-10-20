@@ -91,6 +91,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if newAPIError != nil {
 			service.RecordRequestPolicyTermination(c, newAPIError)
 			logger.LogError(c, common.LogText("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
+			if shouldSkipRelayErrorBody(c) {
+				// The Responses stream already ended with a terminal SSE event.
+				// Appending a JSON error body here would corrupt the event stream.
+				return
+			}
 			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:
@@ -232,6 +237,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		retryLogStr := common.LogText("retry: %s", strings.Trim(strings.Join(strings.Fields(fmt.Sprint(useChannel)), "->"), "[]"))
 		logger.LogInfo(c, retryLogStr)
 	}
+}
+
+func shouldSkipRelayErrorBody(c *gin.Context) bool {
+	return c != nil && c.GetBool(relaycommon.ContextKeyResponsesTerminalEventSent)
 }
 
 // CountClaudeTokens implements Anthropic's token-counting utility endpoint.

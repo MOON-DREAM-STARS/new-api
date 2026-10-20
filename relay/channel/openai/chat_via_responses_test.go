@@ -271,6 +271,34 @@ func TestOaiChatToResponsesStreamHandlerConvertsSSEOrderAndUsage(t *testing.T) {
 	)
 }
 
+func TestOaiChatToResponsesStreamHandlerPreservesEmptyToolTurnCodeAndMarksTerminal(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	body := strings.Join([]string{
+		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","created":1710000000,"model":"gpt-test","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}`,
+		`data: {"error":{"message":"upstream repeatedly ended a tool-enabled turn without a valid function call","type":"api_error","code":"upstream_empty_tool_turn"}}`,
+		``,
+	}, "\n")
+	c, recorder, resp, info := newResponsesChatTestContext(t, body, true)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	usage, apiErr := OaiChatToResponsesStreamHandler(c, info, resp)
+	require.Nil(t, usage)
+	require.NotNil(t, apiErr)
+	require.True(t, c.GetBool(relaycommon.ContextKeyResponsesTerminalEventSent))
+
+	got := recorder.Body.String()
+	require.Contains(t, got, "event: response.created")
+	require.Contains(t, got, "event: response.failed")
+	require.Contains(t, got, `"code":"upstream_empty_tool_turn"`)
+	require.Greater(t, strings.LastIndex(got, "event: response.failed"), strings.LastIndex(got, "event: error"))
+}
+
 // TestOaiChatToResponsesStreamHandlerReasoningAddedCarriesSummary asserts on the
 // actual SSE bytes this handler writes: the reasoning output_item.added item
 // must contain "summary" even before any reasoning text arrives. Responses
