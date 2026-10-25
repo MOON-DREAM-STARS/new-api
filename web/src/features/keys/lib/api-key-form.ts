@@ -36,7 +36,7 @@ export function getApiKeyFormSchema(t: TFunction) {
     .object({
       name: z.string().min(1, t('Please enter a name')),
       remain_quota_dollars: z.number().optional(),
-      expired_time: z.date().optional(),
+      expired_time: z.date().nullable(),
       unlimited_quota: z.boolean(),
       allow_ips: z.string().optional(),
       tokenCount: z
@@ -49,6 +49,7 @@ export function getApiKeyFormSchema(t: TFunction) {
           })
         )
         .optional(),
+      allow_user_quota_query: z.boolean().optional(),
     })
     .superRefine((data, ctx) => {
       if (data.unlimited_quota) {
@@ -77,9 +78,10 @@ export type ApiKeyFormValues = z.infer<ReturnType<typeof getApiKeyFormSchema>>
 export const API_KEY_FORM_DEFAULT_VALUES: ApiKeyFormValues = {
   name: '',
   remain_quota_dollars: 10,
-  expired_time: undefined,
+  expired_time: null,
   unlimited_quota: true,
   allow_ips: '',
+  allow_user_quota_query: true,
   tokenCount: 1,
 }
 
@@ -152,6 +154,7 @@ export function transformFormDataToPayload(
     ...parts.routing,
     model_families: parts.modelFamilies,
     service_tier: parts.serviceTier,
+    allow_user_quota_query: data.allow_user_quota_query ?? true,
   }
 }
 
@@ -167,11 +170,10 @@ export function transformApiKeyToFormDefaults(
       ? 0
       : quotaUnitsToDollars(apiKey.remain_quota),
     expired_time:
-      apiKey.expired_time > 0
-        ? new Date(apiKey.expired_time * 1000)
-        : undefined,
+      apiKey.expired_time > 0 ? new Date(apiKey.expired_time * 1000) : null,
     unlimited_quota: apiKey.unlimited_quota,
     allow_ips: apiKey.allow_ips || '',
+    allow_user_quota_query: !!apiKey.allow_user_quota_query,
     tokenCount: 1,
   }
 }

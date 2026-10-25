@@ -126,6 +126,7 @@ const tierOverview = {
   },
 }
 const storedKey = {
+  allow_user_quota_query: false,
   id: 5,
   name: 'stored',
   key: 'abcd',
@@ -249,6 +250,25 @@ const next = () => userEvent.click(screen.getByRole('button', { name: 'Next' }))
 const familyBox = (name: string) => screen.findByRole('checkbox', { name })
 
 describe('API key wizard: creating keys', () => {
+  test('lets a new key disable account quota queries before creation', async () => {
+    const calls = installApi()
+    renderWizard()
+    await familyBox('GPT')
+    await next()
+    await next()
+    await userEvent.type(screen.getByLabelText('Name'), 'private-quota')
+    const quotaSwitch = screen.getByRole('switch', {
+      name: 'Allow querying user quota',
+    })
+    expect(quotaSwitch).toBeChecked()
+    await userEvent.click(quotaSwitch)
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Create API Key' })
+    )
+    await waitFor(() => expect(calls.created).toHaveLength(1))
+    expect(calls.created[0]?.allow_user_quota_query).toBe(false)
+  })
+
   test('selects every model family by default and creates a key without a family limit', async () => {
     const calls = installApi()
     const { onOpenChange } = renderWizard()

@@ -31,8 +31,9 @@ type Token struct {
 	AutoGroups         string  `json:"-" gorm:"type:text"`
 	// ModelFamilies is a JSON array of the model family ids the key is limited
 	// to. Empty means no limit; id 0 stands for models without a family.
-	ModelFamilies string         `json:"-" gorm:"type:text"`
-	DeletedAt     gorm.DeletedAt `gorm:"index"`
+	ModelFamilies       string         `json:"-" gorm:"type:text"`
+	AllowUserQuotaQuery bool           `json:"allow_user_quota_query"`
+	DeletedAt           gorm.DeletedAt `gorm:"index"`
 }
 
 // GetModelFamilies returns the model family ids the key is limited to, or nil
@@ -342,7 +343,7 @@ func (token *Token) Update() (err error) {
 		common.SysLog(common.LogText("failed to invalidate token cache before update: %s", cacheErr.Error()))
 	}
 	return DB.Model(token).Select("name", "status", "expired_time", "remain_quota", "unlimited_quota",
-		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "auto_groups", "model_families").Updates(token).Error
+		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "auto_groups", "model_families", "allow_user_quota_query").Updates(token).Error
 }
 
 // InsertWithServiceTier inserts the key together with its own service tier

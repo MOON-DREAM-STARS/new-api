@@ -466,6 +466,7 @@ docker run --name new-api -d --restart always \
 
 📖 [Tutorial with images](./docs/BT.md)
 
+
 </details>
 
 ### ⚠️ Multi-machine Deployment Considerations
@@ -528,6 +529,8 @@ See [User authentication and login sessions](./docs/authentication.md) for the t
 ### 🤝 Contribution Guide
 
 Welcome all forms of contribution!
+
+Read [AGENTS.md](./AGENTS.md) before contributing. Run checks appropriate to your change, including `make test` for the Go modules and `bun check -b`, `bun run lint`, `bun run test`, and `bun run build` in `web/` for frontend changes. Changes to RelayKit must also pass `GOWORK=off go build ./...` from `relaykit/`.
 
 - 🐛 Report Bugs
 - 💡 Propose New Features

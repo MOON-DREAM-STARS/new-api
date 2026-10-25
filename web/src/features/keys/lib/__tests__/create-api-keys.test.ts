@@ -27,6 +27,7 @@ import {
 } from '../create-api-keys'
 
 const payload: ApiKeyFormData = {
+  allow_user_quota_query: true,
   name: 'batch',
   remain_quota: 0,
   expired_time: -1,

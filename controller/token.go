@@ -69,9 +69,10 @@ func (input *tokenServiceTierInput) UnmarshalJSON(data []byte) error {
 
 type tokenRequest struct {
 	model.Token
-	AutoGroups    tokenAutoGroupsInput    `json:"auto_groups"`
-	ModelFamilies tokenModelFamiliesInput `json:"model_families"`
-	ServiceTier   tokenServiceTierInput   `json:"service_tier"`
+	AutoGroups          tokenAutoGroupsInput    `json:"auto_groups"`
+	ModelFamilies       tokenModelFamiliesInput `json:"model_families"`
+	ServiceTier         tokenServiceTierInput   `json:"service_tier"`
+	AllowUserQuotaQuery *bool                   `json:"allow_user_quota_query"`
 }
 
 type tokenResponse struct {
@@ -315,20 +316,39 @@ func GetTokenUsage(c *gin.Context) {
 		expiredAt = 0
 	}
 
+	data := gin.H{
+		"object":               "token_usage",
+		"name":                 token.Name,
+		"total_granted":        token.RemainQuota + token.UsedQuota,
+		"total_used":           token.UsedQuota,
+		"total_available":      token.RemainQuota,
+		"unlimited_quota":      token.UnlimitedQuota,
+		"model_limits":         token.GetModelLimitsMap(),
+		"model_limits_enabled": token.ModelLimitsEnabled,
+		"expires_at":           expiredAt,
+	}
+	// 用户额度只在令牌允许时返回；IP 白名单已由 TokenAuthReadOnly 检查。
+	if token.AllowUserQuotaQuery {
+		userQuota, err := model.GetUserQuota(token.UserId, false)
+		var userUsedQuota int
+		if err == nil {
+			userUsedQuota, err = model.GetUserUsedQuota(token.UserId)
+		}
+		if err != nil {
+			common.SysError(common.LogText("failed to get user quota: %s", err.Error()))
+			common.ApiErrorI18n(c, i18n.MsgTokenGetInfoFailed)
+			return
+		}
+		data["user_quota"] = gin.H{
+			"total_available": userQuota,
+			"total_used":      userUsedQuota,
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"code":    true,
 		"message": "ok",
-		"data": gin.H{
-			"object":               "token_usage",
-			"name":                 token.Name,
-			"total_granted":        token.RemainQuota + token.UsedQuota,
-			"total_used":           token.UsedQuota,
-			"total_available":      token.RemainQuota,
-			"unlimited_quota":      token.UnlimitedQuota,
-			"model_limits":         token.GetModelLimitsMap(),
-			"model_limits_enabled": token.ModelLimitsEnabled,
-			"expires_at":           expiredAt,
-		},
+		"data":    data,
 	})
 }
 
@@ -416,6 +436,7 @@ func AddToken(c *gin.Context) {
 		AutoGroups:         token.AutoGroups,
 		ModelFamilies:      token.ModelFamilies,
 	}
+	cleanToken.AllowUserQuotaQuery = request.AllowUserQuotaQuery == nil || *request.AllowUserQuotaQuery
 	if tierRow != nil {
 		err = cleanToken.InsertWithServiceTier(tierRow)
 	} else {
@@ -513,6 +534,9 @@ func UpdateToken(c *gin.Context) {
 		cleanToken.ModelLimitsEnabled = token.ModelLimitsEnabled
 		cleanToken.ModelLimits = token.ModelLimits
 		cleanToken.AllowIps = token.AllowIps
+		if request.AllowUserQuotaQuery != nil {
+			cleanToken.AllowUserQuotaQuery = *request.AllowUserQuotaQuery
+		}
 		cleanToken.Group = token.Group
 		cleanToken.CrossGroupRetry = token.CrossGroupRetry
 		if token.Group != "auto" {
@@ -563,6 +587,7 @@ func UpdateToken(c *gin.Context) {
 			{"model_limits", previous.ModelLimits != cleanToken.ModelLimits},
 			{"allow_ips", (previous.AllowIps == nil) != (cleanToken.AllowIps == nil) ||
 				(previous.AllowIps != nil && cleanToken.AllowIps != nil && *previous.AllowIps != *cleanToken.AllowIps)},
+			{"allow_user_quota_query", previous.AllowUserQuotaQuery != cleanToken.AllowUserQuotaQuery},
 			{"group", previous.Group != cleanToken.Group},
 			{"cross_group_retry", previous.CrossGroupRetry != cleanToken.CrossGroupRetry},
 			{"auto_groups", previous.AutoGroups != cleanToken.AutoGroups},
