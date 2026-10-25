@@ -51,6 +51,7 @@ export const apiKeySchema = z.object({
   // belong to no family. Empty means the key can use every model.
   model_families: z.array(z.number()).nullish().default([]),
   allow_ips: z.string().nullish().default(''),
+  allow_user_quota_query: z.boolean().optional().default(false),
 })
 
 export type ApiKey = z.infer<typeof apiKeySchema>
@@ -123,6 +124,7 @@ export interface ApiKeyFormData {
   model_limits_enabled: boolean
   model_limits: string
   allow_ips: string
+  allow_user_quota_query: boolean
   group: string
   cross_group_retry: boolean
   /** Omitted keeps the stored limit on update; an empty list removes it. */
