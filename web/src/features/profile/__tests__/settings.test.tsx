@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -19,10 +20,16 @@ For commercial licensing, please contact support@quantumnous.com
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import {
+  parseSidebarModulesAdmin,
+  recommendedSidebarRoles,
+} from '@/features/system-settings/maintenance/config'
 import { api } from '@/lib/api'
 import { ROLE } from '@/lib/roles'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { updateUserSettings } from '../api'
+import { SidebarModulesCard } from '../components/sidebar-modules-card'
 import { NotificationTab } from '../components/tabs/notification-tab'
 import type { UserProfile } from '../types'
 
@@ -341,5 +348,42 @@ describe('notifications a user receives', () => {
     )
     await save(onUpdate)
     expect(sentBody(put)).toMatchObject({ channel_notify_enabled: true })
+  })
+})
+
+describe('sidebar personal settings honor visibility policies', () => {
+  it('hides a globally disabled module and a role-disabled section', async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    const config = parseSidebarModulesAdmin('')
+    config.console.token = false
+    const roles = recommendedSidebarRoles(config)
+    roles['1'].personal.enabled = false
+    Object.assign(config, { roles })
+    client.setQueryData(['status'], {
+      SidebarModulesAdmin: JSON.stringify(config),
+    })
+    useAuthStore.getState().auth.setUser({ id: 1, username: 'alice', role: 1 })
+    vi.spyOn(api, 'get').mockResolvedValue({
+      data: { success: true, data: {} },
+    })
+    try {
+      render(
+        <QueryClientProvider client={client}>
+          <SidebarModulesCard />
+        </QueryClientProvider>
+      )
+      await waitFor(() =>
+        expect(api.get).toHaveBeenCalledWith('/api/user/self')
+      )
+      expect(screen.getByText('Console Area')).toBeInTheDocument()
+      expect(screen.queryByText('Token Management')).not.toBeInTheDocument()
+      expect(screen.queryByText('Personal Center Area')).not.toBeInTheDocument()
+      expect(screen.queryByText('Personal Settings')).not.toBeInTheDocument()
+    } finally {
+      client.clear()
+      useAuthStore.getState().auth.reset()
+    }
   })
 })

@@ -60,9 +60,6 @@ export function SidebarModulesCard() {
   const [config, setConfig] = useState<SidebarModulesConfig>({})
   const currentUser = useAuthStore((s) => s.auth.user)
   const { status } = useStatus()
-  const adminConfig = parseSidebarModulesAdmin(
-    status?.SidebarModulesAdmin as string | undefined
-  )
   const setUser = useAuthStore((s) => s.auth.setUser)
 
   const sectionDefs: SectionDef[] = [
@@ -156,6 +153,26 @@ export function SidebarModulesCard() {
     },
   ]
 
+  const adminConfig = parseSidebarModulesAdmin(
+    status?.SidebarModulesAdmin as string | null | undefined
+  )
+  const visibleSectionDefs = status
+    ? sectionDefs.flatMap((section) => {
+        const adminSection = adminConfig[section.key]
+        if (!adminSection?.enabled) return []
+
+        const modules = section.modules.filter((module) =>
+          sidebarModuleAllowed(
+            adminConfig,
+            currentUser?.role,
+            section.key,
+            module.key
+          )
+        )
+        return modules.length ? [{ ...section, modules }] : []
+      })
+    : []
+
   const loadConfig = useCallback(async () => {
     try {
       const res = await api.get('/api/user/self')
@@ -164,12 +181,7 @@ export function SidebarModulesCard() {
         const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
         setConfig(parsed)
       } else {
-        const defaults: SidebarModulesConfig = {}
-        for (const sec of sectionDefs) {
-          defaults[sec.key] = { enabled: true }
-          for (const mod of sec.modules) defaults[sec.key][mod.key] = true
-        }
-        setConfig(defaults)
+        setConfig({})
       }
     } catch {
       /* ignore */
@@ -225,13 +237,15 @@ export function SidebarModulesCard() {
 
   const handleReset = () => {
     const defaults: SidebarModulesConfig = {}
-    for (const sec of sectionDefs) {
+    for (const sec of visibleSectionDefs) {
       defaults[sec.key] = { enabled: true }
       for (const mod of sec.modules) defaults[sec.key][mod.key] = true
     }
     setConfig(defaults)
     toast.success(t('Reset to default configuration'))
   }
+
+  if (!status) return null
 
   return (
     <Card data-card-hover='false' className='gap-0 overflow-hidden py-0'>
@@ -251,7 +265,7 @@ export function SidebarModulesCard() {
         </div>
       </CardHeader>
       <CardContent className='space-y-4 p-3 sm:space-y-5 sm:p-5'>
-        {sectionDefs.map((section) => {
+        {visibleSectionDefs.map((section) => {
           const sectionEnabled = config[section.key]?.enabled !== false
           return (
             <div
@@ -271,39 +285,30 @@ export function SidebarModulesCard() {
                 />
               </div>
               <div className='mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-1'>
-                {section.modules
-                  .filter((mod) =>
-                    sidebarModuleAllowed(
-                      adminConfig,
-                      currentUser?.role,
-                      section.key,
-                      mod.key
-                    )
-                  )
-                  .map((mod) => (
-                    <div
-                      key={mod.key}
-                      className={`flex min-h-16 items-center justify-between rounded-lg border p-3 ${
-                        sectionEnabled ? '' : 'opacity-50'
-                      }`}
-                    >
-                      <div className='mr-2 min-w-0'>
-                        <p className='truncate text-sm font-medium'>
-                          {mod.title}
-                        </p>
-                        <p className='text-muted-foreground truncate text-xs'>
-                          {mod.description}
-                        </p>
-                      </div>
-                      <Switch
-                        checked={config[section.key]?.[mod.key] !== false}
-                        onCheckedChange={(v) =>
-                          toggleModule(section.key, mod.key, v)
-                        }
-                        disabled={!sectionEnabled}
-                      />
+                {section.modules.map((mod) => (
+                  <div
+                    key={mod.key}
+                    className={`flex min-h-16 items-center justify-between rounded-lg border p-3 ${
+                      sectionEnabled ? '' : 'opacity-50'
+                    }`}
+                  >
+                    <div className='mr-2 min-w-0'>
+                      <p className='truncate text-sm font-medium'>
+                        {mod.title}
+                      </p>
+                      <p className='text-muted-foreground truncate text-xs'>
+                        {mod.description}
+                      </p>
                     </div>
-                  ))}
+                    <Switch
+                      checked={config[section.key]?.[mod.key] !== false}
+                      onCheckedChange={(v) =>
+                        toggleModule(section.key, mod.key, v)
+                      }
+                      disabled={!sectionEnabled}
+                    />
+                  </div>
+                ))}
               </div>
             </div>
           )
