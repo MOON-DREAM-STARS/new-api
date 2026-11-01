@@ -306,7 +306,10 @@ func TestModelsDevPricing(t *testing.T) {
 		builtin := rowOf(plan, "gpt-4o")
 		assert.Equal(t, service.ModelsDevStatusLocked, builtin.Status)
 		assert.Equal(t, service.ModelsDevLockDefault, builtin.LockReason, "the built-in price of the software is a price too")
-		assert.Equal(t, 3, plan.Summary.Locked)
+		deepseek := rowOf(plan, "deepseek-v4-pro")
+		assert.Equal(t, service.ModelsDevStatusLocked, deepseek.Status)
+		assert.Equal(t, service.ModelsDevLockDefault, deepseek.LockReason)
+		assert.Equal(t, 4, plan.Summary.Locked)
 	})
 
 	t.Run("a stale preview is refused", func(t *testing.T) {
@@ -319,9 +322,9 @@ func TestModelsDevPricing(t *testing.T) {
 		plan := preview()
 		response, result := sync(`{"plan_hash":"` + plan.Hash + `"}`)
 		require.True(t, response.Success, response.Message)
-		assert.ElementsMatch(t, []string{"claude-sonnet-4.5", "gemini-3.6-pro", "glm-5", "kimi-k2.6", "deepseek-v4-pro"}, result.Written)
+		assert.ElementsMatch(t, []string{"claude-sonnet-4.5", "gemini-3.6-pro", "glm-5", "kimi-k2.6"}, result.Written)
 		assert.Equal(t, []string{"qwen3-coder"}, result.SkippedReview, "the price of a reseller is not written unasked")
-		assert.Equal(t, 5, result.Summary.Created)
+		assert.Equal(t, 4, result.Summary.Created)
 		assert.Equal(t, `tier("base", p * 3 + c * 15 + cr * 0.3 + cc * 3.75 + cc1h * 6)`, expression("claude-sonnet-4.5"))
 		assert.Equal(t, "tiered_expr", configured("glm-5")["billing_setting.billing_mode"])
 		gpt := configured("gpt-5.4")
@@ -331,8 +334,8 @@ func TestModelsDevPricing(t *testing.T) {
 
 		var overview service.ModelsDevOverview
 		decode(call(GetModelsDevOverview, http.MethodGet, "/api/option/models_dev/state", ""), &overview)
-		assert.Equal(t, 5, overview.State.ManagedCount)
-		assert.Equal(t, 5, overview.State.UndoCount)
+		assert.Equal(t, 4, overview.State.ManagedCount)
+		assert.Equal(t, 4, overview.State.UndoCount)
 		assert.Equal(t, "v-test-1", overview.State.LastSyncVersion)
 		assert.Equal(t, service.ModelsDevTriggerManual, overview.State.LastTrigger)
 	})
@@ -367,17 +370,17 @@ func TestModelsDevPricing(t *testing.T) {
 	})
 
 	t.Run("a change by more than ten times waits for a decision", func(t *testing.T) {
-		source.setCost("deepseek", "deepseek-v4-pro", 13.2, 39.6)
-		pro := rowOf(preview(), "deepseek-v4-pro")
+		source.setCost("moonshotai", "kimi-k2.6", 19, 80)
+		pro := rowOf(preview(), "kimi-k2.6")
 		assert.Equal(t, service.ModelsDevReviewLargeChange, pro.Review)
 		assert.InDelta(t, 20.0, pro.Change, 0.001)
 		_, result := sync("")
-		assert.Equal(t, []string{"deepseek-v4-pro"}, result.SkippedReview)
+		assert.Equal(t, []string{"kimi-k2.6"}, result.SkippedReview)
 		assert.Empty(t, result.Written)
-		assert.Contains(t, expression("deepseek-v4-pro"), "p * 0.66")
-		_, result = sync(`{"approved":["deepseek-v4-pro"]}`)
-		assert.Equal(t, []string{"deepseek-v4-pro"}, result.Written)
-		assert.Contains(t, expression("deepseek-v4-pro"), "p * 13.2")
+		assert.Contains(t, expression("kimi-k2.6"), "p * 0.95")
+		_, result = sync(`{"approved":["kimi-k2.6"]}`)
+		assert.Equal(t, []string{"kimi-k2.6"}, result.Written)
+		assert.Contains(t, expression("kimi-k2.6"), "p * 19")
 	})
 
 	t.Run("the settings refuse a model that is locked and unlocked", func(t *testing.T) {

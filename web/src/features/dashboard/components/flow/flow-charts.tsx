@@ -88,6 +88,7 @@ import { tierLabel } from '@/features/service-tiers/lib/tiers'
 import { formatQuota } from '@/lib/format'
 import { ROLE } from '@/lib/roles'
 import { requireServerSuccess } from '@/lib/server-error-message'
+import { useThemeColor } from '@/lib/theme-color'
 import { computeTimeRange } from '@/lib/time'
 import { useChartTheme } from '@/lib/use-chart-theme'
 import { cn } from '@/lib/utils'
@@ -269,6 +270,7 @@ function formatFlowMetricNumber(value: number): string {
 export function FlowCharts(props: FlowChartsProps) {
   const { t } = useTranslation()
   const { resolvedTheme, themeReady } = useChartTheme()
+  const textColor = useThemeColor('--foreground')
   const chartInstanceRef = useRef<IVChart | null>(null)
   const user = useAuthStore((state) => state.auth.user)
   const isRoot = Boolean(user?.role && user.role >= ROLE.SUPER_ADMIN)
@@ -472,13 +474,19 @@ export function FlowCharts(props: FlowChartsProps) {
   const chartTitle = t('Flow')
   const flowSpec = useMemo(
     () =>
-      buildFlowSankeySpec(flowData.flow, chartTitle, formatQuota, {
-        quota: t('Quota'),
-        tokens: t('Tokens'),
-        requests: t('Requests'),
-        share: t('Share'),
-      }),
-    [chartTitle, flowData.flow, t]
+      buildFlowSankeySpec(
+        flowData.flow,
+        chartTitle,
+        formatQuota,
+        {
+          quota: t('Quota'),
+          tokens: t('Tokens'),
+          requests: t('Requests'),
+          share: t('Share'),
+        },
+        textColor
+      ),
+    [chartTitle, flowData.flow, t, textColor]
   )
   const chartTheme = resolvedTheme === 'dark' ? 'dark' : 'light'
   const chartKey = [
@@ -501,7 +509,7 @@ export function FlowCharts(props: FlowChartsProps) {
     isLoading,
     isError,
     linkCount: flowData.flow.links.length,
-    themeReady,
+    themeReady: themeReady && textColor !== undefined,
   })
   const flowErrorMessage =
     flowError instanceof Error

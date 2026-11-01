@@ -85,8 +85,8 @@ export function ExpirationField(props: {
           <div className='grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center'>
             <FormControl>
               <DateTimePicker
-                value={field.value}
-                onChange={field.onChange}
+                value={field.value ?? undefined}
+                onChange={(value) => field.onChange(value ?? null)}
                 placeholder={t('Never expires')}
                 className='min-w-0 [&_input[type=time]]:w-24 sm:[&_input[type=time]]:w-32'
               />
@@ -100,9 +100,13 @@ export function ExpirationField(props: {
                   size='sm'
                   className='px-2 text-xs sm:px-3 sm:text-sm'
                   onClick={() =>
-                    props.form.setValue('expired_time', expiryFromNow(preset), {
-                      shouldDirty: true,
-                    })
+                    props.form.setValue(
+                      'expired_time',
+                      expiryFromNow(preset) ?? null,
+                      {
+                        shouldDirty: true,
+                      }
+                    )
                   }
                 >
                   {presetLabel(t, preset.id)}

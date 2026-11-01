@@ -45,6 +45,7 @@ const families = {
 
 function apiKey(patch: Partial<ApiKey>): ApiKey {
   return {
+    allow_user_quota_query: false,
     id: 1,
     name: 'key',
     key: 'abcd',
