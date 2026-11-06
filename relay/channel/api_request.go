@@ -330,6 +330,10 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	if err != nil {
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}
+	if info.IsStream {
+		// The stream scanner cannot close the upstream body before headers arrive.
+		req = req.WithContext(c.Request.Context())
+	}
 	ApplyUpstreamBodyMetadata(req, requestBody)
 	headers := req.Header
 	err = a.SetupRequestHeader(c, &headers, info)

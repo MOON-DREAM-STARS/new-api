@@ -233,6 +233,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			return
 		}
 
+		if relayInfo.IsStream && c.Request.Context().Err() != nil {
+			// A disconnected client needs neither another attempt nor a channel penalty.
+			relayInfo.LastError = newAPIError
+			break
+		}
 		newAPIError = service.NormalizeViolationFeeError(newAPIError)
 		relayInfo.LastError = newAPIError
 
