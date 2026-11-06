@@ -329,6 +329,10 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		if ctx.Err() != nil {
 			return
 		}
+		if err := c.Request.Context().Err(); err != nil {
+			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, err)
+			return
+		}
 		if err := scanner.Err(); err != nil {
 			if err != io.EOF {
 				logger.LogError(c, common.LogText("scanner error: %s", err.Error()))
