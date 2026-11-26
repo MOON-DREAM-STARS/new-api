@@ -36,7 +36,7 @@ import {
   type ModelPricingConfig,
 } from '@/features/model-pricing/api'
 import { pricingOptions } from '@/features/model-pricing/pricing'
-import { useMediaQuery } from '@/hooks/use-media-query'
+import { useMediaQuery } from '@/hooks'
 import { handleServerError } from '@/lib/handle-server-error'
 
 import { SettingsPageTitleStatusPortal } from '../components/settings-page-context'
@@ -175,9 +175,7 @@ export function RatioSettingsCard({
   visibleTabs = ['models', 'groups', 'tool-prices', 'upstream-sync'],
 }: RatioSettingsCardProps) {
   const { t } = useTranslation()
-  // The title bar clips what does not fit, so on a phone the tabs sit above the
-  // content and scroll sideways.
-  const compact = useMediaQuery('(max-width: 639px)')
+  const isMobile = useMediaQuery('(max-width: 639px)')
   const updateOption = useUpdateOption()
   const [confirmOpen, setConfirmOpen] = useState(false)
 
@@ -558,10 +556,18 @@ export function RatioSettingsCard({
 
   const renderTabSwitcher = () => (
     <TabsList
-      className={compact ? 'w-max' : `grid w-fit max-w-full ${tabsGridClass}`}
+      className={
+        isMobile
+          ? 'flex w-full justify-start overflow-x-auto'
+          : `grid w-fit max-w-full ${tabsGridClass}`
+      }
     >
       {visibleTabs.map((tab) => (
-        <TabsTrigger key={tab} value={tab}>
+        <TabsTrigger
+          key={tab}
+          value={tab}
+          className={isMobile ? 'flex-none px-3' : undefined}
+        >
           {t(tabLabels[tab])}
         </TabsTrigger>
       ))}
@@ -583,10 +589,9 @@ export function RatioSettingsCard({
         </SettingsSection>
       ) : (
         <Tabs defaultValue={defaultTab} className='h-full min-h-0 gap-6'>
-          {compact ? (
-            <div className='max-w-full overflow-x-auto py-1'>
-              {renderTabSwitcher()}
-            </div>
+          {/* The phone title row is too narrow for the tabs. */}
+          {isMobile ? (
+            renderTabSwitcher()
           ) : (
             <SettingsPageTitleStatusPortal>
               {renderTabSwitcher()}
