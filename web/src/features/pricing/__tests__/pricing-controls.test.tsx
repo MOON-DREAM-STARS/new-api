@@ -144,6 +144,43 @@ describe('pricing controls', () => {
       matches: ['task'],
     },
     {
+      name: 'a plugin model whose ordinary requests pay a token ratio',
+      pricing: {
+        billing_usage_schema: { seconds: { type: 'number', unit: 'second' } },
+        ordinary_pricing: true,
+        billing_plugin_variants: [
+          {
+            plugin_key: 'alpha',
+            plugin_name: 'Alpha',
+            billing_mode: 'tiered_expr',
+            billing_expr: '',
+            billing_usage_schema: {
+              seconds: { type: 'number', unit: 'second' },
+            },
+          },
+        ],
+      },
+      matches: ['token'],
+    },
+    {
+      name: 'a plugin model without ordinary requests retaining the task category',
+      pricing: {
+        billing_usage_schema: { seconds: { type: 'number', unit: 'second' } },
+        billing_plugin_variants: [
+          {
+            plugin_key: 'alpha',
+            plugin_name: 'Alpha',
+            billing_mode: 'tiered_expr',
+            billing_expr: '',
+            billing_usage_schema: {
+              seconds: { type: 'number', unit: 'second' },
+            },
+          },
+        ],
+      },
+      matches: ['task'],
+    },
+    {
       name: 'unparseable dynamic pricing retaining its legacy category',
       pricing: {
         quota_type: 1,
@@ -323,6 +360,28 @@ describe('pricing controls', () => {
       screen.getByRole('menuitem', { name: 'Input Price: Low to High' })
     )
     expect(props.onSortChange).toHaveBeenCalledWith('input-price-low')
+  })
+
+  it('lists the model order sorts above the name and price sorts', async () => {
+    const props = { ...toolbarProps(), sortBy: 'recommended' }
+    const user = userEvent.setup()
+    render(<PricingToolbar {...props} />)
+    await user.click(screen.getByRole('button', { name: 'Recommended' }))
+    const [orderGroup, otherGroup] = within(
+      await screen.findByRole('menu')
+    ).getAllByRole('group')
+    expect(
+      within(orderGroup)
+        .getAllByRole('menuitem')
+        .map((item) => item.textContent)
+    ).toEqual(['Recommended', 'Most requests', 'Most tokens'])
+    expect(within(otherGroup).getAllByRole('menuitem')[0]).toHaveTextContent(
+      'Name'
+    )
+    await user.click(
+      within(orderGroup).getByRole('menuitem', { name: 'Most requests' })
+    )
+    expect(props.onSortChange).toHaveBeenCalledWith('requests')
   })
 
   it('opens mobile filters from the left, selects a group, and restores focus on close', async () => {

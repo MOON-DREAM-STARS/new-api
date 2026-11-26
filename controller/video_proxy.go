@@ -3,7 +3,6 @@ package controller
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/base64"
+	"github.com/MoeForge/moego/ojson"
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
@@ -24,7 +25,6 @@ import (
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
-	"github.com/tidwall/gjson"
 	"golang.org/x/net/http/httpguts"
 )
 
@@ -219,15 +219,30 @@ func proxyTaskMedia(c *gin.Context, task *model.Task, descriptor *relaychannel.T
 	}
 	setting := channel.GetSetting()
 	proxy := strings.TrimSpace(setting.Proxy)
-	if err := validateTaskMediaURL(rawURL, proxy); err != nil {
-		return &taskMediaProxyError{
-			status: http.StatusBadGateway, code: "artifact_request_rejected",
-			message: "Artifact request was rejected", err: err,
+	var trustedOrigin *url.URL
+	if taskHasPluginExecution(task) && !descriptor.Credentialless {
+		baseURL := channel.GetBaseURL()
+		if baseURL == "" {
+			baseURL = constant.GetChannelBaseURL(channel.Type)
+		}
+		channelURL, parseErr := url.Parse(baseURL)
+		if parseErr == nil && channelURL.User == nil && channelURL.Fragment == "" && sameTaskMediaOrigin(channelURL, parsedURL) {
+			// A validated plugin request to the operator-configured channel uses
+			// the same private upstream transport as submission and polling.
+			trustedOrigin = channelURL
+		}
+	}
+	if trustedOrigin == nil {
+		if err := validateTaskMediaURL(rawURL, proxy); err != nil {
+			return &taskMediaProxyError{
+				status: http.StatusBadGateway, code: "artifact_request_rejected",
+				message: "Artifact request was rejected", err: err,
+			}
 		}
 	}
 
 	client := service.GetSSRFProtectedHTTPClient()
-	if proxy != "" {
+	if trustedOrigin != nil || proxy != "" {
 		client, err = service.GetHttpClientWithProxySettings(proxy, setting)
 		if err != nil {
 			return &taskMediaProxyError{
@@ -262,7 +277,7 @@ func proxyTaskMedia(c *gin.Context, task *model.Task, descriptor *relaychannel.T
 		req.Header.Set(name, value)
 	}
 
-	client = taskMediaRedirectClient(client, proxy, c, clientHeaders, descriptor.Credentialless)
+	client = taskMediaRedirectClient(client, proxy, c, clientHeaders, descriptor.Credentialless, trustedOrigin)
 	clientWithoutBodyTimeout := *client
 	clientWithoutBodyTimeout.Timeout = 0
 	resp, err := doTaskMediaRequest(&clientWithoutBodyTimeout, req, taskMediaResponseHeaderTimeout)
@@ -360,21 +375,23 @@ func writeTaskMediaContentPath(c *gin.Context, body io.Reader, descriptor *relay
 			message: "Artifact request was rejected", err: errTaskMediaRequestRejected,
 		}
 	}
-	if !gjson.ValidBytes(raw) {
+	if !ojson.ValidBytes(raw) {
 		return &taskMediaProxyError{
 			status: http.StatusBadGateway, code: "artifact_upstream_error",
 			message: "Failed to decode artifact content",
 		}
 	}
-	operation := gjson.ParseBytes(raw)
-	if failure := operation.Get("error"); failure.Exists() && failure.Type != gjson.Null {
+	// The root shares memory with raw, which stays unchanged until the
+	// artifact is written, so the base64 payload is not copied.
+	operation := ojson.GetBytesNoCopy(raw, "@this")
+	if failure := operation.Get("error"); failure.Exists() && failure.Type != ojson.Null {
 		return &taskMediaProxyError{
 			status: http.StatusBadGateway, code: "artifact_upstream_error",
 			message: "Artifact upstream returned an error",
 		}
 	}
 	// An interaction reports completion through status, not done.
-	if operation.Get("done").Type != gjson.True && operation.Get("status").String() != "completed" {
+	if operation.Get("done").Type != ojson.True && operation.Get("status").String() != "completed" {
 		return &taskMediaProxyError{
 			status: http.StatusConflict, code: "artifact_not_ready",
 			message: "Task artifacts are not ready",
@@ -383,7 +400,7 @@ func writeTaskMediaContentPath(c *gin.Context, body io.Reader, descriptor *relay
 	content := operation
 	for _, segment := range descriptor.ContentPath {
 		if key, isKey := segment.(string); isKey && content.IsObject() {
-			content = content.Get(gjson.Escape(key))
+			content = content.Get(ojson.Escape(key))
 			continue
 		}
 		index := ""
@@ -396,12 +413,12 @@ func writeTaskMediaContentPath(c *gin.Context, body io.Reader, descriptor *relay
 			index = strconv.FormatFloat(typed, 'f', -1, 64)
 		}
 		if index == "" || !content.IsArray() {
-			content = gjson.Result{}
+			content = ojson.Result{}
 			break
 		}
 		content = content.Get(index)
 	}
-	if content.Type != gjson.String || content.Str == "" {
+	if content.Type != ojson.String || content.Str == "" {
 		return &taskMediaProxyError{
 			status: http.StatusGone, code: "artifact_gone",
 			message: "Artifact content is no longer available",
@@ -489,7 +506,7 @@ func applyTaskMediaRequestHeaders(destination http.Header, headers map[string]st
 	return nil
 }
 
-func taskMediaRedirectClient(base *http.Client, proxy string, c *gin.Context, clientHeaders map[string]string, credentialless bool) *http.Client {
+func taskMediaRedirectClient(base *http.Client, proxy string, c *gin.Context, clientHeaders map[string]string, credentialless bool, trustedOrigin *url.URL) *http.Client {
 	cloned := *base
 	cloned.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 10 {
@@ -499,7 +516,11 @@ func taskMediaRedirectClient(base *http.Client, proxy string, c *gin.Context, cl
 			req.URL.Host == "" || req.URL.User != nil || req.URL.Fragment != "" {
 			return fmt.Errorf("%w: invalid redirect URL", errTaskMediaRequestRejected)
 		}
-		if err := validateTaskMediaURL(req.URL.String(), proxy); err != nil {
+		if trustedOrigin != nil {
+			if !sameTaskMediaOrigin(trustedOrigin, req.URL) {
+				return fmt.Errorf("%w: redirect outside channel origin", errTaskMediaRequestRejected)
+			}
+		} else if err := validateTaskMediaURL(req.URL.String(), proxy); err != nil {
 			return fmt.Errorf("%w: %v", errTaskMediaRequestRejected, err)
 		}
 		if isSelfTaskMediaURL(c, req.URL) {
@@ -556,11 +577,12 @@ func normalizeTaskMediaHost(scheme, host string) string {
 	if err != nil {
 		return strings.TrimSuffix(host, ".")
 	}
-	hostname = strings.TrimSuffix(strings.ToLower(hostname), ".")
 	if (strings.EqualFold(scheme, "http") && port == "80") || (strings.EqualFold(scheme, "https") && port == "443") {
-		return hostname
+		// Keep an IPv6 literal bracketed, as it is when the port is omitted.
+		host = strings.TrimSuffix(host, ":"+port)
+		return strings.TrimSuffix(host, ".")
 	}
-	return net.JoinHostPort(hostname, port)
+	return net.JoinHostPort(strings.TrimSuffix(hostname, "."), port)
 }
 
 func isSelfTaskMediaURL(c *gin.Context, target *url.URL) bool {
@@ -688,10 +710,10 @@ func writeTaskMediaBase64(c *gin.Context, mimeType, payload string) error {
 	var encoding *base64.Encoding
 	var contentLength int64
 	for _, candidate := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
-		decodedLength, err := io.Copy(io.Discard, base64.NewDecoder(candidate, strings.NewReader(payload)))
+		decodedLength, err := candidate.ValidateString(payload)
 		if err == nil {
 			encoding = candidate
-			contentLength = decodedLength
+			contentLength = int64(decodedLength)
 			break
 		}
 	}
